@@ -1,10 +1,26 @@
 use std::time::{Duration, Instant};
 
-/// A frame represents a specific timeframe elapsed within the engines. Each frame captures total elapsed time as well as the delta time
-/// since the last frame. New frames are intended to be generated from a pervious frame using the `next()` method. Generally this can be
-/// invoked on each iteration of a game loop.
-#[derive(Debug)]
-pub struct Frame {
+/// A specific frame in the simulation loop. Each frame will contain the timing information (total and delta) as well as the current
+/// simulation data state.
+/// 
+/// 
+pub struct Frame<'a, Data> {
+  pub time: TimeFrame,
+  pub data: &'a mut Data,
+} 
+
+impl<'a, Data> Frame<'a, Data> {
+  pub fn new(time: TimeFrame, data: &'a mut Data) -> Self {
+    return Self { time, data };
+  }
+
+}
+
+/// A TimeFrame represents a specific amount of time elapsed within the engines for a single simulation frame. Each frame captures total
+/// elapsed time as well as the delta time since the last frame. New frames are intended to be generated from a pervious frame using the
+/// `next()` method. Generally this can be invoked on each iteration of a game loop.
+#[derive(Debug, Copy, Clone)]
+pub struct TimeFrame {
   fixed_time_step: u64,
   instant: Instant,
   /// The time delta since the last frame
@@ -15,7 +31,7 @@ pub struct Frame {
   pub fixed_time: Duration,
 }
 
-impl Frame {
+impl TimeFrame {
   /// Construct a new `Frame` with delta and time set to `0`. Caller must provide a fixed time step in nano seconds.
   pub fn new(fixed_time_step: u64) -> Self {
     return Self {
@@ -33,9 +49,9 @@ impl Frame {
   }
 
   /// Create the next frame from an existing frame. This will capture the delta from the last frame and update the cumulative time.
-  pub fn next(self) -> Frame {
+  pub fn next(self) -> Self {
     let elapsed = self.instant.elapsed();
-    Frame {
+    Self {
       fixed_time_step: self.fixed_time_step,
       instant: Instant::now(),
       delta: elapsed,
