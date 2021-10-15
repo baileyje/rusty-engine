@@ -1,17 +1,31 @@
 use engine::core::{Engine, Service};
 
+struct TestService {}
+
+impl Service for TestService {
+  fn name(&self) -> String {
+    "first".into()
+  }
+
+  fn start(&mut self) -> Result<(), &str> {
+    Ok(())
+  }
+
+  fn stop(&mut self) -> Result<(), &str> {
+    Ok(())
+  }
+}
+
+
 fn main() {
-  let service_one = Service::new("First Service".into());
+  let service_one = TestService {};
+  let mut data = String::from("foo");
   Engine::new()
-    .add(service_one)
+    .add(Box::new(service_one))
     .start(
-      String::from("foo"),
-      |frame, data| {
-        println!("Update: {} -> {}", frame.time.as_millis(), data);
-      },
-      |frame, data| {
-        println!("Fixed Update: {} -> {}", frame.fixed_time.as_millis(), data);
-      },
+      &mut data,
+      |f| { println!("Hmm: {}", f.data)},
+      |f| {}
     )
     .expect("Failed to start core");
 }
