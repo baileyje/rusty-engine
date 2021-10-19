@@ -1,29 +1,20 @@
-use log::{debug, info};
-use std::io;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
 
-/// Temporary engine control mechanism. For now this will listen to stdin to for commands to feed the engine. Right now that is `stop`. 
-/// Pretty fancy eh..
-pub struct Control {}
+use super::state::State;
 
-impl Control {
-  
-  // Start the control system. Listen for commands until we see `stop`
-  pub fn start(stop_handle: Arc<AtomicBool>) {
-    loop {
-      let mut command = String::new();
-      io::stdin()
-        .read_line(&mut command)
-        .ok()
-        .expect("Failed to read line");
-      let command = command.trim();
-      debug!("Control Command: {}", command);
-      if command == "stop" {
-        info!("Stop Requested");
-        stop_handle.store(true, Ordering::Relaxed);
-        return;
-      }
-    }
-  }
+pub trait Control {
+
+  fn start(&mut self);
+
+}
+
+/// Trait describing a controllable component. This will generally be an Engine instance.
+pub trait Controllable {
+  /// Start the component.
+  fn start(&mut self) -> Result<(), &str>;
+  /// Pause the component.
+  fn pause(&mut self) -> Result<(), &str>;
+  /// Stop the component.
+  fn stop(&mut self) -> Result<(), &str>;
+  /// Get the current component state.
+  fn state(&self) -> State;
 }
