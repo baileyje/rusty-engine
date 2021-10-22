@@ -1,9 +1,9 @@
-use log::info;
 use std::sync::{Arc, Mutex};
 use std::vec::Vec;
 
 use super::control::Controllable;
 use super::frame::{Frame, TimeFrame};
+use super::logger::Logger;
 use super::service::Service;
 use super::state::State;
 use super::thread::EngineThread;
@@ -48,6 +48,7 @@ pub struct Engine<Data> {
   internal: Arc<Mutex<EngineInternal<Data>>>,
   threads: Vec<EngineThread>,
   services: Vec<Box<dyn Service>>,
+  logger: Box<dyn Logger>,
 }
 
 impl<'a, Data: 'static> Engine<Data>
@@ -58,6 +59,7 @@ where
   pub fn new(
     data: Data,
     logic: Box<dyn Logic<Data = Data> + Send + Sync>,
+    logger: Box<dyn Logger>,
   ) -> Self {
     return Self {
       internal: Arc::new(Mutex::new(EngineInternal {
@@ -67,6 +69,7 @@ where
       })),
       threads: Vec::<EngineThread>::new(),
       services: Vec::<Box<dyn Service>>::new(),
+      logger,
     };
   }
 
@@ -100,15 +103,17 @@ where
   /// Start the engine. Will delegate to all services startup methods. Once service startup is complete the work threads (game, render, ...) will be started.
   fn start(&mut self) -> Result<(), &str> {
     super::logger::init();
-    info!("Revving the engine");
+    self.logger.info("Revving the engine".into());
     // Start all the services
     self.change_state(State::Starting);
     for service in self.services.iter_mut() {
-      info!("Starting: {}", service.name());
+      self
+        .logger
+        .info(format!("Starting Service: {}", service.name()));
       service.start().expect("Failed to start service");
     }
     self.change_state(State::Running);
-    info!("Launching simulation");
+    self.logger.info("Launching simulation".into());
     let internal = Arc::clone(&self.internal);
     let fixed_time_step = 16_666_000;
     let mut time_frame = TimeFrame::new(fixed_time_step);
@@ -119,32 +124,53 @@ where
     Ok(())
   }
 
-
   /// Stop the engine core.
   fn pause(&mut self) -> Result<(), &str> {
+    let mut internal = self.internal.lock().unwrap();
+    internal.state = State::Pausing;
     // Pause the Engine Threads
     for thread in self.threads.iter_mut() {
       thread.pause();
     }
+    internal.state = State::Paused;
+    Ok(())
+  }
+
+  /// Stop the engine core.
+  fn unpause(&mut self) -> Result<(), &str> {
+    let mut internal = self.internal.lock().unwrap();
+    internal.state = State::Unpausing;
+    // Pause the Engine Threads
+    for thread in self.threads.iter_mut() {
+      thread.unpause();
+    }
+    internal.state = State::Running;
     Ok(())
   }
 
   /// Stop the engine core.
   fn stop(&mut self) -> Result<(), &str> {
-    self.change_state(State::Stopping);
+    let mut internal = self.internal.lock().unwrap();
+    if internal.state == State::Stopped {
+      return Ok(());
+    }
+    internal.state = State::Stopping;
 
     // Kill the Engine Threads
     for thread in self.threads.iter_mut() {
       thread.stop();
     }
 
-    info!("Killing the engine");
+    self.logger.info("Killing the engine".into());
     for service in self.services.iter_mut() {
-      info!("Stopping: {}", service.name());
+      self
+        .logger
+        .info(format!("Stopping service: {}", service.name()));
       service.stop().expect("Failed to stop service");
     }
-    self.change_state(State::Stopped);
-    info!("Engine stopped");
+    internal.state = State::Stopped;
+    self.logger.info("Engine stopped".into());
+    self.threads.clear();
     Ok(())
   }
 }

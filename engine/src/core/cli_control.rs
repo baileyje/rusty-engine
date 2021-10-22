@@ -1,21 +1,27 @@
-use termwiz::caps::Capabilities;
-use termwiz::cell::AttributeChange;
-use termwiz::color::{AnsiColor, ColorAttribute, RgbColor};
-use termwiz::input::*;
-use termwiz::surface::Change;
-use termwiz::terminal::buffered::BufferedTerminal;
-use termwiz::terminal::{SystemTerminal, Terminal};
-use termwiz::widgets::layout::{ChildOrientation, Constraints};
-use termwiz::widgets::*;
-use termwiz::Error;
+use std::sync::{mpsc::Receiver, Arc, Mutex};
+use termwiz::{
+  caps::Capabilities,
+  cell::AttributeChange,
+  color::{AnsiColor, ColorAttribute, RgbColor},
+  input::{InputEvent, KeyCode, KeyEvent},
+  surface::Change,
+  terminal::{buffered::BufferedTerminal, SystemTerminal, Terminal},
+  widgets::{
+    layout::{ChildOrientation, Constraints},
+    CursorShapeAndPosition, RenderArgs, Ui, UpdateArgs, Widget, WidgetEvent,
+  },
+  Error,
+};
 
-use std::sync::{Arc, Mutex};
-
-use super::control::{Control, Controllable};
+use super::{
+  control::{Control, Controllable},
+  logger::LogMessage,
+};
 
 struct Internal {
   running: bool,
   controllable: Box<dyn Controllable>,
+  log_data: Vec<String>,
 }
 
 impl Internal {
@@ -23,13 +29,15 @@ impl Internal {
     Self {
       running: true,
       controllable: controllable,
+      log_data: Vec::<String>::new(),
     }
   }
 
   pub fn handle_command(&mut self, command: String) {
-    println!("Handle command: {}", command);
     if command == "stop" {
       self.controllable.stop().unwrap();
+    }
+    if command == "exit" {
       self.running = false;
     }
     if command == "start" {
@@ -37,6 +45,9 @@ impl Internal {
     }
     if command == "pause" {
       self.controllable.pause().unwrap();
+    }
+    if command == "unpause" {
+      self.controllable.unpause().unwrap();
     }
   }
 }
@@ -46,27 +57,18 @@ pub struct CliControl<'a> {
   internal: Arc<Mutex<Internal>>,
   ui: Ui<'a>,
   buff: BufferedTerminal<SystemTerminal>,
+  log_recv: Receiver<LogMessage>,
 }
 
 impl<'a> Control for CliControl<'a> {
-  // fn on_state_change(&mut self, new_state: State) {
-  //   self.internal.lock().unwrap().state = new_state;
-  // }
-  // fn on_event(&mut self, _: std::string::String) {
-  //   todo!()
-  // }
-
   // Start the control system. Listen for commands until we see `stop`
   fn start(&mut self) {
-    // {
-    //   self.internal.lock().unwrap().controllable.start().expect("Could not start controllable");
-    // }
     self.run().unwrap();
   }
 }
 
 impl<'a> CliControl<'a> {
-  pub fn new(controllable: Box<dyn Controllable>) -> Self {
+  pub fn new(controllable: Box<dyn Controllable>, log_recv: Receiver<LogMessage>) -> Self {
     let caps = Capabilities::new_from_env().expect("Unable to get capabilities");
     let terminal = SystemTerminal::new(caps).expect("Could not get terminal");
 
@@ -77,14 +79,14 @@ impl<'a> CliControl<'a> {
       ui: Ui::new(),
       buff,
       internal: Arc::new(Mutex::new(Internal::new(controllable))),
+      log_recv,
     };
 
     let root_id = instance.ui.set_root(MainScreen::new());
-    // let log = LogData::new(&log_data);
-    // ui.add_child(root_id, log);
+    let log = LogData::new(Arc::clone(&instance.internal));
+    instance.ui.add_child(root_id, log);
     let input = CommandInput::new(Arc::clone(&instance.internal));
     let buffer_id = instance.ui.add_child(root_id, input);
-    
     let status_line = StatusLine::new(Arc::clone(&instance.internal));
     instance.ui.add_child(root_id, status_line);
     instance.ui.set_focus(buffer_id);
@@ -92,12 +94,18 @@ impl<'a> CliControl<'a> {
     instance
   }
 
-
   pub fn run(&mut self) -> Result<(), Error> {
-    println!("CLI Run");
     loop {
-      if !self.internal.lock().unwrap().running {
-        return Ok(())
+      // Flush log and ensure still running
+      {
+        let mut internal = self.internal.lock().unwrap();
+        if let Ok(msg) = self.log_recv.try_recv() {
+          // println!("Message: {:?}", msg);
+          internal.log_data.push(msg.message);
+        }
+        if !internal.running {
+          return Ok(());
+        }
       }
       self.ui.process_event_queue()?;
       if self.ui.render_to_screen(&mut self.buff)? {
@@ -127,25 +135,22 @@ impl<'a> CliControl<'a> {
               .buff
               .add_change(Change::ClearScreen(Default::default()));
             self.buff.flush()?;
-            self.internal.lock().unwrap().handle_command(String::from("stop"));
+            self.internal.lock().unwrap().controllable.stop().unwrap();
             break;
           }
           input @ _ => {
             self.ui.queue_event(WidgetEvent::Input(input));
           }
         },
-        Ok(None) => {
-        }
+        Ok(None) => {}
         Err(e) => {
           print!("{:?}\r\n", e);
           break;
         }
       }
-      // }
     }
     Ok(())
   }
-
 }
 
 struct MainScreen {}
@@ -172,29 +177,29 @@ impl Widget for MainScreen {
 }
 
 /// This is the main text input area for the app
-struct LogData<'a> {
-  /// Holds the input text that we wish the widget to display
-  text: &'a String,
+struct LogData {
+  control: Arc<Mutex<Internal>>,
 }
 
-impl<'a> LogData<'a> {
-  /// Initialize the widget with the input text
-  pub fn new(text: &'a String) -> Self {
-    Self { text }
+impl LogData {
+  pub fn new(control: Arc<Mutex<Internal>>) -> Self {
+    Self { control }
   }
 }
 
-impl<'a> Widget for LogData<'a> {
+impl Widget for LogData {
   /// Draw ourselves into the surface provided by RenderArgs
   fn render(&mut self, args: &mut RenderArgs) {
     args
       .surface
       .add_change(Change::ClearScreen(AnsiColor::Black.into()));
-    args.surface.add_change(self.text);
+    args
+      .surface
+      .add_change(&self.control.lock().unwrap().log_data.join("\r\n"));
   }
 
-  fn get_size_constraints(&self) -> layout::Constraints {
-    let c = layout::Constraints::default();
+  fn get_size_constraints(&self) -> Constraints {
+    let c = Constraints::default();
     c
   }
 }
@@ -218,6 +223,14 @@ impl Widget for CommandInput {
   fn process_event(&mut self, event: &WidgetEvent, _args: &mut UpdateArgs) -> bool {
     match event {
       WidgetEvent::Input(InputEvent::Key(KeyEvent {
+        key: KeyCode::Backspace,
+        ..
+      })) => {
+        if self.text.len() > 0 {
+          self.text.remove(self.text.len() - 1);
+        }
+      }
+      WidgetEvent::Input(InputEvent::Key(KeyEvent {
         key: KeyCode::Char(c),
         ..
       })) => self.text.push(*c),
@@ -225,7 +238,11 @@ impl Widget for CommandInput {
         key: KeyCode::Enter,
         ..
       })) => {
-        self.control.lock().unwrap().handle_command(self.text.clone());
+        self
+          .control
+          .lock()
+          .unwrap()
+          .handle_command(self.text.clone());
         self.text.clear();
       }
       WidgetEvent::Input(InputEvent::Paste(s)) => {
@@ -253,7 +270,7 @@ impl Widget for CommandInput {
           AnsiColor::Purple.into(),
         ),
       )));
-    args.surface.add_change(self.text.clone());
+    args.surface.add_change(format!("> {}", self.text.clone()));
 
     // Place the cursor at the end of the text.
     // A more advanced text editing widget would manage the
@@ -265,8 +282,8 @@ impl Widget for CommandInput {
     };
   }
 
-  fn get_size_constraints(&self) -> layout::Constraints {
-    let mut c = layout::Constraints::default();
+  fn get_size_constraints(&self) -> Constraints {
+    let mut c = Constraints::default();
     c.set_fixed_height(1);
     c
   }
@@ -295,8 +312,8 @@ impl Widget for StatusLine {
       .add_change(format!("Engine Status: {:?}", state));
   }
 
-  fn get_size_constraints(&self) -> layout::Constraints {
-    let mut c = layout::Constraints::default();
+  fn get_size_constraints(&self) -> Constraints {
+    let mut c = Constraints::default();
     c.set_fixed_height(1);
     c
   }
