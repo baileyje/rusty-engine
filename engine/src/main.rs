@@ -1,5 +1,6 @@
 use engine::core::Control;
-use engine::core::{CliControl, Engine, Frame, Logic, Service};
+use engine::core::logger::ChannelLogger;
+use engine::core::{CliControl, Engine, Frame, Logic, Service,};
 
 struct TestService {}
 
@@ -26,15 +27,15 @@ impl Logic for TestLogic {
     // println!("on_update");
   }
   fn on_fixed_update(&mut self, frame: Frame<'_, String>) {
-    print!(".");
+    // print!(".");
   }
 }
 
 fn main() {
   let service_one = TestService {};
-  let mut engine = Engine::new(String::from("foo"), Box::new(TestLogic {}));
+  let (logger, log_recv) = ChannelLogger::new();
+  let mut engine = Engine::new(String::from("foo"), Box::new(TestLogic {}), Box::new(logger));
   engine.add(Box::new(service_one));
-
-  let mut control = CliControl::new(Box::new(engine));
+  let mut control = CliControl::new(Box::new(engine), log_recv);
   control.start();
 }

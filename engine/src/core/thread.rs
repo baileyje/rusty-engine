@@ -1,11 +1,13 @@
 use std::sync::mpsc::{channel, Sender};
 use std::thread::{spawn, JoinHandle};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 /// Managed thread used within the Engine. These threads represent
 #[derive(Debug)]
 pub enum ThreadCommand {
   Stop,
   Pause,
+  Unpause,
 }
 
 pub struct EngineThread {
@@ -22,23 +24,29 @@ impl EngineThread {
     W: FnMut() -> () + Send,
   {
     let (sender, receiver) = channel::<ThreadCommand>();
-    let instance = Self {
-      handle: Some(spawn(move || loop {
-        if let Ok(msg) = receiver.try_recv() {
-          match msg {
-            ThreadCommand::Stop => {
-              println!("Received message: {:?}", msg);
-              return;
-            },
-            ThreadCommand::Pause => {
-              continue;
-            }
-          }
-        }
-        work();
-      })),
+    let mut instance = Self {
+      handle: None,
       sender,
     };
+    let paused = AtomicBool::new(false);
+    instance.handle = Some(spawn(move || loop {
+      if let Ok(msg) = receiver.try_recv() {
+        match msg {
+          ThreadCommand::Stop => {
+            return;
+          }
+          ThreadCommand::Pause => {
+            paused.store(true, Ordering::Relaxed);
+          }
+          ThreadCommand::Unpause => {
+            paused.store(false, Ordering::Relaxed);
+          }
+        }
+      }
+      if !paused.load(Ordering::Relaxed) {
+        work();
+      }
+    }));
     instance
   }
 
@@ -55,6 +63,11 @@ impl EngineThread {
   /// Pause the thread.
   pub fn pause(&self) {
     self.send(ThreadCommand::Pause);
+  }
+
+  /// Pause the thread.
+  pub fn unpause(&self) {
+    self.send(ThreadCommand::Unpause);
   }
 
   /// Join the calling thread to the underlying thread.
