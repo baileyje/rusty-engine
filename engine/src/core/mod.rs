@@ -2,9 +2,9 @@ pub mod engine;
 pub mod frame;
 pub mod service;
 pub mod cli_control;
+pub mod logger;
 
 mod control;
-mod logger;
 mod state;
 mod thread;
 

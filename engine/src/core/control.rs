@@ -13,6 +13,8 @@ pub trait Controllable {
   fn start(&mut self) -> Result<(), &str>;
   /// Pause the component.
   fn pause(&mut self) -> Result<(), &str>;
+  /// Unpause the component.
+  fn unpause(&mut self) -> Result<(), &str>;
   /// Stop the component.
   fn stop(&mut self) -> Result<(), &str>;
   /// Get the current component state.
