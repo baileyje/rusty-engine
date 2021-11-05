@@ -15,20 +15,19 @@ use termwiz::{
   Error,
 };
 
-use super::{
-  control::{Control, Controllable},
-  logger::LogMessage,
-  state::State
+use rusty_engine::core::{
+  control::{Control, EngineControl},
+  logger::LogMessage
 };
 
 struct Internal {
   running: bool,
-  controllable: Box<dyn Controllable>,
+  controllable: Box<dyn EngineControl>,
   log_data: Vec<String>,
 }
 
 impl Internal {
-  pub fn new(controllable: Box<dyn Controllable>) -> Self {
+  pub fn new(controllable: Box<dyn EngineControl>) -> Self {
     Self {
       running: true,
       controllable: controllable,
@@ -71,7 +70,7 @@ impl<'a> Control for CliControl<'a> {
 }
 
 impl<'a> CliControl<'a> {
-  pub fn new(controllable: Box<dyn Controllable>, log_recv: Receiver<LogMessage>) -> Self {
+  pub fn new(controllable: Box<dyn EngineControl>, log_recv: Receiver<LogMessage>) -> Self {
     let caps = Capabilities::new_from_env().expect("Unable to get capabilities");
     let terminal = SystemTerminal::new(caps).expect("Could not get terminal");
 
@@ -313,9 +312,6 @@ impl Widget for CommandInput {
   }
 }
 
-struct Status {
-  state: State
-}
 
 // This is a little status line widget that we render at the bottom
 struct StatusLine {
