@@ -5,11 +5,14 @@ use std::time::{Duration, Instant};
 /// 
 /// 
 pub struct Frame<'a, Data> {
+  /// The current frame time info
   pub time: TimeFrame,
+  /// The current frame's data
   pub data: &'a mut Data,
 } 
 
 impl<'a, Data> Frame<'a, Data> {
+  /// Construct a new instance with a timeframe and data reference.
   pub fn new(time: TimeFrame, data: &'a mut Data) -> Self {
     return Self { time, data };
   }
@@ -64,6 +67,7 @@ impl TimeFrame {
     }
   }
 
+  /// Determine whether this frame has accumulated enough delta for a fixed frame.
   pub fn has_fixed(&self) -> bool {
     self.accumulator >= self.fixed_time_step
   }

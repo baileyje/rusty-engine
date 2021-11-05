@@ -1,6 +1,4 @@
-use engine::core::Control;
-use engine::core::logger::ChannelLogger;
-use engine::core::{CliControl, Engine, Frame, Logic, Service,};
+use engine::core::{logger::{ChannelLogger}, CliControl, Control, Engine, Frame, Logic, Service, context::Context};
 
 struct TestService {}
 
@@ -23,18 +21,23 @@ struct TestLogic {}
 impl Logic for TestLogic {
   type Data = String;
 
-  fn on_update(&mut self, frame: Frame<'_, String>) {
+  fn on_update(&mut self, frame: Frame<'_, String>, ctx: Context) {
     // println!("on_update");
   }
-  fn on_fixed_update(&mut self, frame: Frame<'_, String>) {
+  fn on_fixed_update(&mut self, frame: Frame<'_, String>, ctx: Context) {
     // print!(".");
+    ctx.logger.info("Fixed.".into());
   }
 }
 
 fn main() {
   let service_one = TestService {};
-  let (logger, log_recv) = ChannelLogger::new();
-  let mut engine = Engine::new(String::from("foo"), Box::new(TestLogic {}), Box::new(logger));
+  let (logger, log_recv) = ChannelLogger::with_receiver();
+  let mut engine = Engine::new(
+    String::from("foo"),
+    Box::new(TestLogic {}),
+    Box::new(logger),
+  );
   engine.add(Box::new(service_one));
   let mut control = CliControl::new(Box::new(engine), log_recv);
   control.start();
