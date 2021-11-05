@@ -8,7 +8,7 @@ pub trait Control {
 }
 
 /// Trait describing a controllable component. This will generally be an Engine instance.
-pub trait Controllable {
+pub trait EngineControl {
   /// Start the component.
   fn start(&mut self) -> Result<(), &str>;
   /// Pause the component.
