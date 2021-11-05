@@ -1,16 +1,13 @@
 use std::{
-  sync::{
-    mpsc::{channel, Sender},
-    Arc, Mutex,
-  },
+  sync::{ Arc, Mutex, },
   vec::Vec,
 };
 
 use super::{
   context::Context,
-  control::Controllable,
+  control::EngineControl,
   frame::{Frame, TimeFrame},
-  logger::{LogMessage, Logger, ChannelLogger},
+  logger::{Logger},
   service::Service,
   state::State,
   thread::EngineThread,
@@ -42,15 +39,13 @@ impl<Data> EngineInternal<Data> {
     let mut time_frame = time_frame.next();
     while time_frame.has_fixed() {
       time_frame.increment_fixed();
-      self.logic.on_fixed_update(
-        Frame::new(time_frame, &mut self.data),
-        Context::new(logger),
-      );
+      self
+        .logic
+        .on_fixed_update(Frame::new(time_frame, &mut self.data), Context::new(logger));
     }
-    self.logic.on_update(
-      Frame::new(time_frame, &mut self.data),
-      Context::new(logger),
-    );
+    self
+      .logic
+      .on_update(Frame::new(time_frame, &mut self.data), Context::new(logger));
     time_frame
   }
 }
@@ -60,7 +55,7 @@ pub struct Engine<Data> {
   internal: Arc<Mutex<EngineInternal<Data>>>,
   threads: Vec<EngineThread>,
   services: Vec<Box<dyn Service>>,
-  logger: Box<dyn Logger>
+  logger: Box<dyn Logger>,
 }
 
 impl<'a, Data: 'static> Engine<Data>
@@ -81,7 +76,7 @@ where
       })),
       threads: Vec::<EngineThread>::new(),
       services: Vec::<Box<dyn Service>>::new(),
-      logger
+      logger,
     };
   }
 
@@ -99,7 +94,7 @@ where
   }
 }
 
-impl<'a, Data: 'static> Controllable for Engine<Data>
+impl<'a, Data: 'static> EngineControl for Engine<Data>
 where
   Data: Send,
 {
@@ -128,10 +123,7 @@ where
 
     // let thread_log_send_clone = thread_log_send.clone();
     self.threads.push(EngineThread::spawn(move |logger| {
-      time_frame = internal
-        .lock()
-        .unwrap()
-        .engine_tick(time_frame, logger);
+      time_frame = internal.lock().unwrap().engine_tick(time_frame, logger);
       std::thread::sleep(std::time::Duration::from_millis(1));
     }));
     Ok(())

@@ -1,4 +1,6 @@
-use engine::core::{logger::{ChannelLogger}, CliControl, Control, Engine, Frame, Logic, Service, context::Context};
+use rusty_engine::core::{logger::{ChannelLogger}, Engine, Frame, Logic, Service, context::Context, control::Control};
+
+use rusty_cli::cli::{CliControl};
 
 struct TestService {}
 
