@@ -1,36 +1,71 @@
 use std::sync::mpsc::{channel, Receiver, Sender};
 
+#[derive(Debug)]
+pub enum Level {
+  Debug,
+  Info,
+  Warn,
+  Error,
+}
+
+impl Level {
+  fn string(&self) -> String {
+    match self {
+      Level::Debug => "DEBUG",
+      Level::Info => "INFO",
+      Level::Warn => "WARN",
+      Level::Error => "ERROR",
+    }
+    .into()
+  }
+}
+
 pub trait Logger {
-  fn debug(&self, message: String);
-  fn info(&self, message: String);
-  fn warn(&self, message: String);
-  fn error(&self, message: String);
+  
+  fn debug(&self, message: String) {
+    self.log(LogMessage {
+      level: Level::Debug,
+      message,
+    });
+  }
+
+  fn info(&self, message: String) {
+    self.log(LogMessage {
+      level: Level::Info,
+      message,
+    });
+  }
+
+  fn warn(&self, message: String) {
+    self.log(LogMessage {
+      level: Level::Warn,
+      message,
+    });
+  }
+
+  fn error(&self, message: String) {
+    self.log(LogMessage {
+      level: Level::Error,
+      message,
+    });
+  }
+
+  fn log(&self, message: LogMessage);
 }
 
 pub struct JankyLogger {}
 
 impl Logger for JankyLogger {
-  fn debug(&self, message: String) {
-    println!("DEBUG - {}", message);
+  fn log(&self, message: LogMessage) {
+    println!("{} - {}", message.level.string(), message.message);
   }
 
-  fn info(&self, message: String) {
-    println!("INFO - {}", message);
-  }
-
-  fn warn(&self, message: String) {
-    println!("WARN - {}", message);
-  }
-
-  fn error(&self, message: String) {
-    println!("ERROR - {}", message);
-  }
 }
 
 #[derive(Debug)]
 pub struct LogMessage {
-  pub level: String,
-  pub message: String
+  pub level: Level,
+  pub message: String,
 }
 
 pub struct ChannelLogger {
@@ -38,27 +73,19 @@ pub struct ChannelLogger {
 }
 
 impl ChannelLogger {
-  pub fn new() -> (Self, Receiver<LogMessage>) {
+  pub fn new(sender: Sender<LogMessage>) -> Self {
+    return Self { sender };
+  }
+
+  pub fn with_receiver() -> (Self, Receiver<LogMessage>) {
     let (sender, receiver) = channel();
-    return (Self { sender }, receiver);
+    return (Self::new(sender), receiver);
   }
 }
 
 impl Logger for ChannelLogger {
-  fn debug(&self, message: String) {
-    self.sender.send(LogMessage{ level: "DEBUG".into(), message} ).unwrap();
-  }
-
-  fn info(&self, message: String) {
-    self.sender.send(LogMessage{ level: "INFO".into(), message} ).unwrap();
-  }
-
-  fn warn(&self, message: String) {
-    self.sender.send(LogMessage{ level: "WARN".into(), message} ).unwrap();
-  }
-
-  fn error(&self, message: String) {
-    self.sender.send(LogMessage{ level: "ERROR".into(), message} ).unwrap();
+  fn log(&self, message: LogMessage) {
+    self.sender.send(message).unwrap();
   }
 }
 

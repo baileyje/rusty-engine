@@ -19,4 +19,7 @@ pub trait Controllable {
   fn stop(&mut self) -> Result<(), &str>;
   /// Get the current component state.
   fn state(&self) -> State;
+
+  /// Flush any log data
+  fn flush(&self);
 }

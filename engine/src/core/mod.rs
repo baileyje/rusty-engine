@@ -3,6 +3,7 @@ pub mod frame;
 pub mod service;
 pub mod cli_control;
 pub mod logger;
+pub mod context;
 
 mod control;
 mod state;

@@ -1,12 +1,20 @@
-use std::sync::{Arc, Mutex};
-use std::vec::Vec;
+use std::{
+  sync::{
+    mpsc::{channel, Sender},
+    Arc, Mutex,
+  },
+  vec::Vec,
+};
 
-use super::control::Controllable;
-use super::frame::{Frame, TimeFrame};
-use super::logger::Logger;
-use super::service::Service;
-use super::state::State;
-use super::thread::EngineThread;
+use super::{
+  context::Context,
+  control::Controllable,
+  frame::{Frame, TimeFrame},
+  logger::{LogMessage, Logger, ChannelLogger},
+  service::Service,
+  state::State,
+  thread::EngineThread,
+};
 
 /// Primary Logic for the engine. Broken into `on_update` and `on_fixed_update` . The `on_update` function will be called on every frame of the engin and has non-deterministic timing.
 /// The `on_fixed_update` is called on a fixed interval for time sensitive functionality. Depending on the work performed in each phase there may be multiple updates per fixed update
@@ -15,10 +23,10 @@ pub trait Logic {
   type Data;
 
   /// Called on every frame of the engine.
-  fn on_update(&mut self, frame: Frame<Self::Data>);
+  fn on_update(&mut self, frame: Frame<Self::Data>, context: Context);
 
   /// Called on a fixed frame based on the engine's fixed update interval.
-  fn on_fixed_update(&mut self, frame: Frame<Self::Data>);
+  fn on_fixed_update(&mut self, frame: Frame<Self::Data>, context: Context);
 }
 
 /// Internal protected state of the engine.
@@ -30,15 +38,19 @@ struct EngineInternal<Data> {
 
 impl<Data> EngineInternal<Data> {
   /// Called on every tick (loop) of the engine's primary logic thread.
-  fn engine_tick(&mut self, time_frame: TimeFrame) -> TimeFrame {
+  fn engine_tick<'a>(&mut self, time_frame: TimeFrame, logger: &'a dyn Logger) -> TimeFrame {
     let mut time_frame = time_frame.next();
     while time_frame.has_fixed() {
       time_frame.increment_fixed();
-      self
-        .logic
-        .on_fixed_update(Frame::new(time_frame, &mut self.data));
+      self.logic.on_fixed_update(
+        Frame::new(time_frame, &mut self.data),
+        Context::new(logger),
+      );
     }
-    self.logic.on_update(Frame::new(time_frame, &mut self.data));
+    self.logic.on_update(
+      Frame::new(time_frame, &mut self.data),
+      Context::new(logger),
+    );
     time_frame
   }
 }
@@ -48,7 +60,7 @@ pub struct Engine<Data> {
   internal: Arc<Mutex<EngineInternal<Data>>>,
   threads: Vec<EngineThread>,
   services: Vec<Box<dyn Service>>,
-  logger: Box<dyn Logger>,
+  logger: Box<dyn Logger>
 }
 
 impl<'a, Data: 'static> Engine<Data>
@@ -69,13 +81,8 @@ where
       })),
       threads: Vec::<EngineThread>::new(),
       services: Vec::<Box<dyn Service>>::new(),
-      logger,
+      logger
     };
-  }
-
-  /// Change the internal engine state.
-  fn change_state(&mut self, new_state: State) {
-    self.internal.lock().unwrap().state = new_state;
   }
 
   /// Add a new service to the engine.
@@ -102,23 +109,29 @@ where
 
   /// Start the engine. Will delegate to all services startup methods. Once service startup is complete the work threads (game, render, ...) will be started.
   fn start(&mut self) -> Result<(), &str> {
-    super::logger::init();
+    // super::logger::init();
+    let mut internal = self.internal.lock().unwrap();
     self.logger.info("Revving the engine".into());
     // Start all the services
-    self.change_state(State::Starting);
+    internal.state = State::Starting;
     for service in self.services.iter_mut() {
       self
         .logger
         .info(format!("Starting Service: {}", service.name()));
       service.start().expect("Failed to start service");
     }
-    self.change_state(State::Running);
+    internal.state = State::Running;
     self.logger.info("Launching simulation".into());
     let internal = Arc::clone(&self.internal);
     let fixed_time_step = 16_666_000;
     let mut time_frame = TimeFrame::new(fixed_time_step);
-    self.threads.push(EngineThread::spawn(move || {
-      time_frame = internal.lock().unwrap().engine_tick(time_frame);
+
+    // let thread_log_send_clone = thread_log_send.clone();
+    self.threads.push(EngineThread::spawn(move |logger| {
+      time_frame = internal
+        .lock()
+        .unwrap()
+        .engine_tick(time_frame, logger);
       std::thread::sleep(std::time::Duration::from_millis(1));
     }));
     Ok(())
@@ -128,6 +141,7 @@ where
   fn pause(&mut self) -> Result<(), &str> {
     let mut internal = self.internal.lock().unwrap();
     internal.state = State::Pausing;
+    self.logger.info("Pausing the engine".into());
     // Pause the Engine Threads
     for thread in self.threads.iter_mut() {
       thread.pause();
@@ -140,6 +154,7 @@ where
   fn unpause(&mut self) -> Result<(), &str> {
     let mut internal = self.internal.lock().unwrap();
     internal.state = State::Unpausing;
+    self.logger.info("Unpausing the engine".into());
     // Pause the Engine Threads
     for thread in self.threads.iter_mut() {
       thread.unpause();
@@ -173,36 +188,12 @@ where
     self.threads.clear();
     Ok(())
   }
-}
 
-#[cfg(test)]
-mod tests {
-  use super::*;
-
-  #[test]
-  fn test_start() {
-    // let mut core = Engine::<String>::new(String::from("foo"));
-    // core.start().expect("Failed to start core");
-    // assert!(core.state == State::Running);
-  }
-
-  #[test]
-  fn test_start_with_service() {
-    // let mut core = Engine::<String>::new(String::from("foo"));
-    // let service = Service::new(String::from("Some Service"));
-    // core.add(service);
-    // core.start().expect("Failed to start core");
-    // assert!(core.services[0].state == State::Running);
-  }
-
-  #[test]
-  fn test_start_with_two_services() {
-    // let mut core = Engine::<String>::new(String::from("foo"));
-    // let service_one = Service::new(String::from("First Service"));
-    // let service_two = Service::new(String::from("Second Service"));
-    // core.add(service_one).add(service_two);
-    // core.start().expect("Failed to start core");
-    // assert!(core.services[0].state == State::Running);
-    // assert!(core.services[1].state == State::Running);
+  fn flush(&self) {
+    for thread in self.threads.iter() {
+      while let Ok(msg) = thread.log_receiver.try_recv() {
+        self.logger.info(format!("{:?}", msg));
+      }
+    }
   }
 }

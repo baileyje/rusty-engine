@@ -1,4 +1,6 @@
-use std::sync::{mpsc::Receiver, Arc, Mutex};
+use std::sync::{mpsc::Receiver};
+use std::cell::RefCell;
+use std::rc::Rc;
 use termwiz::{
   caps::Capabilities,
   cell::AttributeChange,
@@ -16,6 +18,7 @@ use termwiz::{
 use super::{
   control::{Control, Controllable},
   logger::LogMessage,
+  state::State
 };
 
 struct Internal {
@@ -54,7 +57,7 @@ impl Internal {
 
 /// Temporary engine control mechanism.
 pub struct CliControl<'a> {
-  internal: Arc<Mutex<Internal>>,
+  internal: Rc<RefCell<Internal>>,
   ui: Ui<'a>,
   buff: BufferedTerminal<SystemTerminal>,
   log_recv: Receiver<LogMessage>,
@@ -74,23 +77,27 @@ impl<'a> CliControl<'a> {
 
     let mut buff = BufferedTerminal::new(terminal).expect("Unable to get buffered terminal");
     buff.terminal().set_raw_mode().unwrap();
+    
+    let internal = Rc::new(RefCell::new(Internal::new(controllable)));
 
-    let mut instance = Self {
-      ui: Ui::new(),
+    let mut ui = Ui::new();
+
+    let root_id = ui.set_root(MainScreen::new());
+    let log = LogData::new(Rc::clone(&internal));
+    ui.add_child(root_id, log);
+    let input = CommandInput::new(Rc::clone(&internal));
+    let buffer_id = ui.add_child(root_id, input);
+    let status_line = StatusLine::new(Rc::clone(&internal));
+    ui.add_child(root_id, status_line);
+    ui.set_focus(buffer_id);
+
+    let instance = Self {
+      ui,
       buff,
-      internal: Arc::new(Mutex::new(Internal::new(controllable))),
-      log_recv,
+      internal,
+      log_recv
     };
-
-    let root_id = instance.ui.set_root(MainScreen::new());
-    let log = LogData::new(Arc::clone(&instance.internal));
-    instance.ui.add_child(root_id, log);
-    let input = CommandInput::new(Arc::clone(&instance.internal));
-    let buffer_id = instance.ui.add_child(root_id, input);
-    let status_line = StatusLine::new(Arc::clone(&instance.internal));
-    instance.ui.add_child(root_id, status_line);
-    instance.ui.set_focus(buffer_id);
-
+    
     instance
   }
 
@@ -98,14 +105,19 @@ impl<'a> CliControl<'a> {
     loop {
       // Flush log and ensure still running
       {
-        let mut internal = self.internal.lock().unwrap();
+        // Flush any log data out of the controllable
+        self.internal.borrow().controllable.flush();
         if let Ok(msg) = self.log_recv.try_recv() {
-          // println!("Message: {:?}", msg);
-          internal.log_data.push(msg.message);
+          self.internal.borrow_mut().log_data.push(msg.message);
+          let len = self.internal.borrow().log_data.len();
+          if len >= 30 {
+            let new_log_data = self.internal.borrow_mut().log_data.split_off(len - 30);
+            self.internal.borrow_mut().log_data = new_log_data;
+          }
         }
-        if !internal.running {
+        if !self.internal.borrow().running {
           return Ok(());
-        }
+        }        
       }
       self.ui.process_event_queue()?;
       if self.ui.render_to_screen(&mut self.buff)? {
@@ -135,7 +147,7 @@ impl<'a> CliControl<'a> {
               .buff
               .add_change(Change::ClearScreen(Default::default()));
             self.buff.flush()?;
-            self.internal.lock().unwrap().controllable.stop().unwrap();
+            self.internal.borrow_mut().controllable.stop().unwrap();
             break;
           }
           input @ _ => {
@@ -178,11 +190,11 @@ impl Widget for MainScreen {
 
 /// This is the main text input area for the app
 struct LogData {
-  control: Arc<Mutex<Internal>>,
+  control: Rc<RefCell<Internal>>,
 }
 
 impl LogData {
-  pub fn new(control: Arc<Mutex<Internal>>) -> Self {
+  pub fn new(control: Rc<RefCell<Internal>>) -> Self {
     Self { control }
   }
 }
@@ -190,12 +202,25 @@ impl LogData {
 impl Widget for LogData {
   /// Draw ourselves into the surface provided by RenderArgs
   fn render(&mut self, args: &mut RenderArgs) {
+    // TODO: Summarize the data....
+    let mut log_out = String::new();
+    let len = self.control.borrow().log_data.len();
+    let to_skip = 0;
+    // if len > 30 {
+    //   to_skip = len - 10;
+    // }
+    // let to_log = control.log_data[std::cmp::max(0, len - 10)..];
+    for msg in self.control.borrow().log_data.iter().skip(to_skip) {
+      log_out.push_str(msg);
+      log_out.push_str("\r\n");
+    }
+    log_out.push_str(format!("{}\r\n", len).as_str());
     args
       .surface
       .add_change(Change::ClearScreen(AnsiColor::Black.into()));
     args
       .surface
-      .add_change(&self.control.lock().unwrap().log_data.join("\r\n"));
+      .add_change(log_out);
   }
 
   fn get_size_constraints(&self) -> Constraints {
@@ -206,12 +231,12 @@ impl Widget for LogData {
 
 struct CommandInput {
   text: String,
-  control: Arc<Mutex<Internal>>,
+  control: Rc<RefCell<Internal>>,
 }
 
 impl CommandInput {
   /// Initialize the widget with the input text
-  pub fn new(control: Arc<Mutex<Internal>>) -> Self {
+  pub fn new(control: Rc<RefCell<Internal>>) -> Self {
     Self {
       text: String::new(),
       control,
@@ -240,8 +265,7 @@ impl Widget for CommandInput {
       })) => {
         self
           .control
-          .lock()
-          .unwrap()
+          .borrow_mut()
           .handle_command(self.text.clone());
         self.text.clear();
       }
@@ -289,13 +313,17 @@ impl Widget for CommandInput {
   }
 }
 
+struct Status {
+  state: State
+}
+
 // This is a little status line widget that we render at the bottom
 struct StatusLine {
-  control: Arc<Mutex<Internal>>,
+  control: Rc<RefCell<Internal>>,
 }
 
 impl StatusLine {
-  pub fn new(control: Arc<Mutex<Internal>>) -> Self {
+  pub fn new(control: Rc<RefCell<Internal>>) -> Self {
     Self { control }
   }
 }
@@ -306,10 +334,9 @@ impl Widget for StatusLine {
     args
       .surface
       .add_change(Change::ClearScreen(AnsiColor::Grey.into()));
-    let state = self.control.lock().unwrap().controllable.state();
     args
       .surface
-      .add_change(format!("Engine Status: {:?}", state));
+      .add_change(format!("Engine Status: {:?}", self.control.borrow().controllable.state()));
   }
 
   fn get_size_constraints(&self) -> Constraints {
