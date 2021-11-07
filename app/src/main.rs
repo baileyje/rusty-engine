@@ -27,8 +27,8 @@ impl Logic for TestLogic {
     // println!("on_update");
   }
   fn on_fixed_update(&mut self, frame: Frame<'_, String>, ctx: Context) {
-    // print!(".");
-    ctx.logger.info("Fixed.".into());
+    print!(".");
+    // ctx.logger.info("Fixed.".into());
   }
 }
 
