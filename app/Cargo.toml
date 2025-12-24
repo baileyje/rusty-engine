@@ -4,7 +4,6 @@ version = "0.1.0"
 edition = "2018"
 
 [dependencies]
-rustyline = "9.0.0"
-termwiz = {version = "0.13.0", features = ["widgets"] }
 rusty_engine = { path = "../engine" }
 rusty_cli = { path = "../cli" }
+log = { version = "0.4.29", features = ["std"] }
