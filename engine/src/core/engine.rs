@@ -1,191 +1,128 @@
-use std::{
-  sync::{ Arc, Mutex, },
-  vec::Vec,
-};
+use std::vec::Vec;
 
-use super::{
-  context::Context,
-  control::EngineControl,
-  frame::{Frame, TimeFrame},
-  logger::{Logger},
-  service::Service,
-  state::State,
-  thread::EngineThread,
-};
+use crossbeam::channel::Receiver;
+use log::{info, warn};
 
-/// Primary Logic for the engine. Broken into `on_update` and `on_fixed_update` . The `on_update` function will be called on every frame of the engin and has non-deterministic timing.
-/// The `on_fixed_update` is called on a fixed interval for time sensitive functionality. Depending on the work performed in each phase there may be multiple updates per fixed update
-/// or vice versa. There is no strong correlation between the two.
-pub trait Logic {
-  type Data;
+use crate::core::context::Context;
+use crate::core::control::{Control, EngineCommand};
+use crate::core::service::NoOpService;
+use crate::core::time::ONE_FPS;
+use crate::core::{Logic, Time};
 
-  /// Called on every frame of the engine.
-  fn on_update(&mut self, frame: Frame<Self::Data>, context: Context);
-
-  /// Called on a fixed frame based on the engine's fixed update interval.
-  fn on_fixed_update(&mut self, frame: Frame<Self::Data>, context: Context);
-}
-
-/// Internal protected state of the engine.
-struct EngineInternal<Data> {
-  state: State,
-  data: Data,
-  logic: Box<dyn Logic<Data = Data> + Send + Sync>,
-}
-
-impl<Data> EngineInternal<Data> {
-  /// Called on every tick (loop) of the engine's primary logic thread.
-  fn engine_tick<'a>(&mut self, time_frame: TimeFrame, logger: &'a dyn Logger) -> TimeFrame {
-    let mut time_frame = time_frame.next();
-    while time_frame.has_fixed() {
-      time_frame.increment_fixed();
-      self
-        .logic
-        .on_fixed_update(Frame::new(time_frame, &mut self.data), Context::new(logger));
-    }
-    self
-      .logic
-      .on_update(Frame::new(time_frame, &mut self.data), Context::new(logger));
-    time_frame
-  }
-}
+use super::runner::{no_op, Runner};
+use super::{service::Service, state::State};
 
 /// The engine's core structure. This structure holds all the services required for the engine to run.
-pub struct Engine<Data> {
-  internal: Arc<Mutex<EngineInternal<Data>>>,
-  threads: Vec<EngineThread>,
-  services: Vec<Box<dyn Service>>,
-  logger: Box<dyn Logger>,
+pub struct Engine {
+    state: State,
+    services: Vec<Box<dyn Service>>,
+    runner: Runner,
+    time: Time,
+    // Optional receiver for control commands.
+    control_receiver: Option<Receiver<EngineCommand>>,
+    // Not sure this belongs in the engine, track the usage to see if
+    // there is a more sensical place.
+    pub logic: Box<dyn Logic>,
 }
 
-impl<'a, Data: 'static> Engine<Data>
-where
-  Data: Send,
-{
-  /// Construct a new Core instance with default parameters.
-  pub fn new(
-    data: Data,
-    logic: Box<dyn Logic<Data = Data> + Send + Sync>,
-    logger: Box<dyn Logger>,
-  ) -> Self {
-    return Self {
-      internal: Arc::new(Mutex::new(EngineInternal {
-        data,
-        state: State::Dead,
-        logic,
-      })),
-      threads: Vec::<EngineThread>::new(),
-      services: Vec::<Box<dyn Service>>::new(),
-      logger,
-    };
-  }
-
-  /// Add a new service to the engine.
-  pub fn add(&mut self, service: Box<dyn Service>) -> &mut Engine<Data> {
-    self.services.push(service);
-    self
-  }
-
-  /// Join all the engine threads to ensure the outer thread waits for the engines execution.
-  pub fn join(&mut self) {
-    for thread in self.threads.iter_mut() {
-      thread.join();
-    }
-  }
-}
-
-impl<'a, Data: 'static> EngineControl for Engine<Data>
-where
-  Data: Send,
-{
-  fn state(&self) -> State {
-    self.internal.lock().unwrap().state.clone()
-  }
-
-  /// Start the engine. Will delegate to all services startup methods. Once service startup is complete the work threads (game, render, ...) will be started.
-  fn start(&mut self) -> Result<(), &str> {
-    // super::logger::init();
-    let mut internal = self.internal.lock().unwrap();
-    self.logger.info("Revving the engine".into());
-    // Start all the services
-    internal.state = State::Starting;
-    for service in self.services.iter_mut() {
-      self
-        .logger
-        .info(format!("Starting Service: {}", service.name()));
-      service.start().expect("Failed to start service");
-    }
-    internal.state = State::Running;
-    self.logger.info("Launching simulation".into());
-    let internal = Arc::clone(&self.internal);
-    let fixed_time_step = 16_666_000;
-    let mut time_frame = TimeFrame::new(fixed_time_step);
-
-    // let thread_log_send_clone = thread_log_send.clone();
-    self.threads.push(EngineThread::spawn(move |logger| {
-      time_frame = internal.lock().unwrap().engine_tick(time_frame, logger);
-      std::thread::sleep(std::time::Duration::from_millis(1));
-    }));
-    Ok(())
-  }
-
-  /// Stop the engine core.
-  fn pause(&mut self) -> Result<(), &str> {
-    let mut internal = self.internal.lock().unwrap();
-    internal.state = State::Pausing;
-    self.logger.info("Pausing the engine".into());
-    // Pause the Engine Threads
-    for thread in self.threads.iter_mut() {
-      thread.pause();
-    }
-    internal.state = State::Paused;
-    Ok(())
-  }
-
-  /// Stop the engine core.
-  fn unpause(&mut self) -> Result<(), &str> {
-    let mut internal = self.internal.lock().unwrap();
-    internal.state = State::Unpausing;
-    self.logger.info("Unpausing the engine".into());
-    // Pause the Engine Threads
-    for thread in self.threads.iter_mut() {
-      thread.unpause();
-    }
-    internal.state = State::Running;
-    Ok(())
-  }
-
-  /// Stop the engine core.
-  fn stop(&mut self) -> Result<(), &str> {
-    let mut internal = self.internal.lock().unwrap();
-    if internal.state == State::Stopped {
-      return Ok(());
-    }
-    internal.state = State::Stopping;
-
-    // Kill the Engine Threads
-    for thread in self.threads.iter_mut() {
-      thread.stop();
+impl Engine {
+    /// Construct a new Core instance with default parameters.
+    pub fn new(runner: Runner, logic: Box<dyn Logic>) -> Self {
+        Self {
+            state: State::Dead,
+            services: Vec::<Box<dyn Service>>::new(),
+            runner,
+            // TODO: How would we want to configure this?
+            time: Time::new(ONE_FPS),
+            control_receiver: None,
+            logic,
+        }
     }
 
-    self.logger.info("Killing the engine".into());
-    for service in self.services.iter_mut() {
-      self
-        .logger
-        .info(format!("Stopping service: {}", service.name()));
-      service.stop().expect("Failed to stop service");
+    /// Add a new service to the engine.
+    pub fn add(&mut self, service: Box<dyn Service>) -> &mut Engine {
+        self.services.push(service);
+        self
     }
-    internal.state = State::Stopped;
-    self.logger.info("Engine stopped".into());
-    self.threads.clear();
-    Ok(())
-  }
 
-  fn flush(&self) {
-    for thread in self.threads.iter() {
-      while let Ok(msg) = thread.log_receiver.try_recv() {
-        self.logger.info(format!("{:?}", msg));
-      }
+    /// Get the state of the engine.
+    pub fn state(&self) -> State {
+        self.state
     }
-  }
+
+    /// Start the engine. Will delegate to all services startup methods before invoking the runner.
+    pub fn start(&mut self) -> Result<(), &str> {
+        info!("Revving the engine");
+        // Start all the services. Temporarily replace them with NoOpService to get mutable access.
+        self.state = State::Starting;
+        for i in 0..self.services.len() {
+            let mut service = std::mem::replace(&mut self.services[i], Box::new(NoOpService));
+            info!("Starting Service: {}", service.name());
+            service.start(self).expect("Failed to start service");
+            self.services[i] = service;
+        }
+        self.state = State::Running;
+        // Invoke the runner. This will likely block the thread until some outside influence stops
+        // the service. For now this may not be possible since the runner will own the engine.
+        let runner = std::mem::replace(&mut self.runner, Box::new(no_op));
+        runner(self);
+        Ok(())
+    }
+
+    /// Update the engine core. This will advance the time frame and invoke the logic updates.
+    pub fn update(&mut self) -> bool {
+        // If we have a control receiver, check for any commands.
+        if let Some(receiver) = &self.control_receiver {
+            // Process any pending control commands.
+            while let Ok(cmd) = receiver.try_recv() {
+                info!("Received engine command: {:?}", cmd);
+                if let EngineCommand::Stop = cmd {
+                    self.stop().expect("Failed to stop engine");
+                    return false;
+                } else {
+                    warn!("Unknown engine command received: {:?}", cmd);
+                }
+            }
+        }
+
+        // Make sure we are still in a running state.
+        if self.state != State::Running {
+            return false;
+        }
+        // Advance the engine time.
+        self.time = self.time.next();
+        // If there are fixed updates to process, do so now.
+        while self.time.has_fixed() {
+            self.time.increment_fixed();
+            self.logic.on_fixed_update(Context::new(self.time));
+        }
+        // Run th per-frame update.
+        self.logic.on_update(Context::new(self.time));
+        true
+    }
+
+    /// Stop the engine core.
+    pub fn stop(&mut self) -> Result<(), &str> {
+        if self.state == State::Stopped {
+            return Ok(());
+        }
+        self.state = State::Stopping;
+
+        info!("Killing the engine");
+        for i in 0..self.services.len() {
+            let mut service = std::mem::replace(&mut self.services[i], Box::new(NoOpService));
+            info!("Stopping Service: {}", service.name());
+            service.stop(self).expect("Failed to stop service");
+            self.services[i] = service;
+        }
+        self.state = State::Stopped;
+        info!("Engine stopped");
+        Ok(())
+    }
+
+    pub fn control(&mut self) -> Control {
+        let (send, recv) = crossbeam::channel::unbounded();
+        self.control_receiver = Some(recv);
+        Control::new(send)
+    }
 }

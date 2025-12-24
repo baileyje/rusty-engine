@@ -1,343 +1,263 @@
-use std::sync::{mpsc::Receiver};
-use std::cell::RefCell;
-use std::rc::Rc;
-use termwiz::{
-  caps::Capabilities,
-  cell::AttributeChange,
-  color::{AnsiColor, ColorAttribute, RgbColor},
-  input::{InputEvent, KeyCode, KeyEvent},
-  surface::Change,
-  terminal::{buffered::BufferedTerminal, SystemTerminal, Terminal},
-  widgets::{
-    layout::{ChildOrientation, Constraints},
-    CursorShapeAndPosition, RenderArgs, Ui, UpdateArgs, Widget, WidgetEvent,
-  },
-  Error,
+use crossbeam::channel::Receiver;
+use crossterm::{
+    event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode},
+    execute,
+    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
-
-use rusty_engine::core::{
-  control::{Control, EngineControl},
-  logger::LogMessage
+use std::error::Error;
+use std::io;
+use std::time::{Duration, Instant};
+use tui::{
+    backend::{Backend, CrosstermBackend},
+    layout::{Alignment, Constraint, Direction, Layout},
+    style::{Color, Style},
+    widgets::{Block, BorderType, Borders, Paragraph},
+    Frame, Terminal,
 };
+use unicode_width::UnicodeWidthStr;
 
-struct Internal {
-  running: bool,
-  controllable: Box<dyn EngineControl>,
-  log_data: Vec<String>,
-}
+use rusty_engine::core::log::LogMessage;
+use rusty_engine::core::Control;
 
-impl Internal {
-  pub fn new(controllable: Box<dyn EngineControl>) -> Self {
-    Self {
-      running: true,
-      controllable: controllable,
-      log_data: Vec::<String>::new(),
-    }
-  }
-
-  pub fn handle_command(&mut self, command: String) {
-    if command == "stop" {
-      self.controllable.stop().unwrap();
-    }
-    if command == "exit" {
-      self.running = false;
-    }
-    if command == "start" {
-      self.controllable.start().unwrap();
-    }
-    if command == "pause" {
-      self.controllable.pause().unwrap();
-    }
-    if command == "unpause" {
-      self.controllable.unpause().unwrap();
-    }
-  }
+enum InputMode {
+    Normal,
+    Editing,
 }
 
 /// Temporary engine control mechanism.
-pub struct CliControl<'a> {
-  internal: Rc<RefCell<Internal>>,
-  ui: Ui<'a>,
-  buff: BufferedTerminal<SystemTerminal>,
-  log_recv: Receiver<LogMessage>,
+pub struct CliControl {
+    running: bool,
+    log_recv: Receiver<LogMessage>,
+    control: Control,
+    log_data: Vec<String>,
+    input: String,
+    input_mode: InputMode,
+    last_tick: Instant,
 }
 
-impl<'a> Control for CliControl<'a> {
-  // Start the control system. Listen for commands until we see `stop`
-  fn start(&mut self) {
-    self.run().unwrap();
-  }
-}
+impl CliControl {
+    pub fn new(log_recv: Receiver<LogMessage>, control: Control) -> Self {
+        Self {
+            running: false,
+            log_recv,
+            control,
+            log_data: Vec::<String>::new(),
+            input: String::new(),
+            input_mode: InputMode::Normal,
+            last_tick: Instant::now(),
+        }
+    }
 
-impl<'a> CliControl<'a> {
-  pub fn new(controllable: Box<dyn EngineControl>, log_recv: Receiver<LogMessage>) -> Self {
-    let caps = Capabilities::new_from_env().expect("Unable to get capabilities");
-    let terminal = SystemTerminal::new(caps).expect("Could not get terminal");
+    pub fn run(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        self.running = true;
 
-    let mut buff = BufferedTerminal::new(terminal).expect("Unable to get buffered terminal");
-    buff.terminal().set_raw_mode().unwrap();
-    
-    let internal = Rc::new(RefCell::new(Internal::new(controllable)));
+        let mut terminal = setup_terminal()?;
 
-    let mut ui = Ui::new();
+        loop {
+            self.flush_logs();
 
-    let root_id = ui.set_root(MainScreen::new());
-    let log = LogData::new(Rc::clone(&internal));
-    ui.add_child(root_id, log);
-    let input = CommandInput::new(Rc::clone(&internal));
-    let buffer_id = ui.add_child(root_id, input);
-    let status_line = StatusLine::new(Rc::clone(&internal));
-    ui.add_child(root_id, status_line);
-    ui.set_focus(buffer_id);
+            if !self.running {
+                println!("Exiting CLI Control");
+                break;
+            }
+            terminal.draw(|rect| render(rect, self))?;
 
-    let instance = Self {
-      ui,
-      buff,
-      internal,
-      log_recv
-    };
-    
-    instance
-  }
+            self.poll_events()?;
+        }
 
-  pub fn run(&mut self) -> Result<(), Error> {
-    loop {
-      // Flush log and ensure still running
-      {
-        // Flush any log data out of the controllable
-        self.internal.borrow().controllable.flush();
+        // restore terminal
+        resetore_terminal(terminal)?;
+
+        Ok(())
+    }
+
+    fn flush_logs(&mut self) {
         if let Ok(msg) = self.log_recv.try_recv() {
-          self.internal.borrow_mut().log_data.push(msg.message);
-          let len = self.internal.borrow().log_data.len();
-          if len >= 30 {
-            let new_log_data = self.internal.borrow_mut().log_data.split_off(len - 30);
-            self.internal.borrow_mut().log_data = new_log_data;
-          }
+            self.log_data.push(msg.message);
+            let len = self.log_data.len();
+            if len >= 30 {
+                let new_log_data = self.log_data.split_off(len - 30);
+                self.log_data = new_log_data;
+            }
         }
-        if !self.internal.borrow().running {
-          return Ok(());
-        }        
-      }
-      self.ui.process_event_queue()?;
-      if self.ui.render_to_screen(&mut self.buff)? {
-        continue;
-      }
-      self.buff.flush()?;
-      // Wait for user input
-      match self
-        .buff
-        .terminal()
-        .poll_input(Some(std::time::Duration::new(0, 0)))
-      {
-        Ok(Some(InputEvent::Resized { rows, cols })) => {
-          // FIXME: this is working around a bug where we don't realize
-          // that we should redraw everything on resize in BufferedTerminal.
-          self
-            .buff
-            .add_change(Change::ClearScreen(Default::default()));
-          self.buff.resize(cols, rows);
-        }
-        Ok(Some(input)) => match input {
-          InputEvent::Key(KeyEvent {
-            key: KeyCode::Escape,
-            ..
-          }) => {
-            self
-              .buff
-              .add_change(Change::ClearScreen(Default::default()));
-            self.buff.flush()?;
-            self.internal.borrow_mut().controllable.stop().unwrap();
-            break;
-          }
-          input @ _ => {
-            self.ui.queue_event(WidgetEvent::Input(input));
-          }
-        },
-        Ok(None) => {}
-        Err(e) => {
-          print!("{:?}\r\n", e);
-          break;
-        }
-      }
     }
+
+    fn poll_events(&mut self) -> Result<bool, Box<dyn std::error::Error>> {
+        let tick_rate = Duration::from_millis(20);
+        let timeout = tick_rate
+            .checked_sub(self.last_tick.elapsed())
+            .unwrap_or_else(|| Duration::from_secs(0));
+        if event::poll(timeout)? {
+            if let Event::Key(key) = event::read()? {
+                match self.input_mode {
+                    InputMode::Normal => match key.code {
+                        KeyCode::Char(':') => {
+                            self.input_mode = InputMode::Editing;
+                        }
+                        KeyCode::Char('s') => {
+                            self.control.start();
+                        }
+                        KeyCode::Char('p') => {
+                            self.control.pause();
+                        }
+                        KeyCode::Char('u') => {
+                            self.control.unpause();
+                        }
+                        KeyCode::Char('q') => {
+                            self.stop();
+                            return Ok(false);
+                        }
+                        _ => {}
+                    },
+                    InputMode::Editing => match key.code {
+                        KeyCode::Enter => {
+                            let cmd_str = std::mem::take(&mut self.input);
+                            match cmd_str.as_str() {
+                                "stop" => self.stop(),
+                                "start" => self.control.start(),
+                                "pause" => self.control.pause(),
+                                "unpause" => self.control.unpause(),
+                                "clear" => self.log_data.clear(),
+                                "exit" => self.stop(),
+                                _ => (),
+                            }
+                        }
+                        KeyCode::Char(c) => {
+                            self.input.push(c);
+                        }
+                        KeyCode::Backspace => {
+                            self.input.pop();
+                        }
+                        KeyCode::Esc => {
+                            self.input_mode = InputMode::Normal;
+                        }
+                        _ => {}
+                    },
+                }
+            }
+        }
+        if self.last_tick.elapsed() >= tick_rate {
+            self.last_tick = Instant::now();
+        }
+        Ok(true)
+    }
+
+    fn stop(&mut self) {
+        self.running = false;
+        self.control.stop();
+    }
+}
+
+fn resetore_terminal(
+    mut terminal: Terminal<CrosstermBackend<io::Stdout>>,
+) -> Result<(), Box<dyn Error + 'static>> {
+    disable_raw_mode()?;
+    execute!(
+        terminal.backend_mut(),
+        LeaveAlternateScreen,
+        DisableMouseCapture
+    )?;
+    terminal.show_cursor()?;
     Ok(())
-  }
 }
 
-struct MainScreen {}
+fn render<B: Backend>(rect: &mut Frame<B>, cli: &CliControl) {
+    let size = rect.size();
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        // .margin(1)
+        .constraints(
+            [
+                Constraint::Length(3),
+                Constraint::Min(1),
+                Constraint::Length(3),
+            ]
+            .as_ref(),
+        )
+        .split(size);
 
-impl MainScreen {
-  pub fn new() -> Self {
-    Self {}
-  }
+    render_status(rect, chunks[0]);
+
+    render_output(rect, cli, chunks[1]);
+
+    render_input(rect, cli, chunks[2]);
 }
 
-impl Widget for MainScreen {
-  fn render(&mut self, args: &mut RenderArgs) {
-    args
-      .surface
-      .add_change(Change::ClearScreen(AnsiColor::White.into()));
-  }
-
-  fn get_size_constraints(&self) -> Constraints {
-    // Switch from default horizontal layout to vertical layout
-    let mut c = Constraints::default();
-    c.child_orientation = ChildOrientation::Vertical;
-    c
-  }
+fn render_status<B: Backend>(rect: &mut Frame<'_, B>, chunk: tui::layout::Rect) {
+    let status_block = Paragraph::new(format!(
+        "Engine Status: {:?}",
+        // self.internal.borrow().controllable.state()
+        "Unknown"
+    ))
+    .style(Style::default().fg(Color::LightCyan))
+    .alignment(Alignment::Left)
+    .block(
+        Block::default()
+            .borders(Borders::ALL)
+            .style(Style::default().fg(Color::White))
+            .title("Engine Status")
+            .border_type(BorderType::Plain),
+    );
+    rect.render_widget(status_block, chunk);
 }
 
-/// This is the main text input area for the app
-struct LogData {
-  control: Rc<RefCell<Internal>>,
-}
-
-impl LogData {
-  pub fn new(control: Rc<RefCell<Internal>>) -> Self {
-    Self { control }
-  }
-}
-
-impl Widget for LogData {
-  /// Draw ourselves into the surface provided by RenderArgs
-  fn render(&mut self, args: &mut RenderArgs) {
-    // TODO: Summarize the data....
-    let mut log_out = String::new();
-    let len = self.control.borrow().log_data.len();
-    let to_skip = 0;
-    // if len > 30 {
-    //   to_skip = len - 10;
-    // }
-    // let to_log = control.log_data[std::cmp::max(0, len - 10)..];
-    for msg in self.control.borrow().log_data.iter().skip(to_skip) {
-      log_out.push_str(msg);
-      log_out.push_str("\r\n");
+fn render_output<B: Backend>(rect: &mut Frame<'_, B>, cli: &CliControl, chunk: tui::layout::Rect) {
+    let mut output = String::new();
+    for msg in cli.log_data.iter() {
+        output.push_str(msg);
+        output.push_str("\r\n");
     }
-    log_out.push_str(format!("{}\r\n", len).as_str());
-    args
-      .surface
-      .add_change(Change::ClearScreen(AnsiColor::Black.into()));
-    args
-      .surface
-      .add_change(log_out);
-  }
+    let output_block = Paragraph::new(output.clone())
+        .style(Style::default().fg(Color::White))
+        .alignment(Alignment::Left)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .style(Style::default().fg(Color::White))
+                .title("Output")
+                .border_type(BorderType::Plain),
+        );
 
-  fn get_size_constraints(&self) -> Constraints {
-    let c = Constraints::default();
-    c
-  }
+    rect.render_widget(output_block, chunk);
 }
 
-struct CommandInput {
-  text: String,
-  control: Rc<RefCell<Internal>>,
-}
-
-impl CommandInput {
-  /// Initialize the widget with the input text
-  pub fn new(control: Rc<RefCell<Internal>>) -> Self {
-    Self {
-      text: String::new(),
-      control,
-    }
-  }
-}
-
-impl Widget for CommandInput {
-  fn process_event(&mut self, event: &WidgetEvent, _args: &mut UpdateArgs) -> bool {
-    match event {
-      WidgetEvent::Input(InputEvent::Key(KeyEvent {
-        key: KeyCode::Backspace,
-        ..
-      })) => {
-        if self.text.len() > 0 {
-          self.text.remove(self.text.len() - 1);
+fn render_input<B: Backend>(rect: &mut Frame<'_, B>, cli: &CliControl, chunk: tui::layout::Rect) {
+    match cli.input_mode {
+        InputMode::Editing => {
+            let input_block = Paragraph::new(cli.input.clone())
+                .style(Style::default().fg(Color::LightCyan))
+                .alignment(Alignment::Left)
+                .block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .style(Style::default().fg(Color::White))
+                        .title("Input")
+                        .border_type(BorderType::Plain),
+                );
+            rect.render_widget(input_block, chunk);
+            rect.set_cursor(
+                // Put cursor past the end of the input text
+                chunk.x + cli.input.width() as u16 + 1,
+                // Move one line down, from the border to the input line
+                chunk.y + 1,
+            )
         }
-      }
-      WidgetEvent::Input(InputEvent::Key(KeyEvent {
-        key: KeyCode::Char(c),
-        ..
-      })) => self.text.push(*c),
-      WidgetEvent::Input(InputEvent::Key(KeyEvent {
-        key: KeyCode::Enter,
-        ..
-      })) => {
-        self
-          .control
-          .borrow_mut()
-          .handle_command(self.text.clone());
-        self.text.clear();
-      }
-      WidgetEvent::Input(InputEvent::Paste(s)) => {
-        self.text.push_str(&s);
-      }
-      _ => {}
+        InputMode::Normal => {
+            let help_block = Paragraph::new("Press ':' to enter command mode. 's' to start, 'p' pause, 'u' to unpause, 'q' to quit.")
+                .style(Style::default().fg(Color::LightCyan))
+                .alignment(Alignment::Left)
+                .block(Block::default().borders(Borders::ALL));
+            rect.render_widget(help_block, chunk);
+        }
     }
-
-    true // handled it all
-  }
-
-  /// Draw ourselves into the surface provided by RenderArgs
-  fn render(&mut self, args: &mut RenderArgs) {
-    args.surface.add_change(Change::ClearScreen(
-      ColorAttribute::TrueColorWithPaletteFallback(
-        RgbColor::new(0x31, 0x1B, 0x92),
-        AnsiColor::Black.into(),
-      ),
-    ));
-    args
-      .surface
-      .add_change(Change::Attribute(AttributeChange::Foreground(
-        ColorAttribute::TrueColorWithPaletteFallback(
-          RgbColor::new(0xB3, 0x88, 0xFF),
-          AnsiColor::Purple.into(),
-        ),
-      )));
-    args.surface.add_change(format!("> {}", self.text.clone()));
-
-    // Place the cursor at the end of the text.
-    // A more advanced text editing widget would manage the
-    // cursor position differently.
-    *args.cursor = CursorShapeAndPosition {
-      coords: args.surface.cursor_position().into(),
-      shape: termwiz::surface::CursorShape::SteadyBar,
-      ..Default::default()
-    };
-  }
-
-  fn get_size_constraints(&self) -> Constraints {
-    let mut c = Constraints::default();
-    c.set_fixed_height(1);
-    c
-  }
 }
 
-
-// This is a little status line widget that we render at the bottom
-struct StatusLine {
-  control: Rc<RefCell<Internal>>,
-}
-
-impl StatusLine {
-  pub fn new(control: Rc<RefCell<Internal>>) -> Self {
-    Self { control }
-  }
-}
-
-impl Widget for StatusLine {
-  /// Draw ourselves into the surface provided by RenderArgs
-  fn render(&mut self, args: &mut RenderArgs) {
-    args
-      .surface
-      .add_change(Change::ClearScreen(AnsiColor::Grey.into()));
-    args
-      .surface
-      .add_change(format!("Engine Status: {:?}", self.control.borrow().controllable.state()));
-  }
-
-  fn get_size_constraints(&self) -> Constraints {
-    let mut c = Constraints::default();
-    c.set_fixed_height(1);
-    c
-  }
+fn setup_terminal() -> Result<Terminal<CrosstermBackend<io::Stdout>>, Box<dyn Error + 'static>> {
+    enable_raw_mode().expect("can run in raw mode");
+    let mut stdout = io::stdout();
+    execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
+    let backend = CrosstermBackend::new(stdout);
+    let mut terminal = Terminal::new(backend)?;
+    terminal.clear()?;
+    Ok(terminal)
 }
