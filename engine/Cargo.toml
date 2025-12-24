@@ -6,9 +6,5 @@ edition = "2018"
 [lib]
 
 [dependencies]
-env_logger = "0.9"
-log = "0.4"
-crossbeam = "0.8.1"
-signal-hook = "0.3.10"
-rustyline = "9.0.0"
-termwiz = {version = "0.13.0", features = ["widgets"] }
+log = "0.4.29"
+crossbeam = "0.8.4"

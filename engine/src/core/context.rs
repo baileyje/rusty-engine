@@ -1,13 +1,11 @@
-use super::logger::Logger;
+use crate::core::Time;
 
-pub struct Context<'a> {
-  pub logger: &'a dyn Logger
+pub struct Context {
+    pub time: Time,
 }
 
-impl <'a> Context<'a> {
-  pub fn new(logger: &'a dyn Logger) -> Self {
-    return Self {
-      logger
+impl Context {
+    pub fn new(time: Time) -> Self {
+        Self { time }
     }
-  }
 }
