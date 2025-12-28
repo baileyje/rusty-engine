@@ -1,10 +1,12 @@
 [package]
 name = "rusty_engine"
 version = "0.0.1"
-edition = "2018"
+edition = "2024"
 
 [lib]
 
 [dependencies]
 log = "0.4.29"
 crossbeam = "0.8.4"
+rusty_macros = { path = "src/core/ecs/macros" }
+dashmap = "6.1.0"
