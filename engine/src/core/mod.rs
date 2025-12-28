@@ -1,5 +1,6 @@
 pub mod context;
 pub mod control;
+pub mod ecs;
 pub mod engine;
 pub mod log;
 pub mod logic;
