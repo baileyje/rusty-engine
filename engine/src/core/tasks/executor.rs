@@ -1,4 +1,4 @@
-use crossbeam::channel::{unbounded, Receiver, Sender};
+use crossbeam::channel::{Receiver, Sender, unbounded};
 use std::marker::PhantomData;
 use std::thread;
 
@@ -17,6 +17,7 @@ enum Message {
 }
 
 struct Worker {
+    #[allow(dead_code)]
     id: usize,
     handle: Option<thread::JoinHandle<()>>,
 }
@@ -202,17 +203,19 @@ impl Drop for Executor {
 
 impl Worker {
     fn new(id: usize, receiver: crossbeam::channel::Receiver<Message>) -> Self {
-        let handle = thread::spawn(move || loop {
-            match receiver.recv() {
-                Ok(Message::Task(task)) => {
-                    task();
-                }
-                Ok(Message::Shutdown) => {
-                    break;
-                }
-                Err(_) => {
-                    // Channel disconnected, exit
-                    break;
+        let handle = thread::spawn(move || {
+            loop {
+                match receiver.recv() {
+                    Ok(Message::Task(task)) => {
+                        task();
+                    }
+                    Ok(Message::Shutdown) => {
+                        break;
+                    }
+                    Err(_) => {
+                        // Channel disconnected, exit
+                        break;
+                    }
                 }
             }
         });

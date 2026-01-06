@@ -101,6 +101,7 @@ mod tests {
         // Given
         #[derive(Component)]
         struct TestComponent {
+            #[allow(dead_code)]
             value: u32,
         }
 
@@ -127,6 +128,7 @@ mod tests {
         // Given - type that doesn't need drop
         #[derive(Component)]
         struct NoDrop {
+            #[allow(dead_code)]
             value: u32,
         }
 
@@ -187,6 +189,7 @@ mod tests {
         // Given - type that doesn't need drop
         #[derive(Component)]
         struct Simple {
+            #[allow(dead_code)]
             value: u32,
         }
 

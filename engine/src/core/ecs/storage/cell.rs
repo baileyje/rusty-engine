@@ -184,11 +184,11 @@ impl<'a> CellMut<'a> {
     /// # Example
     /// ```ignore
     /// let cell = column.cell_mut(row);
-    /// let pos: &mut Position = cell.as_mut();
+    /// let pos: &mut Position = cell.into_mut();
     /// pos.x += 1.0;
     /// ```
     #[inline]
-    pub fn as_mut<C: component::Component>(self) -> &'a mut C {
+    pub fn into_mut<C: component::Component>(self) -> &'a mut C {
         #[cfg(debug_assertions)]
         ensure_type::<C>(self.info);
 

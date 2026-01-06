@@ -152,7 +152,7 @@
 //!
 //! // Create table for [Position, Velocity] archetype
 //! let spec = component::Spec::new(vec![pos_id, vel_id]);
-//! let mut table = Table::new(spec, &mut registry);
+//! let mut table = Table::new(Id::new(0), spec, &mut registry);
 //!
 //! // Add entity with both components atomically
 //! let mut allocator = entity::Allocator::new();
@@ -253,6 +253,7 @@
 //!
 //! # Future Work
 //! - may add parallel iteration support
+//! - Consider the approach used by Legion ECS to keep all component data in a single allocation and index from archetype into it.
 //!
 //! # Related Documentation
 //!
@@ -269,7 +270,7 @@ pub use location::Location;
 pub use row::Row;
 pub use table::Table;
 
-use crate::core::ecs::{archetype, component};
+use crate::core::ecs::{archetype, component, storage::table::Id};
 
 pub(crate) mod cell;
 pub(crate) mod column;
@@ -277,7 +278,7 @@ pub(crate) mod index;
 pub(crate) mod location;
 pub(crate) mod mem;
 pub(crate) mod row;
-mod table;
+pub(crate) mod table;
 
 /// A collection of tables, each storing entities with a specific component layout.
 #[derive(Default)]
@@ -286,7 +287,7 @@ pub struct Storage {
     tables: Vec<Table>,
 
     /// A map from archetype to table.
-    table_map: HashMap<archetype::Id, usize>,
+    table_map: HashMap<archetype::Id, table::Id>,
 }
 
 impl Storage {
@@ -299,6 +300,22 @@ impl Storage {
         }
     }
 
+    pub fn create(
+        &mut self,
+        archetype: &archetype::Archetype,
+        registry: &component::Registry,
+    ) -> &mut Table {
+        // Grab the index the table will be stored at.
+        let id = table::Id::new(self.tables.len() as u32);
+        // Create a new table from this archetype's components.
+        self.tables
+            .push(Table::new(id, archetype.components().clone(), registry));
+        // Add the table to the map
+        self.table_map.insert(archetype.id(), id);
+        // Return a mutable reference
+        self.get_mut(id)
+    }
+
     /// Get an existing table for the given component spec, or create a new one if it doesn't
     /// exist.
     ///
@@ -307,33 +324,46 @@ impl Storage {
     pub fn get_or_create_table(
         &mut self,
         archetype: &archetype::Archetype,
-        registry: &mut component::Registry,
+        registry: &component::Registry,
     ) -> &mut Table {
-        // If a table already exists for this archtype, return it.
-        if let Some(&index) = self.table_map.get(&archetype.id()) {
-            return &mut self.tables[index];
+        if let Some(id) = self.table_map.get(&archetype.id()) {
+            return self.get_mut(*id);
         }
-        // Grab the index the table will be stored at.
-        let index = self.tables.len();
-        // Create a new table from this archetype's components.
-        self.tables
-            .push(Table::new(archetype.components().clone(), registry));
-        // Map the new table by its archetype.
-        self.table_map.insert(archetype.id(), index);
-        // Return a reference to the new table.
-        &mut self.tables[index]
+        self.create(archetype, registry)
     }
 
-    /// Get an existing table for the archetype, if it exists.
-    pub fn get(&self, archetype_id: archetype::Id) -> Option<&Table> {
-        let index = self.table_map.get(&archetype_id)?;
-        Some(&self.tables[*index])
+    /// Get an existing table by id, if it exists, otherwise panic.
+    ///     
+    /// # Panics
+    /// - if the id is out of bounds
+    pub fn get(&self, table_id: Id) -> &Table {
+        assert!(
+            table_id.index() < self.tables.len(),
+            "table id out of bounds"
+        );
+        &self.tables[table_id.index()]
     }
 
-    /// Get an existing table for the given archtype, if it exists.
-    pub fn get_mut(&mut self, archetype_id: archetype::Id) -> Option<&mut Table> {
-        let index = self.table_map.get(&archetype_id)?;
-        Some(&mut self.tables[*index])
+    /// Get an existing mutable table, if it exists, otherwise panic.
+    ///
+    /// # Panics
+    /// - if the id is out of bounds
+    pub fn get_mut(&mut self, table_id: Id) -> &mut Table {
+        assert!(
+            table_id.index() < self.tables.len(),
+            "table id out of bounds"
+        );
+        &mut self.tables[table_id.index()]
+    }
+
+    pub fn for_archetype(&mut self, archetype_id: archetype::Id) -> Option<&Table> {
+        let table_id = self.table_map.get(&archetype_id)?;
+        self.tables.get(table_id.index())
+    }
+
+    pub fn for_archetype_mut(&mut self, archetype_id: archetype::Id) -> Option<&mut Table> {
+        let table_id = self.table_map.get(&archetype_id)?;
+        self.tables.get_mut(table_id.index())
     }
 }
 
@@ -342,6 +372,30 @@ mod tests {
     use rusty_macros::Component;
 
     use super::*;
+
+    #[derive(Component)]
+    #[allow(dead_code)]
+    struct Position {
+        x: f32,
+        y: f32,
+    }
+    #[derive(Component)]
+    #[allow(dead_code)]
+    struct Velocity {
+        dx: f32,
+        dy: f32,
+    }
+
+    #[derive(Component)]
+    #[allow(dead_code)]
+    struct Health {
+        hp: i32,
+    }
+
+    fn archetype(id: u32, spec: &component::Spec) -> archetype::Archetype {
+        let id = archetype::Id::new(id);
+        archetype::Archetype::new(id, spec.clone())
+    }
 
     #[test]
     fn storage_new_is_empty() {
@@ -360,22 +414,16 @@ mod tests {
     #[test]
     fn get_or_create_table_creates_new_table() {
         // Given
-        #[derive(Component)]
-        struct Position {
-            x: f32,
-            y: f32,
-        }
-
         let mut storage = Storage::new();
-        let mut component_registry = component::Registry::new();
-        let mut archetype_registry = archetype::Registry::new();
+        let component_registry = component::Registry::new();
 
         let pos_id = component_registry.register::<Position>();
         let spec = component::Spec::new(vec![pos_id]);
-        let archetype = archetype_registry.get_or_create(spec);
+
+        let archetype = archetype(0, &spec);
 
         // When
-        let table = storage.get_or_create_table(archetype, &mut component_registry);
+        let table = storage.get_or_create_table(&archetype, &component_registry);
         let table_len = table.len();
 
         // Then
@@ -388,25 +436,19 @@ mod tests {
     #[test]
     fn get_or_create_table_returns_existing_table() {
         // Given
-        #[derive(Component)]
-        struct Position {
-            x: f32,
-            y: f32,
-        }
-
         let mut storage = Storage::new();
-        let mut component_registry = component::Registry::new();
-        let mut archetype_registry = archetype::Registry::new();
+        let component_registry = component::Registry::new();
 
         let pos_id = component_registry.register::<Position>();
         let spec = component::Spec::new(vec![pos_id]);
-        let archetype = archetype_registry.get_or_create(spec);
+
+        let archetype = archetype(0, &spec);
 
         // Create the table once
-        let _ = storage.get_or_create_table(archetype, &mut component_registry);
+        let _ = storage.get_or_create_table(&archetype, &component_registry);
 
         // When - get it again
-        let table = storage.get_or_create_table(archetype, &mut component_registry);
+        let table = storage.get_or_create_table(&archetype, &component_registry);
         let table_len = table.len();
 
         // Then - should not create a new table
@@ -418,21 +460,9 @@ mod tests {
     #[test]
     fn get_or_create_table_creates_multiple_tables() {
         // Given
-        #[derive(Component)]
-        struct Position {
-            x: f32,
-            y: f32,
-        }
-
-        #[derive(Component)]
-        struct Velocity {
-            dx: f32,
-            dy: f32,
-        }
 
         let mut storage = Storage::new();
-        let mut component_registry = component::Registry::new();
-        let mut archetype_registry = archetype::Registry::new();
+        let component_registry = component::Registry::new();
 
         let pos_id = component_registry.register::<Position>();
         let vel_id = component_registry.register::<Velocity>();
@@ -440,126 +470,106 @@ mod tests {
         let spec1 = component::Spec::new(vec![pos_id]);
         let spec2 = component::Spec::new(vec![pos_id, vel_id]);
 
-        let archetype_id1 = archetype_registry.get_or_create(spec1).id();
-        let archetype_id2 = archetype_registry.get_or_create(spec2).id();
-
-        let archetype1 = archetype_registry.get(archetype_id1).unwrap();
-        let archetype2 = archetype_registry.get(archetype_id2).unwrap();
+        let archetype1 = archetype(0, &spec1);
+        let archetype2 = archetype(1, &spec2);
 
         // When
-        let _ = storage.get_or_create_table(archetype1, &mut component_registry);
-        let _ = storage.get_or_create_table(archetype2, &mut component_registry);
+        let _ = storage.get_or_create_table(&archetype1, &component_registry);
+        let _ = storage.get_or_create_table(&archetype2, &component_registry);
 
         // Then
         assert_eq!(storage.tables.len(), 2);
         assert_eq!(storage.table_map.len(), 2);
-        assert!(storage.table_map.contains_key(&archetype_id1));
-        assert!(storage.table_map.contains_key(&archetype_id2));
+        assert!(storage.table_map.contains_key(&archetype1.id()));
+        assert!(storage.table_map.contains_key(&archetype2.id()));
     }
 
     #[test]
-    fn get_returns_none_for_nonexistent_archetype() {
+    #[should_panic(expected = "table id out of bounds")]
+    fn get_returns_none_for_nonexistent_table_id() {
         // Given
         let storage = Storage::new();
-        let archetype_id = archetype::Id::new(999);
+        let table_id = Id::new(999);
 
         // When
-        let result = storage.get(archetype_id);
-
-        // Then
-        assert!(result.is_none());
+        storage.get(table_id);
     }
 
     #[test]
     fn get_returns_existing_table() {
         // Given
-        #[derive(Component)]
-        struct Position {
-            x: f32,
-            y: f32,
-        }
-
         let mut storage = Storage::new();
-        let mut component_registry = component::Registry::new();
-        let mut archetype_registry = archetype::Registry::new();
+        let component_registry = component::Registry::new();
 
         let pos_id = component_registry.register::<Position>();
         let spec = component::Spec::new(vec![pos_id]);
-        let archetype = archetype_registry.get_or_create(spec);
+        let archetype = archetype(0, &spec);
 
-        let _ = storage.get_or_create_table(archetype, &mut component_registry);
+        let table_id = storage
+            .get_or_create_table(&archetype, &component_registry)
+            .id();
 
         // When
-        let table = storage.get(archetype.id());
+        let table = storage.get(table_id);
 
         // Then
-        assert!(table.is_some());
-        assert_eq!(table.unwrap().len(), 0);
+        assert_eq!(table.len(), 0);
     }
 
     #[test]
-    fn get_mut_returns_none_for_nonexistent_archetype() {
+    #[should_panic(expected = "table id out of bounds")]
+    fn get_mut_panics_for_nonexistent_table_id() {
         // Given
         let mut storage = Storage::new();
-        let archetype_id = archetype::Id::new(999);
 
         // When
-        let result = storage.get_mut(archetype_id);
-
-        // Then
-        assert!(result.is_none());
+        storage.get_mut(Id::new(999));
     }
 
     #[test]
     fn get_mut_returns_existing_table() {
         // Given
-        #[derive(Component)]
-        struct Position {
-            x: f32,
-            y: f32,
-        }
-
         let mut storage = Storage::new();
-        let mut component_registry = component::Registry::new();
-        let mut archetype_registry = archetype::Registry::new();
+        let component_registry = component::Registry::new();
 
         let pos_id = component_registry.register::<Position>();
         let spec = component::Spec::new(vec![pos_id]);
-        let archetype = archetype_registry.get_or_create(spec);
+        let archetype = archetype(0, &spec);
 
-        let _ = storage.get_or_create_table(archetype, &mut component_registry);
+        let table_id = storage
+            .get_or_create_table(&archetype, &component_registry)
+            .id();
 
         // When
-        let table = storage.get_mut(archetype.id());
+        let table = storage.get_mut(table_id);
 
         // Then
-        assert!(table.is_some());
-        assert_eq!(table.unwrap().len(), 0);
+        assert_eq!(table.len(), 0);
+    }
+
+    #[test]
+    fn for_archetype_returns_none_for_nonexistent_archetype() {
+        // Given
+        let mut storage = Storage::new();
+        let component_registry = component::Registry::new();
+
+        let pos_id = component_registry.register::<Position>();
+
+        // Create three different archetypes
+        let spec = component::Spec::new(vec![pos_id]);
+
+        let archetype = archetype(0, &spec);
+
+        // Then
+        assert!(storage.for_archetype(archetype.id()).is_none());
     }
 
     #[test]
     fn storage_handles_different_archetypes_independently() {
         // Given
-        #[derive(Component)]
-        struct Position {
-            x: f32,
-            y: f32,
-        }
-
-        #[derive(Component)]
-        struct Velocity {
-            dx: f32,
-            dy: f32,
-        }
-
-        #[derive(Component)]
-        struct Health {
-            hp: i32,
-        }
 
         let mut storage = Storage::new();
-        let mut component_registry = component::Registry::new();
-        let mut archetype_registry = archetype::Registry::new();
+        let component_registry = component::Registry::new();
 
         let pos_id = component_registry.register::<Position>();
         let vel_id = component_registry.register::<Velocity>();
@@ -570,49 +580,61 @@ mod tests {
         let spec2 = component::Spec::new(vec![pos_id, vel_id]);
         let spec3 = component::Spec::new(vec![pos_id, vel_id, health_id]);
 
-        let archetype_id1 = archetype_registry.get_or_create(spec1).id();
-        let archetype_id2 = archetype_registry.get_or_create(spec2).id();
-        let archetype_id3 = archetype_registry.get_or_create(spec3).id();
-
-        let archetype1 = archetype_registry.get(archetype_id1).unwrap();
-        let archetype2 = archetype_registry.get(archetype_id2).unwrap();
-        let archetype3 = archetype_registry.get(archetype_id3).unwrap();
+        let archetype1 = archetype(0, &spec1);
+        let archetype2 = archetype(1, &spec2);
+        let archetype3 = archetype(2, &spec3);
 
         // When
-        let _ = storage.get_or_create_table(archetype1, &mut component_registry);
-        let _ = storage.get_or_create_table(archetype2, &mut component_registry);
-        let _ = storage.get_or_create_table(archetype3, &mut component_registry);
+        let _ = storage
+            .get_or_create_table(&archetype1, &component_registry)
+            .id();
+        let _ = storage
+            .get_or_create_table(&archetype2, &component_registry)
+            .id();
+        let _ = storage
+            .get_or_create_table(&archetype3, &component_registry)
+            .id();
 
         // Then - all three tables should exist independently
         assert_eq!(storage.tables.len(), 3);
         assert_eq!(storage.table_map.len(), 3);
 
-        assert!(storage.get(archetype_id1).is_some());
-        assert!(storage.get(archetype_id2).is_some());
-        assert!(storage.get(archetype_id3).is_some());
+        assert!(storage.for_archetype(archetype1.id()).is_some());
+        assert!(storage.for_archetype(archetype2.id()).is_some());
+        assert!(storage.for_archetype(archetype3.id()).is_some());
+    }
+
+    #[test]
+    fn for_archetype_mut_returns_none_for_nonexistent_archetype() {
+        // Given
+        let mut storage = Storage::new();
+        let component_registry = component::Registry::new();
+
+        let pos_id = component_registry.register::<Position>();
+
+        // Create three different archetypes
+        let spec = component::Spec::new(vec![pos_id]);
+
+        let archetype = archetype(0, &spec);
+
+        // Then
+        assert!(storage.for_archetype_mut(archetype.id()).is_none());
     }
 
     #[test]
     fn get_or_create_table_idempotent() {
         // Given
-        #[derive(Component)]
-        struct Position {
-            x: f32,
-            y: f32,
-        }
-
         let mut storage = Storage::new();
-        let mut component_registry = component::Registry::new();
-        let mut archetype_registry = archetype::Registry::new();
+        let component_registry = component::Registry::new();
 
         let pos_id = component_registry.register::<Position>();
         let spec = component::Spec::new(vec![pos_id]);
-        let archetype = archetype_registry.get_or_create(spec);
+        let archetype = archetype(0, &spec);
 
         // When - call multiple times
-        let _ = storage.get_or_create_table(archetype, &mut component_registry);
-        let _ = storage.get_or_create_table(archetype, &mut component_registry);
-        let _ = storage.get_or_create_table(archetype, &mut component_registry);
+        let _ = storage.get_or_create_table(&archetype, &component_registry);
+        let _ = storage.get_or_create_table(&archetype, &component_registry);
+        let _ = storage.get_or_create_table(&archetype, &component_registry);
 
         // Then - should still only have one table
         assert_eq!(storage.tables.len(), 1);

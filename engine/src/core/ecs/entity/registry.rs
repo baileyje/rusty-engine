@@ -148,15 +148,18 @@ mod test {
     use crate::core::ecs::{
         archetype,
         entity::{Allocator, Entity, Id, Registry},
-        storage::{self},
+        storage::{self, table},
     };
+
+    fn make_location(id: u32, row: usize) -> storage::Location {
+        storage::Location::new(archetype::Id::new(id), table::Id::new(id), row.into())
+    }
 
     #[test]
     fn entity_spawn_check() {
         // Given
         let mut entities = Registry::default();
         let mut allocator = Allocator::default();
-        let archetype_id = archetype::Id::new(42);
 
         // When - just allocated and not spawned
         let entity = allocator.alloc();
@@ -165,7 +168,7 @@ mod test {
         assert!(!entities.is_spawned(entity));
 
         // When - spawned
-        entities.spawn_at(entity, storage::Location::new(archetype_id, 0.into()));
+        entities.spawn_at(entity, make_location(0, 0));
 
         // Then
         assert!(entities.is_spawned(entity));
@@ -182,9 +185,9 @@ mod test {
         // Given
         let mut entities = Registry::default();
         let mut allocator = Allocator::default();
-        let archetype_id = archetype::Id::new(42);
+
         let entity = allocator.alloc();
-        let location = storage::Location::new(archetype_id, 0.into());
+        let location = make_location(0, 0);
 
         // When
         entities.spawn_at(entity, location);
@@ -198,15 +201,15 @@ mod test {
         // Given
         let mut entities = Registry::default();
         let mut allocator = Allocator::default();
-        let archetype_id = archetype::Id::new(42);
+
         let entity = allocator.alloc();
-        let location = storage::Location::new(archetype_id, 0.into());
+        let location = make_location(0, 0);
 
         // When
         entities.spawn_at(entity, location);
 
         // Then
-        assert_eq!(entities.archetype(entity), Some(archetype_id));
+        assert_eq!(entities.archetype(entity), Some(location.archetype_id()));
     }
 
     #[test]
@@ -214,11 +217,9 @@ mod test {
         // Given
         let mut entities = Registry::default();
         let mut allocator = Allocator::default();
-        let archetype1 = archetype::Id::new(1);
-        let archetype2 = archetype::Id::new(2);
         let entity = allocator.alloc();
-        let location1 = storage::Location::new(archetype1, 0.into());
-        let location2 = storage::Location::new(archetype2, 1.into());
+        let location1 = make_location(0, 1);
+        let location2 = make_location(1, 2);
         entities.spawn_at(entity, location1);
 
         // When
@@ -237,10 +238,9 @@ mod test {
         let mut entities = Registry::default();
         let mut allocator = Allocator::default();
         let entity = allocator.alloc();
-        let location = storage::Location::new(archetype::Id::new(1), 0.into());
 
         // When
-        entities.set_location(entity, location);
+        entities.set_location(entity, make_location(0, 0));
     }
 
     #[test]
@@ -252,7 +252,7 @@ mod test {
         let mut entities = Registry::default();
         let mut allocator = Allocator::default();
         let entity = allocator.alloc();
-        let location = storage::Location::new(archetype::Id::new(1), 0.into());
+        let location = make_location(0, 1);
 
         entities.spawn_at(entity, location);
         entities.despawn(entity);
@@ -266,7 +266,6 @@ mod test {
         // Given
         let mut entities = Registry::default();
         let mut allocator = Allocator::default();
-        let archetype = archetype::Id::new(1);
 
         // When - Create entities with gaps (allocate but don't spawn all)
         let e0 = allocator.alloc(); // Id 0
@@ -274,8 +273,8 @@ mod test {
         let e2 = allocator.alloc(); // Id 2
 
         // Only spawn e0 and e2 (skip e1)
-        entities.spawn_at(e0, storage::Location::new(archetype, 0.into()));
-        entities.spawn_at(e2, storage::Location::new(archetype, 1.into()));
+        entities.spawn_at(e0, make_location(1, 0));
+        entities.spawn_at(e2, make_location(1, 1));
 
         // Then
         assert!(entities.is_spawned(e0));
@@ -290,10 +289,7 @@ mod test {
 
         // When - Spawn entity with high ID
         let high_id_entity = Entity::new(Id(999));
-        entities.spawn_at(
-            high_id_entity,
-            storage::Location::new(archetype::Id::new(1), 0.into()),
-        );
+        entities.spawn_at(high_id_entity, make_location(1, 0));
 
         // Then - Storage should have grown to accommodate
         assert!(entities.entries.len() >= 1000);
@@ -306,10 +302,7 @@ mod test {
         let mut entities = Registry::default();
         let mut allocator = Allocator::default();
         let entity = allocator.alloc();
-        entities.spawn_at(
-            entity,
-            storage::Location::new(archetype::Id::new(1), 0.into()),
-        );
+        entities.spawn_at(entity, make_location(1, 0));
 
         // When - Despawn once
         let result1 = entities.despawn(entity);
@@ -343,7 +336,7 @@ mod test {
         // Given
         let mut entities = Registry::default();
         let mut allocator = Allocator::default();
-        let location = storage::Location::new(archetype::Id::new(1), 0.into());
+        let location = make_location(1, 0);
         let entity = allocator.alloc();
         entities.spawn_at(entity, location);
 
@@ -378,9 +371,9 @@ mod test {
         let e2 = allocator.alloc();
         let e3 = allocator.alloc();
 
-        entities.spawn_at(e1, storage::Location::new(archetype1, 0.into()));
-        entities.spawn_at(e2, storage::Location::new(archetype2, 0.into()));
-        entities.spawn_at(e3, storage::Location::new(archetype3, 0.into()));
+        entities.spawn_at(e1, make_location(1, 0));
+        entities.spawn_at(e2, make_location(2, 0));
+        entities.spawn_at(e3, make_location(3, 0));
 
         // Then
         assert_eq!(entities.archetype(e1), Some(archetype1));
@@ -393,18 +386,17 @@ mod test {
         // Given
         let mut entities = Registry::default();
         let mut allocator = Allocator::default();
-        let archetype1 = archetype::Id::new(1);
         let archetype2 = archetype::Id::new(2);
         let entity = allocator.alloc();
 
         // When - Spawn, despawn, and respawn with different archetype
-        entities.spawn_at(entity, storage::Location::new(archetype1, 0.into()));
+        entities.spawn_at(entity, make_location(1, 0));
         assert!(entities.is_spawned(entity));
 
         entities.despawn(entity);
         assert!(!entities.is_spawned(entity));
 
-        entities.spawn_at(entity, storage::Location::new(archetype2, 0.into()));
+        entities.spawn_at(entity, make_location(2, 0));
 
         // Then - Should be spawned with new archetype
         assert!(entities.is_spawned(entity));

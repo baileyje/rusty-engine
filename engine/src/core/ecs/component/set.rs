@@ -15,31 +15,31 @@ pub trait Target {
 /// hand created.
 pub trait Set: Sized + 'static {
     /// Get the component specification for this set.
-    fn spec(registry: &mut Registry) -> Spec;
+    fn spec(registry: &Registry) -> Spec;
 
     /// Apply the component values in this set to the given target. This takes ownership of self.
-    fn apply<T: Target>(self, registry: &mut Registry, target: &mut T);
+    fn apply<T: Target>(self, registry: &Registry, target: &mut T);
 }
 
 /// Implement Set for single component types.
 impl<C: Component> Set for C {
     /// Get the component specification for this set. Always a single component.
-    fn spec(registry: &mut Registry) -> Spec {
+    fn spec(registry: &Registry) -> Spec {
         let id = registry.register::<C>();
         Spec::new(slice::from_ref(&id))
     }
 
-    fn apply<T: Target>(self, registry: &mut Registry, target: &mut T) {
+    fn apply<T: Target>(self, registry: &Registry, target: &mut T) {
         target.apply::<C>(registry.register::<C>(), self);
     }
 }
 
 impl Set for () {
-    fn spec(_registry: &mut Registry) -> Spec {
+    fn spec(_registry: &Registry) -> Spec {
         Spec::new(Vec::new())
     }
 
-    fn apply<T: Target>(self, _registry: &mut Registry, _target: &mut T) {
+    fn apply<T: Target>(self, _registry: &Registry, _target: &mut T) {
         // No components to apply.
     }
 }
@@ -48,13 +48,13 @@ impl Set for () {
 macro_rules! tuple_set_impl {
     ($(($name: ident, $alias: ident)),*) => {
         impl<$($name: Set),*> Set for ($($name,)*) {
-            fn spec(registry: &mut Registry) -> Spec {
+            fn spec(registry: &Registry) -> Spec {
                 let mut ids = Vec::new();
                 $(ids.extend(<$name as Set>::spec(registry).ids());)*
                 Spec::new(ids)
             }
 
-            fn apply<CT: Target>(self, registry: &mut Registry, target: &mut CT) {
+            fn apply<CT: Target>(self, registry: &Registry, target: &mut CT) {
                 let ( $($alias,)* ) = self;
                 $(<$name as Set>::apply($alias, registry, target);)*
             }

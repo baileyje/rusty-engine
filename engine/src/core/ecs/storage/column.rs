@@ -216,7 +216,7 @@ impl Column {
         if !self.is_row_valid(row) {
             return None;
         }
-        Some(self.cell_mut(row).as_mut())
+        Some(self.cell_mut(row).into_mut())
     }
 
     /// Remove the element at the given index using swap-remove.
@@ -807,6 +807,7 @@ mod tests {
         // Given
         #[derive(Component)]
         struct Position {
+            #[allow(dead_code)]
             x: f32,
         }
 
@@ -952,6 +953,7 @@ mod tests {
     fn column_iterator_exact_size() {
         // Given
         #[derive(Component)]
+        #[allow(dead_code)]
         struct Value(u32);
 
         let registry = component::Registry::new();

@@ -62,7 +62,7 @@ mod registry;
 pub use registry::Registry;
 
 /// Export the reference module for entity references.
-pub use reference::Ref;
+pub use reference::{Ref, RefMut};
 
 /// The generation of an entity, used to track whether an entity is the active entity in a world.
 /// The generation starts at `FIRST` and is incremented each time an entity with the same `id` spawned.
