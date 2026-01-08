@@ -22,6 +22,7 @@ use crate::core::ecs::{entity, storage::row::Row};
 /// assert_eq!(index.get(entity105), Some(2));
 /// assert_eq!(index.get(entity999), None);
 /// ```
+#[allow(dead_code)]
 pub trait Index {
     /// Insert a row for the given entity.
     ///
@@ -126,6 +127,7 @@ pub struct DynamicIndex {
     maps: Vec<Option<Vec<Option<Row>>>>,
 }
 
+#[allow(dead_code)]
 impl DynamicIndex {
     /// Default block size balances memory usage and access speed for typical entity patterns.
     pub const DEFAULT_BLOCK_SIZE: usize = 256;
@@ -277,6 +279,7 @@ pub struct HashIndex {
     map: HashMap<entity::Entity, Row>,
 }
 
+#[allow(dead_code)]
 impl HashIndex {
     /// Create a new empty HashIndex.
     pub fn new() -> Self {
@@ -295,16 +298,19 @@ impl HashIndex {
     }
 
     /// Get the number of entries in the index.
+    #[inline]
     pub fn len(&self) -> usize {
         self.map.len()
     }
 
     /// Check if the index is empty.
+    #[inline]
     pub fn is_empty(&self) -> bool {
         self.map.is_empty()
     }
 
     /// Estimate memory usage in bytes.
+    #[inline]
     pub fn memory_usage(&self) -> usize {
         // Approximate: HashMap capacity * (key + value + overhead)
         // This is a rough estimate, actual overhead varies

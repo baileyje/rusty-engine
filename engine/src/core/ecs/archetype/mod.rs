@@ -1,6 +1,6 @@
 use std::hash::Hash;
 
-use crate::core::ecs::component;
+use crate::core::ecs::{component, storage};
 
 mod registry;
 
@@ -30,10 +30,13 @@ impl Id {
     }
 }
 
-/// An Archetype represents a collection of entities with a a unique combination of components.
+/// An Archetype represents a collection of entities with a unique combination of components.
 pub struct Archetype {
     /// The archetype's unique identifier.
     id: Id,
+
+    /// The id for the table that contains storage for this archetype.
+    table_id: storage::table::Id,
 
     /// The components that make up this archetype.
     components: component::Spec,
@@ -42,8 +45,12 @@ pub struct Archetype {
 impl Archetype {
     /// Create a new Archetype with the given archetype ID
     #[inline]
-    pub const fn new(id: Id, components: component::Spec) -> Self {
-        Self { id, components }
+    pub const fn new(id: Id, components: component::Spec, table_id: storage::table::Id) -> Self {
+        Self {
+            id,
+            table_id,
+            components,
+        }
     }
 
     /// Get the Id of this archetype.
@@ -52,9 +59,21 @@ impl Archetype {
         self.id
     }
 
+    /// Get the storage table identifier for this archetype.
+    #[inline]
+    pub fn table_id(&self) -> storage::table::Id {
+        self.table_id
+    }
+
     /// Get the component specification of this archetype.
     #[inline]
     pub fn components(&self) -> &component::Spec {
         &self.components
+    }
+
+    /// Determines whether this archetype supports the provided component specification.
+    #[inline]
+    pub fn supports(&self, spec: &component::Spec) -> bool {
+        self.components.contains_all(spec)
     }
 }

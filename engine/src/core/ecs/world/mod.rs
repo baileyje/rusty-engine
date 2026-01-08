@@ -98,6 +98,26 @@ impl World {
         self.id
     }
 
+    #[inline]
+    pub fn components(&self) -> &component::Registry {
+        &self.components
+    }
+
+    #[inline]
+    pub fn archetypes(&self) -> &archetype::Registry {
+        &self.archetypes
+    }
+
+    #[inline]
+    pub fn storage(&self) -> &storage::Storage {
+        &self.storage
+    }
+
+    #[inline]
+    pub fn storage_mut(&mut self) -> &mut storage::Storage {
+        &mut self.storage
+    }
+
     /// Spawn a new entity with the given set of components in the world.
     /// This will establish the entity in the appropriate archetype and storage table.
     pub fn spawn<S: component::Set>(&mut self, set: S) -> entity::Entity {
@@ -107,13 +127,13 @@ impl World {
         // Construct the component specification for this set of components.
         let spec = S::spec(&self.components);
 
-        // Get the archetype for this set of components.
-        let archetype = self.archetypes.get_or_create(&spec);
-
         // Get the table for the entity's archetype
         let table = self
             .storage
-            .get_or_create_table(archetype, &self.components);
+            .get_or_create_table(spec.clone(), &self.components);
+
+        // Get the archetype for this set of components.
+        let archetype = self.archetypes.get_or_create(spec, table.id());
 
         // Add the entity with all the components
         let row = table.add_entity(entity, set, &self.components);
@@ -160,7 +180,7 @@ impl World {
     /// Returns `None` if the entity is not currently spawned in the world.
     pub fn entity(&self, entity: entity::Entity) -> Option<entity::Ref<'_>> {
         self.storage_for(entity)
-            .map(|(table, row)| entity::Ref::new(entity, &self.components, table, row))
+            .map(|(table, row)| entity::Ref::new(entity, table, row))
     }
 
     /// Get a mutable reference to the given entity, if it's spawned.
@@ -175,12 +195,7 @@ impl World {
     pub fn entity_mut(&mut self, entity: entity::Entity) -> Option<entity::RefMut<'_>> {
         let loc = self.entities.location(entity)?;
         let table = self.storage.get_mut(loc.table_id());
-        Some(entity::RefMut::new(
-            entity,
-            &self.components,
-            table,
-            loc.row(),
-        ))
+        Some(entity::RefMut::new(entity, table, loc.row()))
     }
 
     /// Get the storage table and row for a reference to the given entity.

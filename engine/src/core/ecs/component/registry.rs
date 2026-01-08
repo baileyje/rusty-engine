@@ -112,7 +112,7 @@ impl Registry {
     #[inline]
     pub fn get_info_by_id(&self, id: Id) -> Option<Info> {
         let components = self.components.read().unwrap();
-        components.get(id.index()).and_then(|i| i.clone())
+        components.get(id.index()).and_then(|i| *i)
     }
 }
 

@@ -21,4 +21,16 @@ impl Row {
     pub fn index(&self) -> usize {
         self.0
     }
+
+    /// Increment the row index by 1.
+    #[inline]
+    pub fn increment(&mut self) {
+        self.0 += 1;
+    }
+
+    /// Decrement the row index by 1.
+    #[inline]
+    pub fn decrement(&mut self) {
+        self.0 -= 1;
+    }
 }

@@ -3,8 +3,8 @@ use crate::core::ecs::{
     storage::{Row, table},
 };
 
-/// The location an entity is stored in the ECS. This si made of of the entity's table and row.
-/// This is intended to create constant time lookups for entities within the world's storage.
+/// The location an entity is stored in the ECS. This is made up of the entity's, archetype ID, table ID and storage row.
+/// This is intended to create near constant time lookups for entities within the world's storage.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Location {
     /// The archetype id for this entity.

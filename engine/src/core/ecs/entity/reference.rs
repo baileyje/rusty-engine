@@ -10,8 +10,6 @@ use crate::core::ecs::{
 pub struct Ref<'w> {
     /// The entity this reference points to.
     entity: Entity,
-    /// The registry of known components.
-    components: &'w component::Registry,
     /// The table that stores this entity's components.
     table: &'w storage::Table,
     /// The row this table occupies in the table.
@@ -21,25 +19,14 @@ pub struct Ref<'w> {
 impl<'w> Ref<'w> {
     /// Create a new Ref for an entity and its storage table.
     #[inline]
-    pub const fn new(
-        entity: Entity,
-        components: &'w component::Registry,
-        table: &'w storage::Table,
-        row: storage::Row,
-    ) -> Self {
-        Self {
-            entity,
-            components,
-            table,
-            row,
-        }
+    pub const fn new(entity: Entity, table: &'w storage::Table, row: storage::Row) -> Self {
+        Self { entity, table, row }
     }
 
     /// Get a reference to a component on this entity.
     /// Returns `None` if the component is not registered or not present on the entity.
     pub fn get<C: Component>(&self) -> Option<&C> {
-        let component_id = self.components.get::<C>()?;
-        unsafe { self.table.get(self.row, component_id) }
+        unsafe { self.table.get(self.row) }
     }
 
     /// Get the entity this reference points to.
@@ -65,8 +52,6 @@ impl<'w> Ref<'w> {
 pub struct RefMut<'w> {
     /// The entity this reference points to.
     entity: Entity,
-    /// The registry of known components.
-    components: &'w component::Registry,
     /// The table that stores this entity's components.
     table: &'w mut storage::Table,
     /// The row this table occupies in the table.
@@ -76,32 +61,20 @@ pub struct RefMut<'w> {
 impl<'w> RefMut<'w> {
     /// Create a new Ref for an entity and its storage table.
     #[inline]
-    pub const fn new(
-        entity: Entity,
-        components: &'w component::Registry,
-        table: &'w mut storage::Table,
-        row: storage::Row,
-    ) -> Self {
-        Self {
-            entity,
-            components,
-            table,
-            row,
-        }
+    pub const fn new(entity: Entity, table: &'w mut storage::Table, row: storage::Row) -> Self {
+        Self { entity, table, row }
     }
 
     /// Get a reference to a component on this entity.
     /// Returns `None` if the component is not registered or not present on the entity.
     pub fn get<C: Component>(&self) -> Option<&C> {
-        let component_id = self.components.get::<C>()?;
-        unsafe { self.table.get(self.row, component_id) }
+        unsafe { self.table.get(self.row) }
     }
 
     /// Get a mutable reference to a component on this entity.
     /// Returns `None` if the component is not registered or not present on the entity.
     pub fn get_mut<C: Component>(&mut self) -> Option<&mut C> {
-        let component_id = self.components.get::<C>()?;
-        unsafe { self.table.get_mut(self.row, component_id) }
+        unsafe { self.table.get_mut(self.row) }
     }
 
     /// Get the entity this reference points to.
@@ -163,7 +136,7 @@ mod tests {
         let row = table.add_entity(entity, (position.clone(), velocity.clone()), &registry);
 
         // When
-        let entity_ref = Ref::new(entity, &registry, &table, row);
+        let entity_ref = Ref::new(entity, &table, row);
         let retrieved_pos = entity_ref.get::<Position>();
 
         // Then
@@ -187,7 +160,7 @@ mod tests {
         let row = table.add_entity(entity, (position,), &registry);
 
         // When - Try to get component not in table
-        let entity_ref = Ref::new(entity, &registry, &table, row);
+        let entity_ref = Ref::new(entity, &table, row);
         let retrieved_vel = entity_ref.get::<Velocity>();
 
         // Then
@@ -211,7 +184,7 @@ mod tests {
         let row = table.add_entity(entity, (position,), &registry);
 
         // When - Try to get unregistered component
-        let entity_ref = Ref::new(entity, &registry, &table, row);
+        let entity_ref = Ref::new(entity, &table, row);
         let retrieved_health = entity_ref.get::<Health>();
 
         // Then
@@ -243,7 +216,7 @@ mod tests {
         );
 
         // When
-        let entity_ref = Ref::new(entity, &registry, &table, row);
+        let entity_ref = Ref::new(entity, &table, row);
 
         // Then - Can get all components
         assert_eq!(entity_ref.get::<Position>(), Some(&position));
@@ -268,7 +241,7 @@ mod tests {
         table.add_entity(entity1, (position,), &registry);
 
         // When - Create ref for entity2 which is NOT in the table
-        let entity_ref = Ref::new(entity2, &registry, &table, 1.into());
+        let entity_ref = Ref::new(entity2, &table, 1.into());
         let retrieved_pos = entity_ref.get::<Position>();
 
         // Then
@@ -294,7 +267,7 @@ mod tests {
         let row = table.add_entity(entity, (position.clone(), velocity.clone()), &registry);
 
         // When
-        let entity_ref = RefMut::new(entity, &registry, &mut table, row);
+        let entity_ref = RefMut::new(entity, &mut table, row);
         let retrieved_pos = entity_ref.get::<Position>();
 
         // Then
@@ -318,7 +291,7 @@ mod tests {
         let row = table.add_entity(entity, (position,), &registry);
 
         // When - Try to get component not in table
-        let entity_ref = RefMut::new(entity, &registry, &mut table, row);
+        let entity_ref = RefMut::new(entity, &mut table, row);
         let retrieved_vel = entity_ref.get::<Velocity>();
 
         // Then
@@ -344,7 +317,7 @@ mod tests {
         let row = table.add_entity(entity, (position.clone(), velocity.clone()), &registry);
 
         // When
-        let mut entity_ref = RefMut::new(entity, &registry, &mut table, row);
+        let mut entity_ref = RefMut::new(entity, &mut table, row);
         let retrieved_pos = entity_ref.get_mut::<Position>().unwrap();
         retrieved_pos.x = 9.0;
         retrieved_pos.y = 19.0;

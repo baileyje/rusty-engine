@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use crate::core::ecs::{
     archetype::{Archetype, Id},
-    component,
+    component, storage,
 };
 
 /// Central registry of archetypes.
@@ -26,15 +26,19 @@ impl Registry {
     }
 
     /// Create a new archetype with the given spec.
-    pub fn create(&mut self, spec: &component::Spec) -> &Archetype {
+    pub fn create(
+        &mut self,
+        spec: component::Spec,
+        table_id: storage::table::Id,
+    ) -> &mut Archetype {
         // Add a new archetype with the next valid index.
         let archetype_id = Id(self.archetypes.len() as u32);
         // Add a new archetype to storage.
         self.archetypes
-            .push(Archetype::new(archetype_id, spec.clone()));
+            .push(Archetype::new(archetype_id, spec.clone(), table_id));
 
         // Add to map by components
-        self.by_components.insert(spec.clone(), archetype_id);
+        self.by_components.insert(spec, archetype_id);
 
         // Safety - We know we just added this.
         unsafe { self.get_unchecked_mut(archetype_id) }
@@ -42,43 +46,56 @@ impl Registry {
 
     /// Get an existing archetype matching the given component spec, or create a new one if none
     /// exists.
-    pub fn get_or_create(&mut self, spec: &component::Spec) -> &Archetype {
-        if let Some(id) = self.by_components.get(spec) {
+    pub fn get_or_create(
+        &mut self,
+        spec: component::Spec,
+        table_id: storage::table::Id,
+    ) -> &mut Archetype {
+        if let Some(id) = self.by_components.get(&spec) {
             // Safety - Any mapped ID must be in the archetypes vec.
-            return unsafe { self.get_unchecked(*id) };
+            return unsafe { self.get_unchecked_mut(*id) };
         }
         // Otherwise create it
-        self.create(spec)
+        self.create(spec, table_id)
     }
 
-    /// Get an archetype by its archetypeId.
+    /// Get an archetype by its archetype Id.
     #[inline]
     pub fn get(&self, archetype_id: Id) -> Option<&Archetype> {
         self.archetypes.get(archetype_id.index())
     }
 
-    /// Get a mutable archetype by its archetypeId, if it exists.
+    /// Get a mutable archetype by its archetype Id, if it exists.
     #[inline]
     pub fn get_mut(&mut self, archetype_id: Id) -> Option<&mut Archetype> {
         self.archetypes.get_mut(archetype_id.index())
     }
 
-    /// Get an archetype by its archetypeId without an existence check.
+    /// Get an archetype by its archetype Id without an existence check.
     ///
     /// # Safety
     /// - Caller must ensure the provided archetype_id exists in the registry.
     #[inline]
-    pub unsafe fn get_unchecked(&mut self, archetype_id: Id) -> &Archetype {
+    pub unsafe fn get_unchecked(&self, archetype_id: Id) -> &Archetype {
         unsafe { self.archetypes.get_unchecked(archetype_id.index()) }
     }
 
-    /// Get a mutable archetype by its archetypeId without an existence check.
+    /// Get a mutable archetype by its archetype Id without an existence check.
     ///
     /// # Safety
     /// - Caller must ensure the provided archetype_id exists in the registry.
     #[inline]
     pub unsafe fn get_unchecked_mut(&mut self, archetype_id: Id) -> &mut Archetype {
         unsafe { self.archetypes.get_unchecked_mut(archetype_id.index()) }
+    }
+
+    /// Return any archetype IDs that support the provided component specification.
+    pub fn supporting(&self, spec: &component::Spec) -> Vec<Id> {
+        self.archetypes
+            .iter()
+            .filter(|a| a.supports(spec))
+            .map(|a| a.id)
+            .collect()
     }
 }
 
@@ -87,7 +104,7 @@ mod tests {
     use rusty_macros::Component;
     use std::hash::{DefaultHasher, Hash, Hasher};
 
-    use crate::core::ecs::{archetype::Registry, component};
+    use crate::core::ecs::{archetype::Registry, component, storage};
 
     #[test]
     fn test_component_ids() {
@@ -136,18 +153,17 @@ mod tests {
 
         // When
         let arch1 = registry
-            .get_or_create(&component::Spec::new([id1, id2]))
+            .get_or_create(component::Spec::new([id1, id2]), storage::table::Id::new(0))
             .id();
         let arch2 = registry
-            .get_or_create(&component::Spec::new([id1, id3]))
+            .get_or_create(component::Spec::new([id1, id3]), storage::table::Id::new(1))
             .id();
         let arch3 = registry
-            .get_or_create(&component::Spec::new([id1, id2, id3]))
+            .get_or_create(
+                component::Spec::new([id1, id2, id3]),
+                storage::table::Id::new(2),
+            )
             .id();
-
-        print!("Arch1: {:?}", arch1);
-        print!("Arch2: {:?}", arch2);
-        print!("Arch3: {:?}", arch3);
 
         // Then
         assert_ne!(arch1, arch2);
@@ -156,7 +172,7 @@ mod tests {
 
         // And When
         let arch4 = registry
-            .get_or_create(&component::Spec::new([id1, id3]))
+            .get_or_create(component::Spec::new([id1, id3]), storage::table::Id::new(1))
             .id();
 
         // Then

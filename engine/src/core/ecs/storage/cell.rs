@@ -26,7 +26,7 @@ use crate::core::ecs::component::{self};
 /// let pos: &Position = cell.as_ref();
 /// let vel: &Velocity = cell.as_ref();  // Can reuse cell for different reads
 /// ```
-#[derive(Copy, Clone)]
+#[derive(Debug, Copy, Clone)]
 pub struct Cell<'a> {
     /// A pointer to the cell's memory.
     ptr: ptr::NonNull<u8>,
@@ -71,11 +71,21 @@ impl<'a> Cell<'a> {
     /// ```ignore
     /// let pos: &Position = cell.as_ref::<Position>();
     /// ```
+    #[inline]
     pub fn as_ref<C: component::Component>(&self) -> &'a C {
         #[cfg(debug_assertions)]
         ensure_type::<C>(self.info);
 
         let ptr = self.as_ptr().cast::<C>();
+
+        #[cfg(debug_assertions)]
+        debug_assert_eq!(
+            ptr.align_offset(std::mem::align_of::<C>()),
+            0,
+            "Pointer is not properly aligned for type {}",
+            std::any::type_name::<C>()
+        );
+
         // SAFETY: The cell was constructed from a valid column with proper alignment
         // and the row was bounds-checked. The type is verified in debug builds.
         unsafe { &*ptr }
@@ -107,6 +117,7 @@ impl<'a> Cell<'a> {
 /// let pos: &mut Position = cell.deref();  // Consumes cell, preventing aliasing
 /// pos.x += 1.0;
 /// ```
+#[derive(Debug, Copy, Clone)]
 pub struct CellMut<'a> {
     ptr: NonNull<u8>,
 
@@ -144,11 +155,22 @@ impl<'a> CellMut<'a> {
     ///
     /// # Panics
     /// In debug builds, panics if type `C` doesn't match the cell's actual type.
+    #[inline]
     pub fn as_ref<C: component::Component>(&self) -> &'a C {
         #[cfg(debug_assertions)]
         ensure_type::<C>(self.info);
 
         let ptr = self.as_ptr().cast::<C>();
+
+        // Ensure proper alignment in debug builds.
+        #[cfg(debug_assertions)]
+        debug_assert_eq!(
+            ptr.align_offset(std::mem::align_of::<C>()),
+            0,
+            "Pointer is not properly aligned for type {}",
+            std::any::type_name::<C>()
+        );
+
         // SAFETY: The cell was constructed from a valid column with proper alignment
         // and the row was bounds-checked. The type is verified in debug builds.
         unsafe { &*ptr }
@@ -164,6 +186,7 @@ impl<'a> CellMut<'a> {
     ///
     /// # Panics
     /// In debug builds, panics if type `C` doesn't match the cell's actual type.
+    #[inline]
     pub unsafe fn write<C: component::Component>(&mut self, value: C) {
         #[cfg(debug_assertions)]
         ensure_type::<C>(self.info);
@@ -204,9 +227,9 @@ impl<'a> CellMut<'a> {
 pub fn ensure_type<C: component::Component>(info: &component::Info) {
     debug_assert!(
         TypeId::of::<C>() == info.type_id(),
-        "Type mismatch: attempted to use type {} with column storing {}",
+        "Type mismatch: attempted to use type {} with column storing components {:?}",
         std::any::type_name::<C>(),
-        info.type_name()
+        info
     );
     debug_assert!(
         Layout::new::<C>() == info.layout(),

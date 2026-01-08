@@ -10,3 +10,13 @@ log = "0.4.29"
 crossbeam = "0.8.4"
 rusty_macros = { path = "src/core/ecs/macros" }
 dashmap = "6.1.0"
+
+
+[[example]]
+name = "simple_world"
+path = "examples/simple_world.rs"
+doc-scrape-examples = true
+
+[[bench]]
+name = "typeid_overhead"
+harness = false

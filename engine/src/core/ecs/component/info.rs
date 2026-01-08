@@ -6,17 +6,13 @@ use std::{mem, ptr};
 use crate::core::ecs::component::{Component, Id};
 
 /// Information about a registered component.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub struct Info {
     /// The unique component ID.
     id: Id,
 
     /// The TypeId of the component.
     type_id: TypeId,
-
-    /// The type name of the component in debug builds.
-    #[cfg(debug_assertions)]
-    type_name: String,
 
     /// The memory layout of the component.
     layout: Layout,
@@ -37,8 +33,6 @@ impl Info {
         Self {
             id,
             type_id: TypeId::of::<C>(),
-            #[cfg(debug_assertions)]
-            type_name: std::any::type_name::<C>().to_string(),
             layout: Layout::new::<C>(),
             drop_fn,
         }
@@ -54,12 +48,6 @@ impl Info {
     #[inline]
     pub fn type_id(&self) -> TypeId {
         self.type_id
-    }
-
-    #[cfg(debug_assertions)]
-    #[inline]
-    pub fn type_name(&self) -> &str {
-        &self.type_name
     }
 
     /// Get the memory layout for this type.
@@ -112,9 +100,6 @@ mod tests {
         assert_eq!(info.id(), Id(42));
         assert_eq!(info.type_id(), TypeId::of::<TestComponent>());
         assert_eq!(info.layout(), Layout::new::<TestComponent>());
-
-        #[cfg(debug_assertions)]
-        assert!(info.type_name().contains("TestComponent"));
     }
 
     #[test]
@@ -147,7 +132,9 @@ mod tests {
         // Given
         static DROP_CALLED: AtomicBool = AtomicBool::new(false);
 
-        struct DropTracker;
+        struct DropTracker {
+            value: u32,
+        }
 
         impl Drop for DropTracker {
             fn drop(&mut self) {
@@ -167,7 +154,7 @@ mod tests {
 
         let ptr = NonNull::new(ptr).unwrap();
         unsafe {
-            std::ptr::write(ptr.as_ptr() as *mut DropTracker, DropTracker);
+            std::ptr::write(ptr.as_ptr() as *mut DropTracker, DropTracker { value: 42 });
         }
 
         // Call the drop function

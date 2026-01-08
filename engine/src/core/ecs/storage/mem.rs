@@ -166,17 +166,6 @@
 //! - **Realloc**: O(n) when growing beyond current capacity (copy all elements)
 //! - **Memory overhead**: Zero per element, only struct overhead (~40 bytes)
 //!
-//! # Comparison with std::Vec
-//!
-//! | Feature | Vec\<T\> | IndexedMemory |
-//! |---------|---------|---------------|
-//! | Type safety | ✅ Compile-time | ❌ Runtime (caller responsibility) |
-//! | Drop handling | ✅ Automatic | ❌ Manual |
-//! | Bounds checking | ✅ Always | ⚠️ Debug only |
-//! | Initialization tracking | ✅ Via len | ❌ Caller responsibility |
-//! | Zero-cost abstraction | ✅ | ✅ |
-//! | Use case | General purpose | ECS internals |
-//!
 //! # Thread Safety
 //!
 //! [`IndexedMemory`] is [`Send`] and [`Sync`] - it can be moved between threads and shared via
@@ -201,10 +190,12 @@ pub enum GrowthStrategy {
     Multiply(usize),
     /// Grow the current capacity by allocating an additional fixed capacity buffer. This is
     /// less aggressive than the multiply option, but also attempts to reduce allocations for similar
-    /// use-cases without as high of a risk of over allocations.
+    /// use-cases without as high of a risk of over allocations.component
+    #[allow(unused, reason = "Future use-case")]
     Buffer(usize),
     /// Grow the current capacity by the exact amount requested. This is the most space efficient,
     /// but will cause significantly more allocations for use-cases with frequent growth requests.
+    #[allow(unused, reason = "Future use-case")]
     Exact,
 }
 
@@ -285,6 +276,7 @@ impl IndexedMemory {
     }
 
     #[inline]
+    #[allow(unused, reason = "Future use-case")]
     pub fn with_capacity(
         element_layout: Layout,
         capacity: usize,
@@ -348,6 +340,7 @@ impl IndexedMemory {
 
     /// Get a pointer the underlying memory for this block.
     #[inline]
+    #[allow(unused, reason = "Future use-case")]
     pub fn as_ptr(&mut self) -> *mut u8 {
         self.ptr.as_ptr()
     }
@@ -358,11 +351,12 @@ impl IndexedMemory {
     }
 
     /// Reserve at least the requested new capacity in the memory allocation.
+    #[allow(unused, reason = "Future use-case")]
     pub fn reserve_exact(&mut self, additional: usize) {
         self.reserve_with(additional, GrowthStrategy::Exact);
     }
 
-    /// Rserver at least the additional elements using the provided growth strategy.
+    /// Reserve least the additional elements using the provided growth strategy.
     fn reserve_with(&mut self, additional: usize, strategy: GrowthStrategy) {
         // Always increase the reserved capacity with what is requested.
         self.reserved_capacity += additional;
@@ -385,6 +379,13 @@ impl IndexedMemory {
             self.element_layout.align(),
         )
         .expect("layout overflow");
+
+        if new_layout.size() == 0 {
+            // No need to allocate for zero-sized types
+            self.ptr = NonNull::dangling();
+            self.capacity = capacity;
+            return;
+        }
 
         let new_ptr = if self.capacity == 0 {
             unsafe { alloc::alloc(new_layout) }
@@ -416,6 +417,11 @@ impl Drop for IndexedMemory {
                 self.element_layout.align(),
             )
             .expect("layout overflow");
+
+            if layout.size() == 0 {
+                // No need to deallocate for zero-sized types.
+                return;
+            }
 
             unsafe {
                 alloc::dealloc(self.ptr.as_ptr(), layout);

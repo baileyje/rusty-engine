@@ -331,7 +331,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "rusty"
+name = "rusty_app"
 version = "0.1.0"
 dependencies = [
  "log",
