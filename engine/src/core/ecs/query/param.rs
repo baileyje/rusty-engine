@@ -1,38 +1,42 @@
-use crate::core::ecs::{component, entity, storage};
+//! Query parameter types and specifications.
+//!
+//! This module defines the [`Parameter`] trait and [`ParameterSpec`] enum, which represent
+//! individual elements that can be used in queries.
+//!
+//! # Parameter vs Data
+//!
+//! - **Parameter**: A single query element (e.g., `&Component`, `Entity`, `Option<&mut C>`)
+//! - **Data**: A complete query composed of one or more parameters (e.g., `(&C1, &mut C2)`)
+//!
+//! Any type implementing `Parameter` automatically implements `Data` for single-element queries.
+//! Tuples of `Parameter` types implement `Data` for multi-element queries.
+//!
+//! # Valid Parameter Types
+//!
+//! - **Components**: `&C` (immutable), `&mut C` (mutable)
+//! - **Optional Components**: `Option<&C>`, `Option<&mut C>`
+//! - **Entity**: `Entity` (always passed by value)
+//!
+//! # Examples
+//!
+//! ```rust,ignore
+//! use rusty_engine::core::ecs::query::param::Parameter;
+//!
+//! // Single parameter - queries for one component
+//! let query = Query::<&Position>::new(world.components());
+//!
+//! // Multiple parameters - queries for multiple components
+//! let query = Query::<(&Position, &mut Velocity)>::new(world.components());
+//!
+//! // Optional parameters - includes entities without the component
+//! let query = Query::<(&Position, Option<&Velocity>)>::new(world.components());
+//! ```
 
-/// A trait used to identify types that can be used as parameters to queries. Each type used in a
-/// query must produce a single [ParamSpec] instance that will be used to drive the queries.
-///
-/// Generally these parameters will be [entity::Entity] or [component::Component] related.
-/// - Component params be read-only or mutable depending on the type used in the query.
-/// - Entity params are always passed by value.
-/// - [entity::Ref] and [entity::RefMut] are valid params if additional entity access is needed.
-///
-/// Example:
-/// ```rust, ignore
-/// use crate::core::ecs::{
-///     query::param::{Param, ParamType},
-///     component,
-/// };
-///
-/// #[derive(Component)]
-/// struct Comp;
-///
-/// let components = component::Registry::new();
-/// components.register::<Comp>();
-///
-/// let spec = <&Comp>::query_param_spec(&components);
-///
-/// assert_eq!(
-///    spec.param_type(),
-///    ParamType::Component(components.get::<Comp1>().unwrap())
-///);
-///assert!(!spec.is_mut());
-/// ````
-pub trait Param<'w>: Sized {
-    /// Get the query parameter for this type. The component registry is provided to allow a
+use crate::core::ecs::{component, entity, storage};
+pub trait Parameter<'w>: Sized {
+    /// Get the query parameter specification for this type. The component registry is provided to allow a
     /// parameter type to lookup or register component information.
-    fn query_param_spec(components: &component::Registry) -> ParamSpec;
+    fn spec(components: &component::Registry) -> ParameterSpec;
 
     /// Fetch a value from a specific query parameter. This will be given access to the table, row
     /// and entity combination to fetch for.
@@ -51,7 +55,7 @@ pub trait Param<'w>: Sized {
     /// # Panics
     ///
     /// In debug builds, panics if a component type doesn't match the registered type.
-    unsafe fn fetch_value(
+    unsafe fn fetch(
         entity: entity::Entity,
         table: &'w storage::Table,
         row: storage::Row,
@@ -59,7 +63,7 @@ pub trait Param<'w>: Sized {
 
     /// Fetch component references for a single entity row from a mutable table.
     ///
-    /// This is the mutable variant of [`fetch`](Param::fetch), allowing mutable access
+    /// This is the mutable variant of [`fetch`](Parameter::fetch), allowing mutable access
     /// to components when needed.
     ///
     /// Returns `None` if:
@@ -75,68 +79,55 @@ pub trait Param<'w>: Sized {
     ///
     /// Type safety is ensured through the component registry's type-to-ID mapping.
     /// Row validity and component existence are checked at runtime.
-    unsafe fn fetch_value_mut(
+    unsafe fn fetch_mut(
         entity: entity::Entity,
         table: &'w mut storage::Table,
         row: storage::Row,
     ) -> Option<Self>;
 }
 
-/// An enumeration of possible query parameter types.
-/// This enumeration limits, but normalizes the possible types used in a query.
+/// A single query parameter specification.
+///
+/// This enum describes what data a parameter needs from the ECS, allowing the query
+/// system to determine which tables match and what access is required.
+///
+/// # Variants
+///
+/// - **Entity**: The parameter is an entity ID (always immutable, passed by value)
+/// - **Component(id, is_mutable, is_optional)**: The parameter is a component reference
+///   - `id`: The component type ID
+///   - `is_mutable`: Whether mutable access is required (`&mut` vs `&`)
+///   - `is_optional`: Whether the component is optional (`Option<&C>` vs `&C`)
+///
+/// # Optional Components
+///
+/// When a component is marked as optional (`is_optional = true`), the query will include
+/// entities that don't have that component. Non-optional components restrict the query
+/// to only entities that have all required components.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ParamType {
-    /// The query results should include the entity.
+pub enum ParameterSpec {
+    /// The query results should include the entity. This will always be immutable and passed by
+    /// value.
     Entity,
-    /// The query results should include an entity reference.
-    EntityRef,
+
     /// The query results should include a specific component (by ID).
-    Component(component::Id),
-}
-
-/// A structure containing the specification for a single query parameter.
-/// The `param_type` fields gives the query engine the understanding of what information is needed in
-/// the results. This will also provide information on whether the query results should include
-/// mutable references.
-#[derive(Debug, Clone, Copy)]
-pub struct ParamSpec {
-    /// The type of parameter this is.
-    param_type: ParamType,
-    /// Whether the results should contain mutable references to the value
-    is_mut: bool,
-}
-
-impl ParamSpec {
-    /// Construct a new instance with type and mutability.
-    #[inline]
-    pub const fn new(param_type: ParamType, is_mut: bool) -> Self {
-        Self { param_type, is_mut }
-    }
-
-    /// Get the type for this parameter.
-    #[inline]
-    pub fn param_type(&self) -> ParamType {
-        self.param_type
-    }
-
-    /// Get the mutability flag.
-    #[inline]
-    pub fn is_mut(&self) -> bool {
-        self.is_mut
-    }
+    /// - The first field is the component ID
+    /// - The second field indicates whether the component is mutable
+    /// - The third field indicates whether the component is optional
+    Component(component::Id, bool, bool),
 }
 
 /// Implement the [Param] trait for a [component::Component] reference.
-impl<'w, C: component::Component> Param<'w> for &'w C {
-    /// Return [ParamSpec] with the [ParamType::Component] type and mutability `false`.
+impl<'w, C: component::Component> Parameter<'w> for &'w C {
+    /// Return [ParamSpec::Component] type and mutability `false` and optional `false`.
     ///
     /// # Note
     /// This will register the component `C` type if necessary.
-    fn query_param_spec(components: &component::Registry) -> ParamSpec {
-        ParamSpec::new(ParamType::Component(components.register::<C>()), false)
+    fn spec(components: &component::Registry) -> ParameterSpec {
+        ParameterSpec::Component(components.register::<C>(), false, false)
     }
 
-    unsafe fn fetch_value(
+    unsafe fn fetch(
         _entity: entity::Entity,
         table: &'w storage::Table,
         row: storage::Row,
@@ -144,26 +135,27 @@ impl<'w, C: component::Component> Param<'w> for &'w C {
         unsafe { table.get::<C>(row) }
     }
 
-    unsafe fn fetch_value_mut(
+    unsafe fn fetch_mut(
         _entity: entity::Entity,
         table: &'w mut storage::Table,
         row: storage::Row,
     ) -> Option<Self> {
-        unsafe { table.get::<C>(row) }
+        // Safety: Safe to call fetch as we are not mutating anything
+        unsafe { Self::fetch(_entity, table, row) }
     }
 }
 
 /// Implement the [Param] trait for a mutable [component::Component] reference.
-impl<'w, C: component::Component> Param<'w> for &'w mut C {
-    /// Return [ParamSpec] with the [ParamType::Component] type and mutability `true`.
+impl<'w, C: component::Component> Parameter<'w> for &'w mut C {
+    /// Return [ParamSpec::Component] type and mutability `true` and optional `false`.
     ///
     /// # Note
     /// This will register the [component::Component] `C` type if necessary.
-    fn query_param_spec(components: &component::Registry) -> ParamSpec {
-        ParamSpec::new(ParamType::Component(components.register::<C>()), true)
+    fn spec(components: &component::Registry) -> ParameterSpec {
+        ParameterSpec::Component(components.register::<C>(), true, false)
     }
 
-    unsafe fn fetch_value(
+    unsafe fn fetch(
         _entity: entity::Entity,
         _table: &'w storage::Table,
         _row: storage::Row,
@@ -172,7 +164,7 @@ impl<'w, C: component::Component> Param<'w> for &'w mut C {
         None
     }
 
-    unsafe fn fetch_value_mut(
+    unsafe fn fetch_mut(
         _entity: entity::Entity,
         table: &'w mut storage::Table,
         row: storage::Row,
@@ -181,63 +173,97 @@ impl<'w, C: component::Component> Param<'w> for &'w mut C {
     }
 }
 
-/// Implement the [Param] trait for [entity::Entity].
-impl<'w> Param<'w> for entity::Entity {
-    /// Return [ParamSpec] with the [ParamType::Entity] and mutability always `false`.
-    fn query_param_spec(_components: &component::Registry) -> ParamSpec {
-        ParamSpec::new(ParamType::Entity, false)
+/// Implement the [Param] trait for an optional [component::Component] reference.
+///
+/// # Optional Component Semantics
+///
+/// Optional components allow querying entities that may or may not have a specific component.
+/// When a component is optional:
+///
+/// - The query **includes** entities that don't have the component
+/// - For entities without the component, the parameter value is `None`
+/// - For entities with the component, the parameter value is `Some(&C)`
+///
+/// This differs from required components, which only match entities that have the component.
+///
+/// # Examples
+///
+/// ```rust,ignore
+/// // Query entities with Position, optionally with Velocity
+/// let query = Query::<(&Position, Option<&Velocity>)>::new(world.components());
+///
+/// for (pos, vel_opt) in query.invoke(&mut world) {
+///     match vel_opt {
+///         Some(vel) => println!("Moving entity at {:?}", pos),
+///         None => println!("Stationary entity at {:?}", pos),
+///     }
+/// }
+/// ```
+impl<'w, C: component::Component> Parameter<'w> for Option<&'w C> {
+    /// Return [ParamSpec::Component] with mutability `false` and optional `true`.
+    ///
+    /// # Note
+    /// This will register the component `C` type if necessary.
+    fn spec(components: &component::Registry) -> ParameterSpec {
+        ParameterSpec::Component(components.register::<C>(), false, true)
     }
 
-    unsafe fn fetch_value(
-        entity: entity::Entity,
-        _table: &'w storage::Table,
-        _row: storage::Row,
-    ) -> Option<Self> {
-        // Cannot fetch mutable reference from immutable table
-        Some(entity)
-    }
-
-    unsafe fn fetch_value_mut(
-        entity: entity::Entity,
-        _table: &'w mut storage::Table,
-        _row: storage::Row,
-    ) -> Option<Self> {
-        Some(entity)
-    }
-}
-
-/// Implement the [Param] trait for [entity::Ref].
-impl<'w> Param<'w> for entity::Ref<'w> {
-    /// Return [ParamSpec] with the [ParamType::EntityRef] and mutability always `false`.
-    fn query_param_spec(_components: &component::Registry) -> ParamSpec {
-        ParamSpec::new(ParamType::EntityRef, false)
-    }
-
-    unsafe fn fetch_value(
-        entity: entity::Entity,
+    /// Fetch an optional component reference from a table row.
+    ///
+    /// Always returns `Some(inner_option)` where:
+    /// - `inner_option` is `Some(&C)` if the entity has the component
+    /// - `inner_option` is `None` if the entity lacks the component
+    ///
+    /// This ensures the query continues iterating even when the component is missing.
+    unsafe fn fetch(
+        _entity: entity::Entity,
         table: &'w storage::Table,
         row: storage::Row,
     ) -> Option<Self> {
-        Some(entity::Ref::new(entity, table, row))
+        // Always return Some(inner_option) - never fail the query for missing optional components
+        Some(unsafe { table.get::<C>(row) })
     }
 
-    unsafe fn fetch_value_mut(
-        entity: entity::Entity,
+    unsafe fn fetch_mut(
+        _entity: entity::Entity,
         table: &'w mut storage::Table,
         row: storage::Row,
     ) -> Option<Self> {
-        Some(entity::Ref::new(entity, table, row))
+        // Safety: Safe to call fetch as we are not mutating anything
+        unsafe { Self::fetch(_entity, table, row) }
     }
 }
 
-/// Implement the [Param] trait for [entity::RefMut].
-impl<'w> Param<'w> for entity::RefMut<'w> {
-    /// Return [ParamSpec] with the [ParamType::EntityRef] and mutability always `true`.
-    fn query_param_spec(_components: &component::Registry) -> ParamSpec {
-        ParamSpec::new(ParamType::EntityRef, true)
+/// Implement the [Param] trait for an optional mutable [component::Component] reference.
+///
+/// # Optional Mutable Component Semantics
+///
+/// This works identically to `Option<&C>`, but provides mutable access to the component
+/// when it exists. The query still includes entities without the component.
+///
+/// # Examples
+///
+/// ```rust,ignore
+/// // Query entities with Position, optionally mutating Velocity
+/// let query = Query::<(&Position, Option<&mut Velocity>)>::new(world.components());
+///
+/// for (pos, vel_opt) in query.invoke(&mut world) {
+///     if let Some(vel) = vel_opt {
+///         // Only entities with Velocity reach here
+///         vel.dx += pos.x * 0.1;
+///     }
+/// }
+/// ```
+impl<'w, C: component::Component> Parameter<'w> for Option<&'w mut C> {
+    /// Return [ParamSpec::Component] with mutability `true` and optional `true`.
+    ///
+    /// # Note
+    /// This will register the component `C` type if necessary.
+    fn spec(components: &component::Registry) -> ParameterSpec {
+        ParameterSpec::Component(components.register::<C>(), true, true)
     }
 
-    unsafe fn fetch_value(
+    unsafe fn fetch(
         _entity: entity::Entity,
         _table: &'w storage::Table,
         _row: storage::Row,
@@ -246,22 +272,56 @@ impl<'w> Param<'w> for entity::RefMut<'w> {
         None
     }
 
-    unsafe fn fetch_value_mut(
-        entity: entity::Entity,
+    /// Fetch an optional mutable component reference from a table row.
+    ///
+    /// Always returns `Some(inner_option)` where:
+    /// - `inner_option` is `Some(&mut C)` if the entity has the component
+    /// - `inner_option` is `None` if the entity lacks the component
+    ///
+    /// This ensures the query continues iterating even when the component is missing.
+    unsafe fn fetch_mut(
+        _entity: entity::Entity,
         table: &'w mut storage::Table,
         row: storage::Row,
     ) -> Option<Self> {
-        Some(entity::RefMut::new(entity, table, row))
+        // Always return Some(inner_option) - never fail the query for missing optional components
+        Some(unsafe { table.get_mut::<C>(row) })
+    }
+}
+
+/// Implement the [Param] trait for [entity::Entity].
+impl<'w> Parameter<'w> for entity::Entity {
+    /// Return [ParamSpec::Entity].
+    fn spec(_components: &component::Registry) -> ParameterSpec {
+        ParameterSpec::Entity
+    }
+
+    unsafe fn fetch(
+        entity: entity::Entity,
+        _table: &'w storage::Table,
+        _row: storage::Row,
+    ) -> Option<Self> {
+        Some(entity)
+    }
+
+    unsafe fn fetch_mut(
+        entity: entity::Entity,
+        _table: &'w mut storage::Table,
+        _row: storage::Row,
+    ) -> Option<Self> {
+        // Safety: Safe to call fetch as we are not mutating anything
+        unsafe { Self::fetch(entity, _table, _row) }
     }
 }
 
 #[cfg(test)]
 mod tests {
+
     use rusty_macros::Component;
 
     use crate::core::ecs::{
         component, entity,
-        query::param::{Param, ParamType},
+        query::param::{Parameter, ParameterSpec},
         storage, world,
     };
 
@@ -277,6 +337,12 @@ mod tests {
 
     #[derive(Component)]
     struct Comp3 {
+        value: i32,
+    }
+
+    #[derive(Component)]
+    #[allow(dead_code)]
+    struct Comp4 {
         value: i32,
     }
 
@@ -326,14 +392,13 @@ mod tests {
         let (world, _table) = test_setup();
 
         // When
-        let spec = <&Comp1>::query_param_spec(world.components());
+        let spec = <&Comp1>::spec(world.components());
 
         // Then
         assert_eq!(
-            spec.param_type(),
-            ParamType::Component(world.components().get::<Comp1>().unwrap())
+            spec,
+            ParameterSpec::Component(world.components().get::<Comp1>().unwrap(), false, false)
         );
-        assert!(!spec.is_mut());
     }
 
     #[test]
@@ -342,14 +407,43 @@ mod tests {
         let (world, _table) = test_setup();
 
         // When
-        let spec = <&mut Comp1>::query_param_spec(world.components());
+        let spec = <&mut Comp1>::spec(world.components());
 
         // Then
         assert_eq!(
-            spec.param_type(),
-            ParamType::Component(world.components().get::<Comp1>().unwrap())
+            spec,
+            ParameterSpec::Component(world.components().get::<Comp1>().unwrap(), true, false)
         );
-        assert!(spec.is_mut());
+    }
+
+    #[test]
+    fn spec_for_optional_component_ref() {
+        // Given
+        let (world, _table) = test_setup();
+
+        // When
+        let spec = <Option<&Comp1>>::spec(world.components());
+
+        // Then
+        assert_eq!(
+            spec,
+            ParameterSpec::Component(world.components().get::<Comp1>().unwrap(), false, true)
+        );
+    }
+
+    #[test]
+    fn spec_for_optional_mut_component_ref() {
+        // Given
+        let (world, _table) = test_setup();
+
+        // When
+        let spec = <Option<&mut Comp1>>::spec(world.components());
+
+        // Then
+        assert_eq!(
+            spec,
+            ParameterSpec::Component(world.components().get::<Comp1>().unwrap(), true, true)
+        );
     }
 
     #[test]
@@ -358,37 +452,10 @@ mod tests {
         let (world, _table) = test_setup();
 
         // When
-        let spec = entity::Entity::query_param_spec(world.components());
+        let spec = entity::Entity::spec(world.components());
 
         // Then
-        assert_eq!(spec.param_type(), ParamType::Entity);
-        assert!(!spec.is_mut());
-    }
-
-    #[test]
-    fn spec_for_entity_ref() {
-        // Given
-        let (world, _table) = test_setup();
-
-        // When
-        let spec = entity::Ref::query_param_spec(world.components());
-
-        // Then
-        assert_eq!(spec.param_type(), ParamType::EntityRef);
-        assert!(!spec.is_mut());
-    }
-
-    #[test]
-    fn spec_for_entity_ref_mut() {
-        // Given
-        let (world, _table) = test_setup();
-
-        // When
-        let spec = entity::RefMut::query_param_spec(world.components());
-
-        // Then
-        assert_eq!(spec.param_type(), ParamType::EntityRef);
-        assert!(spec.is_mut());
+        assert_eq!(spec, ParameterSpec::Entity);
     }
 
     #[test]
@@ -398,12 +465,12 @@ mod tests {
 
         // When
         let value1 =
-            unsafe { <&Comp1>::fetch_value(entity::Entity::new(0.into()), &table, 0.into()) };
+            unsafe { <&Comp1>::fetch(entity::Entity::new(0.into()), &table, 0.into()) };
         let value2 =
-            unsafe { <&Comp2>::fetch_value(entity::Entity::new(1.into()), &table, 1.into()) };
+            unsafe { <&Comp2>::fetch(entity::Entity::new(1.into()), &table, 1.into()) };
 
         let value3 =
-            unsafe { <&Comp3>::fetch_value(entity::Entity::new(2.into()), &table, 2.into()) };
+            unsafe { <&Comp3>::fetch(entity::Entity::new(2.into()), &table, 2.into()) };
 
         // Then
         assert!(value1.is_some());
@@ -426,14 +493,14 @@ mod tests {
 
         // When
         let value1 = unsafe {
-            <&Comp1>::fetch_value_mut(
+            <&Comp1>::fetch_mut(
                 entity::Entity::new(0.into()),
                 &mut *(&mut table as *mut storage::Table),
                 0.into(),
             )
         };
         let value2 = unsafe {
-            <&Comp2>::fetch_value_mut(
+            <&Comp2>::fetch_mut(
                 entity::Entity::new(1.into()),
                 &mut *(&mut table as *mut storage::Table),
                 1.into(),
@@ -441,7 +508,7 @@ mod tests {
         };
 
         let value3 = unsafe {
-            <&Comp3>::fetch_value_mut(
+            <&Comp3>::fetch_mut(
                 entity::Entity::new(2.into()),
                 &mut *(&mut table as *mut storage::Table),
                 2.into(),
@@ -469,7 +536,7 @@ mod tests {
 
         // When
         let value = unsafe {
-            <&mut Comp1>::fetch_value(
+            <&mut Comp1>::fetch(
                 entity::Entity::new(0.into()),
                 &table, // Nasty multi-borrow workaround.
                 0.into(),
@@ -487,14 +554,14 @@ mod tests {
 
         // When
         let value1 = unsafe {
-            <&mut Comp1>::fetch_value_mut(
+            <&mut Comp1>::fetch_mut(
                 entity::Entity::new(0.into()),
                 &mut *(&mut table as *mut storage::Table), // Nasty multi-borrow workaround.
                 0.into(),
             )
         };
         let value2 = unsafe {
-            <&mut Comp2>::fetch_value_mut(
+            <&mut Comp2>::fetch_mut(
                 entity::Entity::new(1.into()),
                 &mut *(&mut table as *mut storage::Table),
                 1.into(),
@@ -502,7 +569,7 @@ mod tests {
         };
 
         let value3 = unsafe {
-            <&mut Comp3>::fetch_value_mut(
+            <&mut Comp3>::fetch_mut(
                 entity::Entity::new(2.into()),
                 &mut *(&mut table as *mut storage::Table),
                 2.into(),
@@ -530,6 +597,107 @@ mod tests {
     }
 
     #[test]
+    fn fetch_for_optional_component_ref() {
+        // Given
+        let (_world, table) = test_setup();
+
+        // When
+        let value = unsafe {
+            <Option<&Comp1>>::fetch(entity::Entity::new(0.into()), &table, 0.into())
+        };
+
+        // Then
+        assert!(value.is_some());
+        let value = value.unwrap();
+        assert!(value.is_some());
+        let value = value.unwrap();
+        assert_eq!(value.value, 10);
+    }
+
+    #[test]
+    fn fetch_mut_for_optional_component_ref() {
+        // Given
+        let (_world, mut table) = test_setup();
+
+        // When
+        let value = unsafe {
+            <Option<&Comp1>>::fetch_mut(entity::Entity::new(0.into()), &mut table, 0.into())
+        };
+
+        // Then
+        assert!(value.is_some());
+        let value = value.unwrap();
+        assert!(value.is_some());
+        let value = value.unwrap();
+        assert_eq!(value.value, 10);
+    }
+
+    #[test]
+    fn fetch_for_optional_mut_component_ref() {
+        // Given
+        let (_world, table) = test_setup();
+
+        // When
+        let value = unsafe {
+            <Option<&mut Comp1>>::fetch(entity::Entity::new(0.into()), &table, 0.into())
+        };
+
+        // Then
+        assert!(value.is_none());
+    }
+
+    #[test]
+    fn fetch_mut_for_optional_mut_component_ref() {
+        // Given
+        let (_world, mut table) = test_setup();
+
+        // When
+        let value = unsafe {
+            <Option<&mut Comp1>>::fetch_mut(
+                entity::Entity::new(0.into()),
+                &mut table,
+                0.into(),
+            )
+        };
+
+        // Then
+        assert!(value.is_some());
+        let value = value.unwrap();
+        assert!(value.is_some());
+        let value = value.unwrap();
+        assert_eq!(value.value, 10);
+    }
+
+    #[test]
+    fn fetch_for_optional_component_ref_not_in_table() {
+        // Given
+        let (_world, table) = test_setup();
+
+        // When
+        let value = unsafe {
+            <Option<&Comp4>>::fetch(entity::Entity::new(0.into()), &table, 0.into())
+        };
+
+        // Then - Optional components return Some(None) when component is missing
+        assert!(value.is_some());
+        assert!(value.unwrap().is_none());
+    }
+
+    #[test]
+    fn fetch_for_optional_mut_component_ref_not_in_table() {
+        // Given
+        let (_world, table) = test_setup();
+
+        // When
+        let value = unsafe {
+            <Option<&mut Comp4>>::fetch(entity::Entity::new(0.into()), &table, 0.into())
+        };
+
+        // Then
+        assert!(value.is_none());
+    }
+
+    #[test]
     fn fetch_for_entity() {
         // Given
         let (_world, table) = test_setup();
@@ -537,7 +705,7 @@ mod tests {
         let entity = entity::Entity::new(22.into());
 
         // When
-        let value = unsafe { <entity::Entity>::fetch_value(entity, &table, 0.into()) };
+        let value = unsafe { <entity::Entity>::fetch(entity, &table, 0.into()) };
 
         // Then
         assert!(value.is_some());
@@ -553,73 +721,11 @@ mod tests {
         let entity = entity::Entity::new(22.into());
 
         // When
-        let value = unsafe { <entity::Entity>::fetch_value_mut(entity, &mut table, 0.into()) };
+        let value = unsafe { <entity::Entity>::fetch_mut(entity, &mut table, 0.into()) };
 
         // Then
         assert!(value.is_some());
         let value = value.unwrap();
         assert_eq!(value, entity);
-    }
-
-    #[test]
-    fn fetch_for_entity_ref() {
-        // Given
-        let (_world, table) = test_setup();
-
-        let entity = entity::Entity::new(22.into());
-
-        // When
-        let value = unsafe { <entity::Ref>::fetch_value(entity, &table, 0.into()) };
-
-        // Then
-        assert!(value.is_some());
-        let value = value.unwrap();
-        assert_eq!(value.entity(), entity);
-    }
-
-    #[test]
-    fn fetch_mut_for_entity_ref() {
-        // Given
-        let (_world, mut table) = test_setup();
-
-        let entity = entity::Entity::new(22.into());
-
-        // When
-        let value = unsafe { <entity::Ref>::fetch_value_mut(entity, &mut table, 0.into()) };
-
-        // Then
-        assert!(value.is_some());
-        let value = value.unwrap();
-        assert_eq!(value.entity(), entity);
-    }
-
-    #[test]
-    fn fetch_for_entity_ref_mut() {
-        // Given
-        let (_world, table) = test_setup();
-
-        let entity = entity::Entity::new(22.into());
-
-        // When
-        let value = unsafe { <entity::RefMut>::fetch_value(entity, &table, 0.into()) };
-
-        // Then
-        assert!(value.is_none());
-    }
-
-    #[test]
-    fn fetch_mut_for_entity_ref_mut() {
-        // Given
-        let (_world, mut table) = test_setup();
-
-        let entity = entity::Entity::new(22.into());
-
-        // When
-        let value = unsafe { <entity::RefMut>::fetch_value_mut(entity, &mut table, 0.into()) };
-
-        // Then
-        assert!(value.is_some());
-        let value = value.unwrap();
-        assert_eq!(value.entity(), entity);
     }
 }

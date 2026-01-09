@@ -3,6 +3,7 @@ pub mod component;
 pub mod entity;
 pub mod query;
 pub mod storage;
+pub mod system;
 pub mod world;
 
 // TODO: Evaluate if we want to re-export certain items at this level

@@ -35,7 +35,7 @@
 use crate::core::ecs::{
     archetype::{self},
     component::{self},
-    entity,
+    entity, query,
     storage::{self},
 };
 
@@ -175,6 +175,11 @@ impl World {
         self.entities.despawn(entity);
     }
 
+    /// Get the storage location for the given entity, if it's spawned.
+    pub fn location_for(&self, entity: entity::Entity) -> Option<storage::Location> {
+        self.entities.location(entity)
+    }
+
     /// Get a reference to the given entity, if it's spawned.
     ///
     /// Returns `None` if the entity is not currently spawned in the world.
@@ -191,26 +196,39 @@ impl World {
     ///
     /// This method holds a mutable reference to the entire world's storage, preventing
     /// any other access while the `RefMut` is held. For performance-critical code,
-    /// consider using query systems that can access multiple entities efficiently.
+    /// consider using queriss/systems that can access multiple entities efficiently.
     pub fn entity_mut(&mut self, entity: entity::Entity) -> Option<entity::RefMut<'_>> {
-        let loc = self.entities.location(entity)?;
+        let loc = self.location_for(entity)?;
         let table = self.storage.get_mut(loc.table_id());
         Some(entity::RefMut::new(entity, table, loc.row()))
     }
 
-    /// Get the storage table and row for a reference to the given entity.
-    fn storage_for(&self, entity: entity::Entity) -> Option<(&storage::Table, storage::Row)> {
-        let loc = self.entities.location(entity)?;
+    /// Get the storage table and row for a reference to the given entity, if the entity is spawned.
+    pub fn storage_for(&self, entity: entity::Entity) -> Option<(&storage::Table, storage::Row)> {
+        let loc = self.location_for(entity)?;
         Some((self.storage.get(loc.table_id()), loc.row()))
     }
 
-    /// Get the storage table and row for a mutable reference to the given entity.
-    fn storage_for_mut(
+    /// Get the storage table and row for a mutable reference to the given entity, if the entity is
+    /// spawned.
+    pub fn storage_for_mut(
         &mut self,
         entity: entity::Entity,
     ) -> Option<(&mut storage::Table, storage::Row)> {
-        let loc = self.entities.location(entity)?;
+        let loc = self.location_for(entity)?;
         Some((self.storage.get_mut(loc.table_id()), loc.row()))
+    }
+
+    /// Perform a world query to access all entities that match the query data `D`.
+    ///
+    ///
+    /// Note: This holds a mutable reference to the entire world while the query result is active
+    /// (use wisely).
+    pub fn query<'w, D>(&'w mut self) -> query::Result<'w, D>
+    where
+        D: 'w + query::Data<'w>,
+    {
+        query::Query::<D>::one_shot(self)
     }
 }
 

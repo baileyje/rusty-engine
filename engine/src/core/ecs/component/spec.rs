@@ -49,6 +49,15 @@ impl Spec {
         }
         true
     }
+
+    /// Merge this specification with another, returning a new specification containing
+    /// the union of both component ID sets.
+    #[inline]
+    pub fn merge(&self, other: &Spec) -> Self {
+        let mut ids = self.ids.clone();
+        ids.extend_from_slice(&other.ids);
+        Self::new(ids)
+    }
 }
 
 #[cfg(test)]
