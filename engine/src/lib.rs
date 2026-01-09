@@ -2,3 +2,4 @@
 extern crate self as rusty_engine;
 
 pub mod core;
+pub mod ecs;
