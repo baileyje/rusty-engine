@@ -61,13 +61,8 @@ use crate::core::ecs::{
 ///
 /// [`Parameter`]: super::param::Parameter
 /// [`spec`]: Data::spec
-pub trait Data<'w>: Sized {
-    /// The read-only version of this data type.
-    ///
-    /// For immutable queries like `&T`, this is `&T`.
-    /// For mutable queries like `&mut T`, this is `&T`.
-    /// For tuples, this recursively applies to all elements.
-    type ReadOnly: 'w;
+pub trait Data: Sized {
+    type Data<'w>;
 
     /// Get the [`DataSpec`] for this query type.
     ///
@@ -88,7 +83,7 @@ pub trait Data<'w>: Sized {
     ///
     /// This method retrieves the data specified by this query type from a specific
     /// entity in a table. It's called internally by the query iterator for each
-    /// matching entity. Returns the read-only version of the data.
+    /// matching entity.
     ///
     /// # Parameters
     ///
@@ -98,7 +93,7 @@ pub trait Data<'w>: Sized {
     ///
     /// # Returns
     ///
-    /// - `Some(Self::ReadOnly)` if all required components are present
+    /// - `Some(Self)` if all required components are present
     /// - `None` if any required component is missing or the row is invalid
     ///
     /// # Safety
@@ -107,11 +102,11 @@ pub trait Data<'w>: Sized {
     /// - The component types match the actual types stored for their component IDs
     /// - The table and row correspond to a valid entity location
     /// - Type safety is enforced through the component registry's type-to-ID mapping
-    unsafe fn fetch(
+    unsafe fn fetch<'w>(
         entity: entity::Entity,
         table: &'w storage::Table,
         row: storage::Row,
-    ) -> Option<Self::ReadOnly>;
+    ) -> Option<Self::Data<'w>>;
 
     /// Fetch query data from a mutable table row.
     ///
@@ -139,11 +134,11 @@ pub trait Data<'w>: Sized {
     /// - Type safety is enforced through the component registry's type-to-ID mapping
     ///
     /// [`fetch`]: Data::fetch
-    unsafe fn fetch_mut(
+    unsafe fn fetch_mut<'w>(
         entity: entity::Entity,
         table: &'w mut storage::Table,
         row: storage::Row,
-    ) -> Option<Self>;
+    ) -> Option<Self::Data<'w>>;
 }
 
 /// A specification describing what data a query accesses.
@@ -166,9 +161,12 @@ pub struct DataSpec {
 }
 
 impl DataSpec {
+    /// An empty data specification.
+    const EMPTY: DataSpec = Self::new(vec![]);
+
     /// Construct a new query with provided params.
     #[inline]
-    pub fn new(params: Vec<ParameterSpec>) -> Self {
+    pub const fn new(params: Vec<ParameterSpec>) -> Self {
         Self { params }
     }
 
@@ -259,27 +257,27 @@ impl DataSpec {
 /// A query implementation for any type is is a valid [Param] type. This allows any of the valid
 /// parameter types to be used directly as a query. This enables query by a single component type
 /// or entity.
-impl<'w, P: Parameter<'w> + 'w> Data<'w> for P {
-    type ReadOnly = P;
+impl<P: Parameter> Data for P {
+    type Data<'w> = P::Value<'w>;
 
     /// Return [DataSpec] with a single [ParamSpec] derived from [Param] `P`.
     fn spec(components: &component::Registry) -> DataSpec {
         DataSpec::new(vec![P::spec(components)])
     }
 
-    unsafe fn fetch(
+    unsafe fn fetch<'w>(
         entity: entity::Entity,
         table: &'w storage::Table,
         row: storage::Row,
-    ) -> Option<Self::ReadOnly> {
+    ) -> Option<Self::Data<'w>> {
         unsafe { P::fetch(entity, table, row) }
     }
 
-    unsafe fn fetch_mut(
+    unsafe fn fetch_mut<'w>(
         entity: entity::Entity,
         table: &'w mut storage::Table,
         row: storage::Row,
-    ) -> Option<Self> {
+    ) -> Option<Self::Data<'w>> {
         unsafe { P::fetch_mut(entity, table, row) }
     }
 }
@@ -287,24 +285,23 @@ impl<'w, P: Parameter<'w> + 'w> Data<'w> for P {
 /// A query implementation that is empty.
 ///
 /// Note: This is interpreted as I want nothing, and likely useless...
-impl<'w> Data<'w> for () {
-    type ReadOnly = ();
-
+impl Data for () {
+    type Data<'w> = ();
     fn spec(_components: &component::Registry) -> DataSpec {
-        DataSpec::new(vec![])
+        DataSpec::EMPTY
     }
 
     unsafe fn fetch(
         _entity: entity::Entity,
-        _table: &'w storage::Table,
+        _table: &storage::Table,
         _row: storage::Row,
-    ) -> Option<Self::ReadOnly> {
+    ) -> Option<Self> {
         None
     }
 
     unsafe fn fetch_mut(
         _entity: entity::Entity,
-        _table: &'w mut storage::Table,
+        _table: &mut storage::Table,
         _row: storage::Row,
     ) -> Option<Self> {
         None
@@ -313,9 +310,10 @@ impl<'w> Data<'w> for () {
 
 /// Implement Query for tuples of [Data] types.
 macro_rules! tuple_query_impl {
-    ($(($name: ident, $alias: ident)),*) => {
-        impl<'w, $($name: Data<'w>),*> Data<'w> for ($($name,)*) {
-            type ReadOnly = ($(<$name as Data<'w>>::ReadOnly,)*);
+    ($($name: ident),*) => {
+        impl<$($name: Data),*> Data for ($($name,)*) {
+
+            type Data<'w> = ($($name::Data<'w>,)*);
 
             fn spec(components: &component::Registry) -> DataSpec {
                 let mut params = Vec::new();
@@ -327,11 +325,11 @@ macro_rules! tuple_query_impl {
                 DataSpec::new(params)
             }
 
-            unsafe fn fetch(
+            unsafe fn fetch<'w>(
                 entity: entity::Entity,
                 table: &'w storage::Table,
                 row: storage::Row,
-            ) -> Option<Self::ReadOnly> {
+            ) -> Option<Self::Data<'w>> {
                 Some((
                     $(
                         unsafe { <$name>::fetch(entity, table, row )? },
@@ -339,11 +337,11 @@ macro_rules! tuple_query_impl {
                 ))
             }
 
-            unsafe fn fetch_mut(
+            unsafe fn fetch_mut<'w>(
                 entity: entity::Entity,
                 table: &'w mut storage::Table,
                 row: storage::Row,
-            ) -> Option<Self> {
+            ) -> Option<Self::Data<'w>> {
                 Some((
                     $(
                         unsafe { <$name>::fetch_mut(entity, &mut *(table as *mut storage::Table), row )? },
@@ -356,21 +354,18 @@ macro_rules! tuple_query_impl {
 
 /// Implement Query for tuples of [Param] types recursively.
 macro_rules! tuple_query {
-    (($head_ty:ident, $head_alias: ident)) => {
-        tuple_query_impl!(($head_ty, $head_alias));
+    ($head_ty:ident) => {
+        tuple_query_impl!($head_ty);
     };
-    (($head_ty:ident, $head_alias: ident), $( ($tail_ty:ident, $tail_alias: ident) ),*) => (
-        tuple_query_impl!(($head_ty, $head_alias), $(( $tail_ty, $tail_alias) ),*);
-        tuple_query!($( ($tail_ty, $tail_alias) ),*);
+    ($head_ty:ident, $( $tail_ty:ident ),*) => (
+        tuple_query_impl!($head_ty, $( $tail_ty ),*);
+        tuple_query!($( $tail_ty ),*);
     );
 }
-// This can't be the best way to do this, but it works for now.
+
+// Generate implementations for tuples up to 26 elements (A-Z)
 tuple_query! {
-    (A, a), (B, b), (C, c), (D, d), (E, e), (F, f),
-    (G, g), (H, h), (I, i), (J, j), (K, k), (L, l),
-    (M, m), (N, n), (O, o), (P, p), (Q, q), (R, r),
-    (S, s), (T, t), (U, u), (V, v), (W, w), (X, x),
-    (Y, y), (Z, z)
+    A, B, C, D, E, F, G, H, I, J, K, L, M, N, O, P, Q, R, S, T, U, V, W, X, Y, Z
 }
 
 #[cfg(test)]

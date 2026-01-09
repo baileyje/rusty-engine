@@ -12,6 +12,9 @@ pub struct Spec {
 }
 
 impl Spec {
+    /// An empty component specification.
+    pub const EMPTY: Self = Spec { ids: Vec::new() };
+
     /// Construct a new Spec from the given component IDs.
     #[inline]
     pub fn new(ids: impl Into<Vec<Id>>) -> Self {

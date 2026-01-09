@@ -496,7 +496,7 @@ impl<'a> View<'a> for () {
 /// This generates implementations for tuples of various sizes, supporting
 /// both immutable and mutable component references.
 macro_rules! tuple_view_impl {
-    ($(($name: ident, $index: tt)),*) => {
+    ($($name: ident),*) => {
         impl<'a, $($name: View<'a>),*> View<'a> for ($($name,)*) {
             unsafe fn fetch(table: &'a Table, row: Row) -> Option<Self> {
                 // SAFETY: Each component fetch is independent. The caller ensures component types
@@ -543,22 +543,18 @@ macro_rules! tuple_view_impl {
 
 /// Generate View implementations for tuples of increasing size.
 macro_rules! tuple_view {
-    (($head:ident, $head_index:tt)) => {
-        tuple_view_impl!(($head, $head_index));
+    ($head:ident) => {
+        tuple_view_impl!($head);
     };
-    (($head:ident, $head_index:tt), $(($tail:ident, $tail_index:tt)),*) => {
-        tuple_view_impl!(($head, $head_index), $(($tail, $tail_index)),*);
-        tuple_view!($(($tail, $tail_index)),*);
+    ($head:ident, $($tail:ident),*) => {
+        tuple_view_impl!($head, $($tail),*);
+        tuple_view!($($tail),*);
     };
 }
 
 // Generate implementations for tuples up to 26 elements (A-Z)
 tuple_view! {
-    (A, 0), (B, 1), (C, 2), (D, 3), (E, 4), (F, 5),
-    (G, 6), (H, 7), (I, 8), (J, 9), (K, 10), (L, 11),
-    (M, 12), (N, 13), (O, 14), (P, 15), (Q, 16), (R, 17),
-    (S, 18), (T, 19), (U, 20), (V, 21), (W, 22), (X, 23),
-    (Y, 24), (Z, 25)
+    A, B, C, D, E, F, G, H, I, J, K, L, M, N, O, P, Q, R, S, T, U, V, W, X, Y, Z
 }
 
 #[cfg(test)]

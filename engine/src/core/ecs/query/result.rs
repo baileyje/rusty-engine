@@ -2,7 +2,7 @@
 
 use std::marker::PhantomData;
 
-use crate::core::ecs::{query::data::Data, storage, world::World};
+use crate::core::ecs::{query::data::Data, storage, world};
 
 /// An iterator over query results that yields entities matching the query specification.
 ///
@@ -40,9 +40,9 @@ use crate::core::ecs::{query::data::Data, storage, world::World};
 ///
 /// [`Query::invoke`]: super::Query::invoke
 /// [`Data`]: super::data::Data
-pub struct Result<'w, D: Data<'w>> {
+pub struct Result<'w, D: Data> {
     /// Mutable reference to the world being queried.
-    world: &'w mut World,
+    world: &'w mut world::World,
 
     /// List of table IDs that match the query specification.
     table_ids: Vec<storage::table::Id>,
@@ -63,7 +63,7 @@ pub struct Result<'w, D: Data<'w>> {
     _marker: PhantomData<D>,
 }
 
-impl<'w, D: Data<'w>> Result<'w, D> {
+impl<'w, D: Data> Result<'w, D> {
     /// Construct a new query result iterator.
     ///
     /// This is called internally by [`Query::invoke`] and pre-calculates the total
@@ -81,7 +81,7 @@ impl<'w, D: Data<'w>> Result<'w, D> {
     ///
     /// [`Query::invoke`]: super::Query::invoke
     #[inline]
-    pub fn new(world: &'w mut World, table_ids: Vec<storage::table::Id>) -> Self {
+    pub fn new(world: &'w mut world::World, table_ids: Vec<storage::table::Id>) -> Self {
         // Pre-calculate the total length for ExactSizeIterator support.
         let mut len = 0;
         for table_id in table_ids.iter() {
@@ -102,8 +102,8 @@ impl<'w, D: Data<'w>> Result<'w, D> {
     }
 }
 
-impl<'w, D: Data<'w>> Iterator for Result<'w, D> {
-    type Item = D;
+impl<'w, D: Data> Iterator for Result<'w, D> {
+    type Item = D::Data<'w>;
 
     /// Advance the iterator and return the next query result.
     ///
@@ -166,4 +166,4 @@ impl<'w, D: Data<'w>> Iterator for Result<'w, D> {
     }
 }
 
-impl<'w, D: Data<'w>> ExactSizeIterator for Result<'w, D> {}
+impl<'w, D: Data> ExactSizeIterator for Result<'w, D> {}

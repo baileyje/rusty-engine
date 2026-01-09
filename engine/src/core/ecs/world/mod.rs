@@ -35,7 +35,8 @@
 use crate::core::ecs::{
     archetype::{self},
     component::{self},
-    entity, query,
+    entity,
+    query::{self},
     storage::{self},
 };
 
@@ -224,10 +225,7 @@ impl World {
     ///
     /// Note: This holds a mutable reference to the entire world while the query result is active
     /// (use wisely).
-    pub fn query<'w, D>(&'w mut self) -> query::Result<'w, D>
-    where
-        D: 'w + query::Data<'w>,
-    {
+    pub fn query<'w, D: query::Data>(&'w mut self) -> query::Result<'w, D> {
         query::Query::<D>::one_shot(self)
     }
 }

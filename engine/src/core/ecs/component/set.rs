@@ -46,7 +46,7 @@ impl Set for () {
 
 /// Implement Set for tuples of component types.
 macro_rules! tuple_set_impl {
-    ($(($name: ident, $alias: ident)),*) => {
+    ($($name: ident),*) => {
         impl<$($name: Set),*> Set for ($($name,)*) {
             fn spec(registry: &Registry) -> Spec {
                 let mut ids = Vec::new();
@@ -55,8 +55,10 @@ macro_rules! tuple_set_impl {
             }
 
             fn apply<CT: Target>(self, registry: &Registry, target: &mut CT) {
-                let ( $($alias,)* ) = self;
-                $(<$name as Set>::apply($alias, registry, target);)*
+                 #[allow(non_snake_case)]
+                let ( $($name,)* ) = self;
+                 #[allow(non_snake_case)]
+                $(<$name as Set>::apply($name, registry, target);)*
             }
 
         }
@@ -65,22 +67,18 @@ macro_rules! tuple_set_impl {
 
 /// Implement Set for tuples of component types recursively.
 macro_rules! tuple_set {
-    (($head_ty:ident, $head_alias: ident)) => {
-        tuple_set_impl!(($head_ty, $head_alias));
+    ($head_ty:ident) => {
+        tuple_set_impl!($head_ty);
     };
-    (($head_ty:ident, $head_alias: ident), $( ($tail_ty:ident, $tail_alias: ident) ),*) => (
-        tuple_set_impl!(($head_ty, $head_alias), $(( $tail_ty, $tail_alias) ),*);
-        tuple_set!($( ($tail_ty, $tail_alias) ),*);
+    ($head_ty:ident, $( $tail_ty:ident ),*) => (
+        tuple_set_impl!($head_ty, $( $tail_ty ),*);
+        tuple_set!($( $tail_ty ),*);
     );
 }
 
-// This can't be the best way to do this, but it works for now.
+// Generate implementations for tuples up to 26 elements (A-Z)
 tuple_set! {
-    (A, a), (B, b), (C, c), (D, d), (E, e), (F, f),
-    (G, g), (H, h), (I, i), (J, j), (K, k), (L, l),
-    (M, m), (N, n), (O, o), (P, p), (Q, q), (R, r),
-    (S, s), (T, t), (U, u), (V, v), (W, w), (X, x),
-    (Y, y), (Z, z)
+    A, B, C, D, E, F, G, H, I, J, K, L, M, N, O, P, Q, R, S, T, U, V, W, X, Y, Z
 }
 
 #[cfg(test)]

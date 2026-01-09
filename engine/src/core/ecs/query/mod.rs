@@ -75,14 +75,12 @@ use std::marker::PhantomData;
 use crate::core::ecs::{component, query::data::DataSpec, world};
 
 mod data;
-mod handle;
 mod param;
 mod result;
 
 /// Publicly re-exported query data trait.
 pub use data::Data;
-/// Publicly re-exported query handle for callback-based queries.
-pub use handle::QueryHandle;
+
 /// Publicly re-exported query result iterator.
 pub use result::Result;
 
@@ -150,9 +148,9 @@ impl<D> Query<D> {
     /// let query = Query::<(&Position, &mut Velocity)>::new(world.components());
     /// ```
     #[inline]
-    pub fn new<'w>(components: &component::Registry) -> Self
+    pub fn new(components: &component::Registry) -> Self
     where
-        D: Data<'w>,
+        D: Data,
     {
         Self {
             data_spec: D::spec(components),
@@ -177,7 +175,7 @@ impl<D> Query<D> {
     #[inline]
     pub fn one_shot<'w>(world: &'w mut world::World) -> Result<'w, D>
     where
-        D: Data<'w>,
+        D: Data,
     {
         Self::new(world.components()).invoke(world)
     }
@@ -215,7 +213,7 @@ impl<D> Query<D> {
     /// ```
     pub fn invoke<'w>(&self, world: &'w mut world::World) -> Result<'w, D>
     where
-        D: Data<'w>,
+        D: Data,
     {
         // Runtime check to ensure no aliasing violations in component data types.
         assert!(
