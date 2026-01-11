@@ -94,7 +94,7 @@ use crate::ecs::{component, query, world};
 /// The `get` method is unsafe because:
 /// 1. Multiple parameters may create aliased mutable references to the world
 /// 2. The caller must ensure parameters access disjoint data
-/// 3. Component specs validate this at the scheduler level
+/// 3. Component access validate this at the scheduler level
 ///
 /// See [`super::function::WithSystemParams`] for details on safe usage.
 pub trait Parameter: Sized {
@@ -116,9 +116,9 @@ pub trait Parameter: Sized {
     /// The `Value<'w>` must also be `Parameter` to allow nested extraction (future feature).
     type Value<'w>: Parameter;
 
-    /// Get the component specification for this parameter.
+    /// Get the world access required for this parameter.
     ///
-    /// The component spec describes which components this parameter accesses and how
+    /// The access request describes which world resources this parameter accesses and how
     /// (immutable vs mutable). The scheduler uses this to:
     /// - Detect conflicts between system parameters
     /// - Validate no aliasing violations occur
@@ -130,29 +130,24 @@ pub trait Parameter: Sized {
     ///
     /// # Returns
     ///
-    /// A [`component::Spec`] describing the components accessed.
+    /// A [`world::AccessRequest`] describing world access required.
     ///
     /// # Examples
     ///
     /// ```rust,ignore
-    /// // Query for &Position returns spec with Position (immutable)
-    /// let spec = <query::Result<&Position> as Parameter>::component_spec(&registry);
+    /// // Query for &Position returns access with Position (immutable)
+    /// let access = <query::Result<&Position> as Parameter>::access(&registry);
     ///
-    /// // Query for &mut Velocity returns spec with Velocity (mutable)
-    /// let spec = <query::Result<&mut Velocity> as Parameter>::component_spec(&registry);
+    /// // Query for &mut Velocity returns access with Velocity (mutable)
+    /// let access = <query::Result<&mut Velocity> as Parameter>::access(&registry);
     ///
-    /// // World access returns empty spec (should be "all components" in future)
-    /// let spec = <&mut World as Parameter>::component_spec(&registry);
+    /// // World access returns immutable world access.
+    /// let access = <&World as Parameter>::access(&registry);
+    ///
+    /// // World access returns mutable world access.
+    /// let access = <&mut World as Parameter>::access(&registry);
     /// ```
-    ///
-    /// # Future
-    ///
-    /// This will be generalized to a "world access request" that covers:
-    /// - Component access (current)
-    /// - Resource access
-    /// - Full world access (exclusive)
-    /// - Archetype-level access (optimization)
-    fn component_spec(components: &component::Registry) -> component::Spec;
+    fn required_access(components: &component::Registry) -> world::AccessRequest;
 
     /// Extract this parameter's value from the world.
     ///
@@ -239,7 +234,7 @@ pub trait Parameter: Sized {
 /// # Implementation Details
 ///
 /// - **Value type**: `query::Result<'w, D>` where `'w` is the world lifetime
-/// - **Component spec**: Delegates to `D::spec()` which analyzes the query type
+/// - **Access request**: Delegates to `D::spec()` which analyzes the query type
 /// - **Extraction**: Calls `world.query::<D>()` to create the iterator
 ///
 /// The lifetime `'_` in `query::Result<'_, D>` is elided in function signatures,
@@ -249,10 +244,10 @@ pub trait Parameter: Sized {
 impl<D: query::Data> Parameter for query::Result<'_, D> {
     type Value<'w> = query::Result<'w, D>;
 
-    /// Get the component specification for this query parameter.
+    /// Get the world access request for this query parameter.
     /// This delegates to the underlying Data type to determine the required components.
-    fn component_spec(components: &component::Registry) -> component::Spec {
-        D::spec(components).as_component_spec()
+    fn required_access(components: &component::Registry) -> world::AccessRequest {
+        D::spec(components).as_access_request()
     }
 
     /// Get the query results by executing a query for the specific data against the provided world
@@ -262,7 +257,59 @@ impl<D: query::Data> Parameter for query::Result<'_, D> {
     }
 }
 
-/// Implementation of [`Parameter`] for direct world access.
+/// Implementation of [`Parameter`] for direct immutable world access.
+///
+/// This allows systems to read anything from the world directly for operations that don't fit
+/// the query pattern, such as accessing non-component data.
+///
+/// # Performance Implications
+///
+/// Immutable World access is **partially exclusive** - multiple systems can access the
+/// immutable world simultaneously with immutable components, but will block any mutable access to
+/// either the world or components.
+///
+/// # When to Use
+///
+/// Use world access when you need to:
+/// - **Access entity metadata**: Query entity existence, generation counters, etc.
+///
+/// Don't use world access for:
+/// - **Reading components**: Use queries instead
+/// - **Finding entities**: Use queries with filters (future)
+///
+/// # Examples
+///
+/// ```rust,ignore
+///
+/// // Checking entity existence
+/// fn validator(player_id: entity::Entity, world: &World) {
+///     if world.entity(player_id).is_none() {
+///         println!("Player entity no longer exists!");
+///     }
+/// }
+/// ```
+///
+/// # Implementation Details
+///
+/// - **Value type**: `&'w World` where `'w` is the world lifetime
+/// - **Access request**: Returns access request for immutable world access
+/// - **Extraction**: Returns the world reference directly
+///
+impl Parameter for &world::World {
+    type Value<'w> = &'w world::World;
+
+    /// Get the world access request for this world parameter.
+    fn required_access(_components: &component::Registry) -> world::AccessRequest {
+        world::AccessRequest::to_world(false)
+    }
+
+    /// Get immutable access to the world.
+    unsafe fn get<'w>(world: &'w mut world::World) -> Self::Value<'w> {
+        world
+    }
+}
+
+/// Implementation of [`Parameter`] for direct mutable world access.
 ///
 /// This allows systems to access the world directly for operations that don't fit
 /// the query pattern, such as spawning/despawning entities or accessing non-component data.
@@ -271,9 +318,6 @@ impl<D: query::Data> Parameter for query::Result<'_, D> {
 ///
 /// World access is **exclusive** - only one system can have world access at a time.
 /// This limits parallelization opportunities. Prefer using queries when possible.
-///
-/// Once a world access request system exists (future), any system with a world parameter
-/// will block all other systems from running in parallel, significantly reducing throughput.
 ///
 /// # When to Use
 ///
@@ -328,13 +372,10 @@ impl<D: query::Data> Parameter for query::Result<'_, D> {
 /// # Implementation Details
 ///
 /// - **Value type**: `&'w mut World` where `'w` is the world lifetime
-/// - **Component spec**: Returns empty spec (should be "all components" in future)
+/// - **Access request**: Access request for mutable world access
 /// - **Extraction**: Returns the world reference directly
 ///
 /// # Future
-///
-/// The component spec will be enhanced to signal "requires exclusive world access",
-/// allowing the scheduler to properly serialize world access with all other systems.
 ///
 /// A `Commands` parameter type will be added for deferred spawning/despawning,
 /// which won't require exclusive access and can run in parallel.
@@ -346,9 +387,8 @@ impl Parameter for &mut world::World {
     /// we are just bailing with no components.
     ///
     /// Note: Replace with full world access request.
-    fn component_spec(_components: &component::Registry) -> component::Spec {
-        // TODO: Require All Components.....
-        component::Spec::EMPTY
+    fn required_access(_components: &component::Registry) -> world::AccessRequest {
+        world::AccessRequest::to_world(true)
     }
 
     /// Get the world.....
@@ -396,10 +436,22 @@ mod tests {
         let (world, _) = test_setup();
 
         // When
-        let spec = <&mut world::World as Parameter>::component_spec(world.components());
+        let access = <&world::World as Parameter>::required_access(world.components());
 
-        // Then - world param should have empty component spec (or all components in future)
-        assert_eq!(spec.ids().len(), 0);
+        // Then
+        assert!(access.world());
+    }
+
+    #[test]
+    fn world_mut_param_component_spec() {
+        // Given
+        let (world, _) = test_setup();
+
+        // When
+        let access = <&mut world::World as Parameter>::required_access(world.components());
+
+        // Then
+        assert!(access.world_mut());
     }
 
     #[test]
@@ -415,16 +467,25 @@ mod tests {
     }
 
     #[test]
-    fn comp_param_component_spec() {
+    fn comp_param_component_access() {
         // Given
         let (world, _) = test_setup();
 
         // When
-        let spec = <query::Result<&Comp1> as Parameter>::component_spec(world.components());
+        let access =
+            <query::Result<(&Comp1, &Comp2)> as Parameter>::required_access(world.components());
 
         // Then
-        assert_eq!(spec.ids().len(), 1);
-        assert_eq!(spec.ids()[0], world.components().get::<Comp1>().unwrap());
+        assert_eq!(
+            access,
+            world::AccessRequest::to_components(
+                component::Spec::new(vec![
+                    world.components().get::<Comp1>().unwrap(),
+                    world.components().get::<Comp2>().unwrap()
+                ]),
+                component::Spec::EMPTY,
+            )
+        )
     }
 
     #[test]
@@ -475,10 +536,11 @@ mod tests {
         let (world, _) = test_setup();
 
         // When
-        let spec = <query::Result<entity::Entity> as Parameter>::component_spec(world.components());
+        let access =
+            <query::Result<entity::Entity> as Parameter>::required_access(world.components());
 
         // Then
-        assert_eq!(spec.ids().len(), 0);
+        assert!(access.is_none());
     }
 
     #[test]
@@ -506,15 +568,19 @@ mod tests {
         let (world, _) = test_setup();
 
         // When
-        let spec =
-            <query::Result<(entity::Entity, &Comp1, &mut Comp2)> as Parameter>::component_spec(
+        let access =
+            <query::Result<(entity::Entity, &Comp1, &mut Comp2)> as Parameter>::required_access(
                 world.components(),
             );
 
         // Then
-        assert_eq!(spec.ids().len(), 2);
-        assert_eq!(spec.ids()[0], world.components().get::<Comp1>().unwrap());
-        assert_eq!(spec.ids()[1], world.components().get::<Comp2>().unwrap());
+        assert_eq!(
+            access,
+            world::AccessRequest::to_components(
+                component::Spec::new(vec![world.components().get::<Comp1>().unwrap()]),
+                component::Spec::new(vec![world.components().get::<Comp2>().unwrap()]),
+            )
+        )
     }
 
     #[test]

@@ -56,7 +56,7 @@ use std::marker::PhantomData;
 
 use crate::ecs::{
     component,
-    system::{param::Parameter, System},
+    system::{System, param::Parameter},
     world,
 };
 
@@ -106,11 +106,11 @@ use crate::ecs::{
 /// - Determine safe execution order
 /// - Enable parallel execution (future)
 pub struct Wrapper<F, Params> {
-    /// The component spec for this system's parameters.
+    /// The world accesses required for this system's parameters.
     ///
-    /// Computed by merging specs from all parameters via [`WithSystemParams::component_spec()`].
+    /// Computed by merging specs from all parameters via [`WithSystemParams::required_access()`].
     /// Used by the scheduler to validate system compatibility.
-    spec: component::Spec,
+    required_access: world::AccessRequest,
 
     /// The function to execute.
     ///
@@ -180,7 +180,7 @@ impl<F, Params> Wrapper<F, Params> {
         F: WithSystemParams<Params>,
     {
         Self {
-            spec: F::component_spec(components),
+            required_access: F::required_access(components),
             func,
             _marker: PhantomData,
         }
@@ -194,10 +194,9 @@ where
     F: WithSystemParams<Params> + Send + Sync,
     Params: Send + Sync,
 {
-    /// Get the component spec for a wrapped function. Returns the components required to support
-    /// the parameters needed for the query.
-    fn component_spec(&self) -> &component::Spec {
-        &self.spec
+    /// Get the required world access for a wrapped function.
+    fn required_access(&self) -> &world::AccessRequest {
+        &self.required_access
     }
 
     /// Invoke the wrapped function with the world reference.
@@ -213,8 +212,6 @@ where
 /// This trait bridges the gap between clean function signatures (with elided lifetimes)
 /// and runtime execution (with world lifetime `'w`). It's the core of what makes
 /// parameter extraction work.
-///
-/// # The HRTB Magic
 ///
 /// The implementations use Higher-Ranked Trait Bounds to achieve lifetime flexibility:
 ///
@@ -280,9 +277,9 @@ where
 /// // )>
 /// ```
 pub trait WithSystemParams<Params>: 'static {
-    /// Compute the combined component specification for all parameters.
+    /// Compute the combined required world access for all parameters.
     ///
-    /// This merges the component specs from each parameter to create a unified
+    /// This merges the required_access from each parameter to create a unified
     /// spec describing all components this system accesses and how.
     ///
     /// # Parameters
@@ -291,9 +288,9 @@ pub trait WithSystemParams<Params>: 'static {
     ///
     /// # Returns
     ///
-    /// A [`component::Spec`] describing read/write access to all components
+    /// A [`world::AccessRequest`] describing read/write access to all world resources
     /// needed by the system's parameters.
-    fn component_spec(components: &component::Registry) -> component::Spec;
+    fn required_access(components: &component::Registry) -> world::AccessRequest;
 
     /// Execute the function with parameters extracted from the world.
     ///
@@ -338,9 +335,9 @@ impl<F> WithSystemParams<()> for F
 where
     F: FnMut() + 'static,
 {
-    /// Returns an empty component spec since no components are accessed.
-    fn component_spec(_components: &component::Registry) -> component::Spec {
-        component::Spec::EMPTY
+    /// Returns an empty access request since no components are accessed.
+    fn required_access(components: &component::Registry) -> world::AccessRequest {
+        world::AccessRequest::NONE
     }
 
     /// Invokes the function without accessing the world.
@@ -386,13 +383,13 @@ macro_rules! system_param_function_impl {
             // and any specific lifetime 'a (runtime with world lifetime)
             for<'a> &'a mut Func: FnMut($($param),*) + FnMut($($param::Value<'a>),*),
         {
-            fn component_spec(components: &component::Registry) -> component::Spec {
+            fn required_access(components: &component::Registry) -> world::AccessRequest {
                 // Merge component specs from all parameters
-                let mut spec = component::Spec::EMPTY;
+                let mut access = world::AccessRequest::NONE;
                 $(
-                    spec = spec.merge(&$param::component_spec(components));
+                    access = access.merge(&$param::required_access(components));
                 )*
-                spec
+                access
             }
 
             unsafe fn run(&mut self, world: &mut world::World) {
@@ -464,7 +461,7 @@ system_param_function! {
 mod tests {
     use crate::ecs::{
         component, query,
-        system::{function::Wrapper, System},
+        system::{System, function::Wrapper},
         world,
     };
 
@@ -647,21 +644,27 @@ mod tests {
     }
 
     #[test]
-    fn component_spec_single_query() {
+    fn access_single_query() {
         fn my_system(_query: query::Result<&Comp1>) {}
 
         let components = component::Registry::new();
         components.register::<Comp1>();
 
         let system = Wrapper::new(&components, my_system);
-        let spec = system.component_spec();
+        let access = system.required_access();
 
-        // Should have Comp1 in the spec
-        assert!(spec.ids().len() > 0);
+        // Should have Comp1 in the access request
+        assert_eq!(
+            *access,
+            world::AccessRequest::to_components(
+                component::Spec::new(vec![components.get::<Comp1>().unwrap()]),
+                component::Spec::EMPTY
+            )
+        );
     }
 
     #[test]
-    fn component_spec_multiple_queries() {
+    fn access_multiple_queries() {
         fn my_system(_query1: query::Result<&Comp1>, _query2: query::Result<&Comp2>) {}
 
         let components = component::Registry::new();
@@ -669,12 +672,16 @@ mod tests {
         let id2 = components.register::<Comp2>();
 
         let system = Wrapper::new(&components, my_system);
-        let spec = system.component_spec();
+        let access = system.required_access();
 
         // Should have both components in the merged spec
-        assert_eq!(spec.ids().len(), 2);
-        assert!(spec.contains(id1));
-        assert!(spec.contains(id2));
+        assert_eq!(
+            *access,
+            world::AccessRequest::to_components(
+                component::Spec::new(vec![id1, id2]),
+                component::Spec::EMPTY
+            )
+        )
     }
 
     #[test]
@@ -686,12 +693,16 @@ mod tests {
         let id2 = components.register::<Comp2>();
 
         let system = Wrapper::new(&components, my_system);
-        let spec = system.component_spec();
+        let access = system.required_access();
 
         // Should have both components
-        assert_eq!(spec.ids().len(), 2);
-        assert!(spec.contains(id1));
-        assert!(spec.contains(id2));
+        assert_eq!(
+            *access,
+            world::AccessRequest::to_components(
+                component::Spec::new(vec![id1, id2]),
+                component::Spec::EMPTY
+            )
+        )
     }
 
     #[test]
@@ -819,104 +830,24 @@ mod tests {
 
         let components = component::Registry::new();
         let system = Wrapper::new(&components, my_system);
-        let spec = system.component_spec();
+        let access = system.required_access();
 
         // Should have empty spec
-        assert_eq!(spec.ids().len(), 0);
+        assert!(access.is_none());
     }
 
     #[test]
     fn component_spec_world_only_system() {
+        // Given
         fn my_system(_world: &mut world::World) {}
 
         let components = component::Registry::new();
         let system = Wrapper::new(&components, my_system);
-        let spec = system.component_spec();
 
-        // World access should have empty spec (TODO: should block all access)
-        assert_eq!(spec.ids().len(), 0);
+        // When
+        let access = system.required_access();
+
+        // Then
+        assert!(access.world_mut());
     }
-
-    // #[test]
-    // fn query_handle_multiple_entities() {
-    //     fn count_system(query: QueryHandle<(&Comp1, &Comp2)>) {
-    //         let mut count = 0;
-    //         query.for_each(|(_c1, _c2)| {
-    //             count += 1;
-    //         });
-    //         assert_eq!(count, 2);
-    //     }
-    //
-    //     let mut world = world::World::new(world::Id::new(0));
-    //
-    //     // Spawn entities
-    //     world.spawn((Comp1 { value: 1 }, Comp2 { value: 10 }));
-    //     world.spawn((Comp1 { value: 2 }, Comp2 { value: 20 }));
-    //     world.spawn(Comp1 { value: 3 }); // Only Comp1, won't match query
-    //
-    //     let components = world.components();
-    //     let mut system: FunctionSystem<_, (QueryHandle<(&Comp1, &Comp2)>,)> =
-    //         FunctionSystem::new(components, count_system);
-    //
-    //     unsafe {
-    //         system.run(&mut world);
-    //     }
-    // }
-    //
-    // #[test]
-    // fn multiple_query_handles_function_system() {
-    //     fn two_query_system(query1: QueryHandle<&Comp1>, query2: QueryHandle<&Comp2>) {
-    //         // Count Comp1 entities
-    //         let count1 = query1.count();
-    //         assert_eq!(count1, 3);
-    //
-    //         // Count Comp2 entities
-    //         let count2 = query2.count();
-    //         assert_eq!(count2, 2);
-    //     }
-    //
-    //     let mut world = world::World::new(world::Id::new(0));
-    //
-    //     world.spawn((Comp1 { value: 1 }, Comp2 { value: 10 }));
-    //     world.spawn((Comp1 { value: 2 }, Comp2 { value: 20 }));
-    //     world.spawn(Comp1 { value: 3 }); // Only Comp1
-    //
-    //     let components = world.components();
-    //     let mut system: FunctionSystem<_, (QueryHandle<&Comp1>, QueryHandle<&Comp2>)> =
-    //         FunctionSystem::new(components, two_query_system);
-    //
-    //     unsafe {
-    //         system.run(&mut world);
-    //     }
-    // }
-    //
-    // #[test]
-    // fn query_handle_with_mutable_components() {
-    //     fn increment_system(mut query: QueryHandle<&mut Comp1>) {
-    //         query.for_each_mut(|comp| {
-    //             comp.value += 1;
-    //         });
-    //     }
-    //
-    //     let mut world = world::World::new(world::Id::new(0));
-    //     world.spawn(Comp1 { value: 5 });
-    //     world.spawn(Comp1 { value: 10 });
-    //
-    //     let components = world.components();
-    //     let mut system: FunctionSystem<_, (QueryHandle<&mut Comp1>,)> =
-    //         FunctionSystem::new(components, increment_system);
-    //
-    //     // Run the system
-    //     unsafe {
-    //         system.run(&mut world);
-    //     }
-    //
-    //     // Verify the values were incremented
-    //     use crate::ecs::query::Query;
-    //     let mut query = Query::<&Comp1>::new(world.components()).invoke(&mut world);
-    //
-    //     let values: Vec<i32> = query.map(|c| c.value).collect();
-    //     assert!(values.contains(&6));
-    //     assert!(values.contains(&11));
-    // }
 }

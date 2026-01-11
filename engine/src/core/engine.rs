@@ -9,7 +9,7 @@ use crate::core::service::NoOpService;
 use crate::core::time::ONE_FPS;
 use crate::core::{Logic, Time};
 
-use super::runner::{no_op, Runner};
+use super::runner::{Runner, no_op};
 use super::{service::Service, state::State};
 
 /// The engine's core structure. This structure holds all the services required for the engine to run.

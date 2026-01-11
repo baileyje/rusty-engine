@@ -52,6 +52,12 @@ pub(crate) use spec::Spec;
 pub struct Id(u32);
 
 impl Id {
+    /// Construct a new component Id from a raw u32 value.
+    #[inline]
+    pub const fn new(id: u32) -> Self {
+        Self(id)
+    }
+
     /// Get the index of this component if it were to live in indexable storage (e.g. Vec)
     #[inline]
     pub fn index(&self) -> usize {

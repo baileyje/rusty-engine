@@ -31,6 +31,7 @@
 //! // Despawn the entity
 //! world.despawn(entity);
 //! ```
+mod access;
 
 use crate::ecs::{
     archetype::{self},
@@ -39,6 +40,9 @@ use crate::ecs::{
     query::{self},
     storage::{self},
 };
+
+/// Exported types for world access control.
+pub use access::{AccessGrant, AccessRequest};
 
 /// A world identifier. This is a unique identifier for a world in the ECS.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]

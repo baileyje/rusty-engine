@@ -25,7 +25,7 @@ use std::collections::HashSet;
 use crate::ecs::{
     component, entity,
     query::param::{Parameter, ParameterSpec},
-    storage,
+    storage, world,
 };
 
 /// Types that can be used as complete query specifications.
@@ -176,7 +176,7 @@ impl DataSpec {
         &self.params
     }
 
-    /// Convert this query specification to a component specification.
+    /// Convert this query specification to a [component::Spec].
     ///
     /// This extracts the component IDs from the parameter list and creates a
     /// [`component::Spec`] that can be used to find matching tables.
@@ -202,6 +202,42 @@ impl DataSpec {
             })
             .collect();
         component::Spec::new(ids)
+    }
+
+    /// Convert this query specification to a world access request.
+    ///
+    /// This extracts the component IDs and mutability from the parameter list and creates a
+    /// [`world::AccessRequest`] that can be used to ensure callers have access to execute this
+    /// query.
+    ///
+    /// # Returns
+    ///
+    /// A [`world::AccessRequest`].
+    ///
+    /// # Note
+    ///
+    /// Optional components (`Option<&C>`, `Option<&mut C>`) are included in the access
+    /// request. Even though the query doesn't require the component to exist on every
+    /// entity, accessing it when present still requires the appropriate permissions.
+    pub fn as_access_request(&self) -> world::AccessRequest {
+        let mut immutable_ids: Vec<component::Id> = Vec::new();
+        let mut mutable_ids: Vec<component::Id> = Vec::new();
+        for param in self.params.iter() {
+            match param {
+                ParameterSpec::Component(id, is_mut, _optional) => {
+                    if *is_mut {
+                        mutable_ids.push(*id);
+                    } else {
+                        immutable_ids.push(*id);
+                    }
+                }
+                _ => {}
+            }
+        }
+        world::AccessRequest::to_components(
+            component::Spec::new(immutable_ids),
+            component::Spec::new(mutable_ids),
+        )
     }
 
     /// Check if this query requires mutable access to any components.
@@ -504,6 +540,127 @@ mod tests {
 
         let comp_spec = spec.as_component_spec();
         assert_eq!(comp_spec.ids(), vec![comp1_id, comp2_id]);
+    }
+
+    #[test]
+    fn comps_access() {
+        // Given
+        let registry = component::Registry::new();
+        let comp1_id = registry.register::<Comp1>();
+        let comp2_id = registry.register::<Comp2>();
+        let comp3_id = registry.register::<Comp3>();
+
+        // When
+        let spec = <(&mut Comp1, &Comp2, &Comp3)>::spec(&registry);
+
+        // Then
+        let params = spec.params();
+        assert_eq!(params.len(), 3);
+
+        let request = spec.as_access_request();
+        assert!(request.grants(&world::AccessRequest::to_components(
+            component::Spec::new(vec![comp2_id, comp3_id]),
+            component::Spec::new(vec![comp1_id]),
+        )));
+    }
+
+    #[test]
+    fn optional_comps_included_in_access() {
+        // Given
+        let registry = component::Registry::new();
+        let comp1_id = registry.register::<Comp1>();
+        let comp2_id = registry.register::<Comp2>();
+        let comp3_id = registry.register::<Comp3>();
+
+        // When - query with optional components
+        let spec = <(&Comp1, Option<&Comp2>, Option<&mut Comp3>)>::spec(&registry);
+
+        // Then - optional components should be included in access request
+        let request = spec.as_access_request();
+
+        // Should grant access to all components (including optional ones)
+        assert!(request.grants(&world::AccessRequest::to_components(
+            component::Spec::new(vec![comp1_id, comp2_id]),
+            component::Spec::new(vec![comp3_id]),
+        )));
+
+        // Should not grant access to components not in query
+        // Use a component ID that's definitely not in our query
+        let fake_id = component::Id::new(99);
+        assert!(!request.grants(&world::AccessRequest::to_components(
+            component::Spec::new(vec![fake_id]),
+            component::Spec::EMPTY,
+        )));
+    }
+
+    #[test]
+    fn entity_not_in_access_request() {
+        // Given
+        let registry = component::Registry::new();
+        let comp1_id = registry.register::<Comp1>();
+
+        // When - query includes Entity
+        let spec = <(entity::Entity, &Comp1)>::spec(&registry);
+
+        // Then - Entity should not affect the access request
+        let request = spec.as_access_request();
+
+        // Should only have component access, not world access
+        assert!(!request.world());
+        assert!(!request.world_mut());
+
+        // Should grant the component access
+        assert!(request.grants(&world::AccessRequest::to_components(
+            component::Spec::new(vec![comp1_id]),
+            component::Spec::EMPTY,
+        )));
+    }
+
+    #[test]
+    fn empty_query_access_is_none() {
+        // Given
+        let registry = component::Registry::new();
+
+        // When - empty query
+        let spec = <()>::spec(&registry);
+
+        // Then - should return no access
+        let request = spec.as_access_request();
+        assert!(request.is_none());
+    }
+
+    #[test]
+    fn access_request_conflicts_correctly() {
+        // Given
+        let registry = component::Registry::new();
+        registry.register::<Comp1>();
+        registry.register::<Comp2>();
+
+        // Query A: reads Comp1, writes Comp2
+        let spec_a = <(&Comp1, &mut Comp2)>::spec(&registry);
+        let access_a = spec_a.as_access_request();
+
+        // Query B: writes Comp1 (conflicts with A's read)
+        let spec_b = <&mut Comp1>::spec(&registry);
+        let access_b = spec_b.as_access_request();
+
+        // Query C: reads Comp1 (no conflict with A)
+        let spec_c = <&Comp1>::spec(&registry);
+        let access_c = spec_c.as_access_request();
+
+        // Query D: reads Comp2 (conflicts with A's write)
+        let spec_d = <&Comp2>::spec(&registry);
+        let access_d = spec_d.as_access_request();
+
+        // Then
+        // A and B conflict (A reads Comp1, B writes Comp1)
+        assert!(access_a.conflicts_with(&access_b));
+
+        // A and C don't conflict (both read Comp1, A writes Comp2 but C doesn't touch it)
+        assert!(!access_a.conflicts_with(&access_c));
+
+        // A and D conflict (A writes Comp2, D reads Comp2)
+        assert!(access_a.conflicts_with(&access_d));
     }
 
     #[test]

@@ -33,12 +33,11 @@ impl Registry {
     ) -> &mut Archetype {
         // Add a new archetype with the next valid index.
         let archetype_id = Id(self.archetypes.len() as u32);
-        // Add a new archetype to storage.
+        // Add to map by components (requires one clone for HashMap key)
+        self.by_components.insert(spec.clone(), archetype_id);
+        // Add a new archetype to storage (moves spec)
         self.archetypes
-            .push(Archetype::new(archetype_id, spec.clone(), table_id));
-
-        // Add to map by components
-        self.by_components.insert(spec, archetype_id);
+            .push(Archetype::new(archetype_id, spec, table_id));
 
         // Safety - We know we just added this.
         unsafe { self.get_unchecked_mut(archetype_id) }

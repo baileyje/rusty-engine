@@ -91,8 +91,6 @@
 //!
 //! # How It Works
 //!
-//! The magic happens through the [`Parameter`] trait's Generic Associated Type:
-//!
 //! ```rust,ignore
 //! pub trait Parameter {
 //!     type Value<'w>: Parameter;  // GAT carries world lifetime
@@ -131,7 +129,7 @@
 //! scheduler.add_system(ai);           // Writes AIState - can run parallel with physics
 //! ```
 
-use crate::ecs::{component, world};
+use crate::ecs::world;
 
 pub mod function;
 pub mod param;
@@ -166,9 +164,9 @@ pub use param::Parameter;
 /// - Scheduler validating system compatibility
 /// - Single-threaded execution (currently)
 pub trait System: Send + Sync {
-    /// Get the component specification for this system.
+    /// Get the required world access for this system.
     ///
-    /// The component spec describes which components this system accesses and how
+    /// The required resources this system accesses and how
     /// (read vs write). The scheduler uses this to:
     /// - Detect conflicts between systems
     /// - Determine safe execution order
@@ -176,8 +174,8 @@ pub trait System: Send + Sync {
     ///
     /// # Returns
     ///
-    /// A reference to the component specification computed when the system was created.
-    fn component_spec(&self) -> &component::Spec;
+    /// A reference to the required world access for this system.
+    fn required_access(&self) -> &world::AccessRequest;
 
     /// Execute the system on the given world.
     ///

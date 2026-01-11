@@ -308,11 +308,11 @@ impl Storage {
     ) -> &mut Table {
         // Grab the index the table will be stored at.
         let id = table::Id::new(self.tables.len() as u32);
-        // Create a new table from this archetype's components.
+        // Add the table to the map (requires one clone for HashMap key)
+        self.table_map.insert(components.clone(), id);
+        // Create a new table from this archetype's components (moves components)
         self.tables
-            .push(Table::new(id, components.clone(), registry));
-        // Add the table to the map
-        self.table_map.insert(components, id);
+            .push(Table::new(id, components, registry));
         // Return a mutable reference
         self.get_mut(id)
     }

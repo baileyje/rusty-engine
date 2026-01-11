@@ -57,7 +57,9 @@ impl Spec {
     /// the union of both component ID sets.
     #[inline]
     pub fn merge(&self, other: &Spec) -> Self {
-        let mut ids = self.ids.clone();
+        // Pre-allocate capacity to avoid reallocation
+        let mut ids = Vec::with_capacity(self.ids.len() + other.ids.len());
+        ids.extend_from_slice(&self.ids);
         ids.extend_from_slice(&other.ids);
         Self::new(ids)
     }
