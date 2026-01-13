@@ -72,11 +72,12 @@
 
 use std::marker::PhantomData;
 
-use crate::ecs::{component, query::data::DataSpec, world};
+use crate::ecs::{component, query::source::DataSource, world};
 
 mod data;
 mod param;
 mod result;
+mod source;
 
 /// Publicly re-exported query data trait.
 pub use data::Data;
@@ -102,7 +103,7 @@ pub use result::Result;
 /// # Invocation
 ///
 /// Queries are executed using [`Query::invoke`], which returns an iterator over
-/// matching entities. The iterator borrows the world mutably for the duration
+/// matching entities. The iterator borrows a DataSource (World or Shard) mutably for the duration
 /// of the iteration.
 ///
 /// # Examples
@@ -123,9 +124,19 @@ pub use result::Result;
 ///
 /// [`Data`]: data::Data
 /// [`Parameter`]: param::Parameter
+///
+///
+/// # Safety
+/// Its critical to ensure that queries do not violate Rust's aliasing rules. This is checked at
+/// query creation time, and will panic if violations are detected. It is important no means for
+/// changing the query data specification after creation exist, as that could lead to undefined
+/// behavior.
 pub struct Query<D> {
-    /// The specification describing what data this query accesses.
-    data_spec: DataSpec,
+    /// The components accessed by this query.
+    components: component::Spec,
+
+    /// The access request for this query.
+    required_access: world::AccessRequest,
 
     /// Phantom data to tie the Data type to the struct.
     phantom: PhantomData<D>,
@@ -141,6 +152,11 @@ impl<D> Query<D> {
     ///
     /// - `components`: The component registry used to register and look up component types
     ///
+    /// # Panics
+    ///
+    /// Panics if the query Data specification has aliasing violations.
+    ///
+    ///
     /// # Examples
     ///
     /// ```rust,ignore
@@ -151,54 +167,43 @@ impl<D> Query<D> {
     where
         D: Data,
     {
+        // Generate the data specification from the Data type.
+        let data_spec = D::spec(components);
+        // Assert we have not created an invalid query with potential aliasing violations.
+        assert!(
+            data_spec.is_valid(),
+            "Query aliasing violation: same component requested multiple times in query"
+        );
         Self {
-            data_spec: D::spec(components),
+            components: data_spec.as_component_spec(),
+            required_access: data_spec.as_access_request(),
             phantom: PhantomData,
         }
     }
 
-    /// One-shot query execution. Shorthand for creating and invoking a query immediately that
-    /// can't be cached for re-use.
-    ///
-    /// This will create a query and invoke it immediately on the given world.
-    ///
-    /// # Parameters
-    ///
-    /// - `world`: Mutable reference to the world to query
-    ///
-    /// # Examples
-    ///
-    /// ```rust,ignore
-    /// let result = Query::<(&Position, &mut Velocity)>::one_shot(&mut world);
-    /// ```
+    /// Get the world access required to run this query.
     #[inline]
-    pub fn one_shot<'w>(world: &'w mut world::World) -> Result<'w, D>
-    where
-        D: Data,
-    {
-        Self::new(world.components()).invoke(world)
+    pub fn required_access(&self) -> &world::AccessRequest {
+        &self.required_access
     }
 
     /// Execute the query and return an iterator over matching entities.
     ///
     /// This method:
-    /// 1. Validates the query specification to prevent aliasing violations
+    /// 1. In debug builds, verifies that the data source allows the required access
     /// 2. Identifies all tables (archetypes) that contain the required components
     /// 3. Returns an iterator that yields matching entities across those tables
     ///
     /// # Parameters
     ///
-    /// - `world`: Mutable reference to the world to query
+    /// - `source`: Mutable reference to the data source to query
     ///
     /// # Returns
     ///
     /// An iterator that yields items of type `D` (the query data type).
     ///
     /// # Panics
-    ///
-    /// Panics if the query contains aliasing violations, such as:
-    /// - Requesting the same component multiple times (e.g., `(&Foo, &Foo)`)
-    /// - Requesting conflicting mutability (e.g., `(&Foo, &mut Foo)`)
+    /// - In debug builds, if the data source does not support the required access for this query.
     ///
     /// # Examples
     ///
@@ -210,72 +215,38 @@ impl<D> Query<D> {
     ///     vel.dx += pos.x * 0.01;
     /// }
     /// ```
-    pub fn invoke<'w>(&self, world: &'w mut world::World) -> Result<'w, D>
-    where
-        D: Data,
-    {
-        // Runtime check to ensure no aliasing violations in component data types.
-        assert!(
-            self.data_spec.is_valid(),
-            "Query aliasing violation: same component requested multiple times"
-        );
-
-        // Create a component spec for the query.
-        let comp_spec = self.data_spec.as_component_spec();
-
-        // Get the table ids that support this component spec.
-        let table_ids = world.storage().supporting(&comp_spec);
-
-        Result::new(world, table_ids)
-    }
-
-    /// Invoke the query on a shard to get an iterator over matching entities.
-    ///
-    /// This is similar to [`invoke`](Self::invoke) but works with a [`world::Shard`]
-    /// instead of a full `World`. The shard's grant should cover the components
-    /// accessed by this query.
-    ///
-    /// # Parameters
-    ///
-    /// - `shard`: Mutable reference to the shard to query
-    ///
-    /// # Returns
-    ///
-    /// An iterator that yields items of type `D` (the query data type).
-    ///
-    /// # Panics
-    ///
-    /// Panics if the query has aliasing violations, same as [`invoke`](Self::invoke).
-    ///
-    /// # Examples
     ///
     /// ```rust,ignore
     /// let query = Query::<(&Position, &mut Velocity)>::new(world.components());
-    /// let shard = world.shard(&access_request)?;
     ///
-    /// for (pos, vel) in query.invoke_shard(&mut shard) {
+    /// for (pos, vel) in query.invoke(&mut shard) {
+    ///     // Update velocity based on position
     ///     vel.dx += pos.x * 0.01;
     /// }
     /// ```
-    pub fn invoke_shard<'w>(&self, shard: &'w mut world::Shard<'_>) -> Result<'w, D>
+    pub fn invoke<'w>(&self, source: &'w mut dyn DataSource) -> Result<'w, D>
     where
         D: Data,
     {
-        // Runtime check to ensure no aliasing violations in component data types.
-        assert!(
-            self.data_spec.is_valid(),
-            "Query aliasing violation: same component requested multiple times"
-        );
-
-        // Create a component spec for the query.
-        let comp_spec = self.data_spec.as_component_spec();
+        // Ensure the data source allows the required access for this query.
+        debug_assert!(source.allows(&self.required_access),);
 
         // Get the table ids that support this component spec.
-        let table_ids = shard.storage().supporting(&comp_spec);
+        //
+        // TODO: Should these be cached on the Query itself to avoid recomputing each time? This
+        // would need some way to refresh the cache if new archetypes are added that match the
+        // query.
+        //
+        let table_ids = source.table_ids_for(&self.components);
 
-        // SAFETY: Shard has grant covering required access, validated at system execution
-        Result::new(unsafe { shard.world_mut() }, table_ids)
+        Result::new(source, table_ids)
     }
+}
+
+/// Trait for converting various types into a `Query<D>`.
+pub trait IntoQuery<D> {
+    /// Convert into a `Query<D>`.
+    fn into_query(components: &component::Registry) -> Query<D>;
 }
 
 #[cfg(test)]
@@ -309,20 +280,34 @@ mod tests {
     }
 
     #[test]
-    fn invoke_empty_query() {
+    #[should_panic(expected = "Query aliasing violation")]
+    fn reject_invalid_query_data() {
+        // Given
         let mut world = make_world();
-        let mut result = Query::<()>::new(world.components()).invoke(&mut world);
+        // When
+        Query::<(&Comp1, &Comp1)>::new(world.components()).invoke(&mut world);
+    }
 
+    #[test]
+    fn invoke_empty_query() {
+        // Given
+        let mut world = make_world();
+        // When
+        let mut result = Query::<()>::new(world.components()).invoke(&mut world);
+        // Then
         assert!(result.next().is_none());
     }
 
     #[test]
     fn invoke_simple_query() {
+        // Given
         let mut world = make_world();
+
+        // When
         let mut result = Query::<&Comp1>::new(world.components()).invoke(&mut world);
 
+        // Then
         assert_eq!(result.len(), 6);
-
         assert!(result.next().is_some());
         assert!(result.next().is_some());
         assert!(result.next().is_some());
@@ -334,11 +319,33 @@ mod tests {
 
     #[test]
     fn invoke_mix_mut_query() {
+        // Given
         let mut world = make_world();
+        // When
         let mut result = Query::<(&Comp1, &mut Comp2)>::new(world.components()).invoke(&mut world);
 
+        // Then
         assert_eq!(result.len(), 4);
+        assert!(result.next().is_some());
+        assert!(result.next().is_some());
+        assert!(result.next().is_some());
+        assert!(result.next().is_some());
+        assert!(result.next().is_none());
+    }
 
+    #[test]
+    fn invoke_query_with_shard() {
+        // Given
+        let world = make_world();
+        let query = Query::<(&Comp1, &mut Comp2)>::new(world.components());
+        let access_request = query.required_access();
+        let mut shard = world.shard(access_request).unwrap();
+
+        // When
+        let mut result = query.invoke(&mut shard);
+
+        // Then
+        assert_eq!(result.len(), 4);
         assert!(result.next().is_some());
         assert!(result.next().is_some());
         assert!(result.next().is_some());

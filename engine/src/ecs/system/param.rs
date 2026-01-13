@@ -295,11 +295,16 @@ impl<D: query::Data + 'static> Parameter for query::Result<'_, D> {
     ///
     /// The shard provides safe access to components and storage according to its grant,
     /// ensuring that the query only accesses data permitted by the system's access request.
+    ///
+    /// Safety: Caller ensures disjoint access via access requests
     unsafe fn get<'w, 's>(
         shard: &'w mut world::Shard<'_>,
         state: &'s mut Self::State,
     ) -> Self::Value<'w, 's> {
-        state.invoke_shard(shard)
+        // TODO: Safety: Caller ensures disjoint access via access requests - The query invoke
+        // method is safe, but its unclear it should be since the table access is only checked at
+        // debug. That being said, the world manages the grants for shards so its probably ok.
+        state.invoke(shard)
     }
 }
 
@@ -371,7 +376,7 @@ impl Parameter for &world::World {
         _state: &'s mut Self::State,
     ) -> Self::Value<'w, 's> {
         // SAFETY: Caller ensures this system has exclusive world access rights
-        unsafe { &*shard.world_mut() }
+        unsafe { shard.world() }
     }
 }
 

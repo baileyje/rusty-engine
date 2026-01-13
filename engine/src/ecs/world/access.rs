@@ -264,8 +264,9 @@ impl Access<Request> {
     ///
     /// # Parameters
     ///
-    /// - `mutable`: If `true`, creates mutable world access (grants everything).
-    ///              If `false`, creates immutable world access (grants immutable access only).
+    /// - `mutable`:
+    /// - If `true`, creates mutable world access (grants everything).
+    /// - If `false`, creates immutable world access (grants immutable access only).
     ///
     /// # Rules
     ///

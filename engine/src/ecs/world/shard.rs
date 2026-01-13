@@ -1,6 +1,9 @@
 use std::marker::PhantomData;
 
-use crate::ecs::world::{World, access::AccessGrant};
+use crate::ecs::{
+    component, query, storage,
+    world::{World, access::AccessGrant},
+};
 
 /// A shard of an ECS world. Shards are used to partition the world into different sets of
 /// resources to allow for better concurrency and access control.
@@ -56,7 +59,7 @@ impl<'w> Shard<'w> {
     /// This is always safe to access as it's read-only metadata about component types.
     /// Component registration is immutable after initialization.
     #[inline]
-    pub fn components(&self) -> &crate::ecs::component::Registry {
+    pub fn components(&self) -> &component::Registry {
         // SAFETY: Component registry is read-only metadata, safe to access
         unsafe { (*self.world).components() }
     }
@@ -66,7 +69,7 @@ impl<'w> Shard<'w> {
     /// This is safe because the shard's grant ensures no conflicting mutable access
     /// can occur. In debug builds, this validates that the grant permits storage access.
     #[inline]
-    pub fn storage(&self) -> &crate::ecs::storage::Storage {
+    pub fn storage(&self) -> &storage::Storage {
         #[cfg(debug_assertions)]
         {
             // TODO: Validate grant permits storage access (once grant has storage info)
@@ -79,10 +82,13 @@ impl<'w> Shard<'w> {
 
     /// Get mutable access to storage.
     ///
+    /// TODO: Remove the ability to get wide storage access from shards - instead,
+    /// require more fine-grained access to tables with access verification.
+    ///
     /// This is safe because the shard's grant ensures no conflicting access
     /// can occur. In debug builds, this validates that the grant permits mutable access.
     #[inline]
-    pub fn storage_mut(&mut self) -> &mut crate::ecs::storage::Storage {
+    pub fn storage_mut(&mut self) -> &mut storage::Storage {
         #[cfg(debug_assertions)]
         {
             // TODO: Validate grant permits mutable storage access
@@ -91,6 +97,19 @@ impl<'w> Shard<'w> {
 
         // SAFETY: Grant validates no conflicting access exists
         unsafe { (*self.world).storage_mut() }
+    }
+
+    /// Returns a reference to the underlying world.
+    ///
+    /// # Safety
+    ///
+    /// The caller must ensure that any access through the returned reference
+    /// respects this shard's access grant. Accessing components or resources
+    /// not covered by the grant is undefined behavior.
+    #[inline]
+    pub unsafe fn world(&self) -> &World {
+        // SAFETY: Grant validates no conflicting access exists
+        unsafe { &*self.world }
     }
 
     /// Returns a mutable reference to the underlying world.
@@ -122,6 +141,22 @@ impl<'w> Shard<'w> {
         let grant = self.grant.clone();
         std::mem::forget(self); // Don't run Drop
         grant
+    }
+
+    /// Perform a shard query to access all entities that match the query data `D`.
+    ///
+    ///
+    /// Note: This holds a mutable reference to the shard (and underlying component data) while the query result is active
+    /// (use wisely).
+    pub fn query<D: query::Data>(&'w mut self) -> query::Result<'w, D> {
+        let query = query::Query::<D>::new(self.components());
+        assert!(
+            self.grant.grants(query.required_access()),
+            "Shard grant does not permit the requested query access."
+        );
+
+        // TODO: Safety - Query creation and grant validation ensures no alias violations occur
+        query.invoke(self)
     }
 }
 

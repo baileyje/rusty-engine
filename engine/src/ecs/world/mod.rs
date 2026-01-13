@@ -217,7 +217,6 @@ impl World {
     /// Returns `None` if the entity is not currently spawned in the world.
     ///
     /// # Note
-    ///
     /// This method holds a mutable reference to the entire world's storage, preventing
     /// any other access while the `RefMut` is held. For performance-critical code,
     /// consider using queriss/systems that can access multiple entities efficiently.
@@ -249,7 +248,8 @@ impl World {
     /// Note: This holds a mutable reference to the entire world while the query result is active
     /// (use wisely).
     pub fn query<'w, D: query::Data>(&'w mut self) -> query::Result<'w, D> {
-        query::Query::<D>::one_shot(self)
+        let query = query::Query::<D>::new(&self.components);
+        query.invoke(self)
     }
 
     /// Create a shard with the requested access.
@@ -272,6 +272,8 @@ impl World {
 
     /// Release a grant that was returned from a shard via `into_grant()`. This should consume the
     /// grant to prevent double-releasing.
+    ///
+    /// Note: Its generally safer to use `release_shard()` when possible.
     ///
     /// Must be called on the main thread (where the World lives).
     pub fn release_grant(&self, grant: &AccessGrant) {

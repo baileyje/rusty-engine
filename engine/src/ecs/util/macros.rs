@@ -10,7 +10,7 @@ macro_rules! for_every_tuple {
     );
 }
 
-/// Apply a macro to all tuple combinations from A to Z.
+/// Apply a macro to all combinations from A to Z.
 #[macro_export]
 macro_rules! all_tuples {
     ($m:ident) => {
@@ -72,4 +72,3 @@ mod tests {
         assert!(data.works());
     }
 }
-

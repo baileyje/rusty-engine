@@ -36,7 +36,10 @@
 
 use std::marker::PhantomData;
 
-use crate::ecs::{query::data::Data, storage, world};
+use crate::ecs::{
+    query::{data::Data, source::DataSource},
+    storage,
+};
 
 /// An iterator over query results that yields entities matching the query specification.
 ///
@@ -75,8 +78,8 @@ use crate::ecs::{query::data::Data, storage, world};
 /// [`Query::invoke`]: super::Query::invoke
 /// [`Data`]: super::data::Data
 pub struct Result<'w, D: Data> {
-    /// Mutable reference to the world being queried.
-    world: &'w mut world::World,
+    /// Mutable reference to the data source being queried.
+    source: &'w mut dyn DataSource,
 
     /// List of table IDs that match the query specification.
     table_ids: Vec<storage::table::Id>,
@@ -115,17 +118,17 @@ impl<'w, D: Data> Result<'w, D> {
     ///
     /// [`Query::invoke`]: super::Query::invoke
     #[inline]
-    pub fn new(world: &'w mut world::World, table_ids: Vec<storage::table::Id>) -> Self {
+    pub fn new(source: &'w mut dyn DataSource, table_ids: Vec<storage::table::Id>) -> Self {
         // Pre-calculate the total length for ExactSizeIterator support.
         let mut len = 0;
         for table_id in table_ids.iter() {
             // Safety: We know this is a valid table as we got this ID from the registry
             // before creating this result.
-            len += world.storage().get(*table_id).entities().len();
+            len += source.table(*table_id).entities().len();
         }
 
         Self {
-            world,
+            source,
             table_ids,
             table_index: 0,
             row_index: 0,
@@ -163,10 +166,7 @@ impl<'w, D: Data> Iterator for Result<'w, D> {
     /// - `None` if the iteration is complete
     fn next(&mut self) -> Option<Self::Item> {
         if self.index < self.len {
-            let table = self
-                .world
-                .storage_mut()
-                .get_mut(self.table_ids[self.table_index]);
+            let table = self.source.table(self.table_ids[self.table_index]);
             let row = storage::Row::new(self.row_index);
             let entity = table.entity(row)?;
 

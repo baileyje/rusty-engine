@@ -26,7 +26,10 @@ use crate::{
     all_tuples,
     ecs::{
         component, entity,
-        query::param::{Parameter, ParameterSpec},
+        query::{
+            IntoQuery, Query,
+            param::{Parameter, ParameterSpec},
+        },
         storage, world,
     },
 };
@@ -393,6 +396,14 @@ macro_rules! tuple_query {
 // Generate implementations for tuples up to 26 elements (A-Z)
 all_tuples!(tuple_query);
 
+/// Implement [`IntoQuery`] for any type that implements [`Data`].
+impl<D: Data> IntoQuery<D> for D {
+    /// Convert this data type into a [`Query`].
+    fn into_query(components: &component::Registry) -> Query<D> {
+        Query::<D>::new(components)
+    }
+}
+
 #[cfg(test)]
 mod tests {
 
@@ -400,7 +411,7 @@ mod tests {
 
     use crate::ecs::{
         component, entity,
-        query::{data::Data, param::ParameterSpec},
+        query::{IntoQuery, data::Data, param::ParameterSpec},
         storage, world,
     };
 
@@ -884,5 +895,25 @@ mod tests {
             unsafe { <(entity::Entity, &Comp1, &mut Comp2)>::fetch_mut(entity, table, row) }
                 .unwrap();
         assert_eq!(comp2.value, 120);
+    }
+
+    #[test]
+    fn data_into_query() {
+        // Given
+        let (world, _table) = test_setup();
+        let comp1_id = world.components().get::<Comp1>().unwrap();
+        let comp2_id = world.components().get::<Comp2>().unwrap();
+
+        // When
+        let query = <(entity::Entity, &Comp1, &mut Comp2)>::into_query(world.components());
+
+        // Then
+        assert_eq!(
+            *query.required_access(),
+            world::AccessRequest::to_components(
+                component::Spec::new(vec![comp1_id]),
+                component::Spec::new(vec![comp2_id]),
+            )
+        );
     }
 }

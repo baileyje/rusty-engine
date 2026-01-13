@@ -156,6 +156,18 @@ pub trait WithSystemParams<Params, State>: 'static {
     /// - `state`: Mutable reference to parameter state
     unsafe fn run(&mut self, shard: &mut world::Shard<'_>, state: &mut State);
 
+    /// Build the state needed for parameter extraction.
+    ///
+    /// This method is given mutable access to the world to gain access to any key resorurces or
+    /// setup any resources needed for this parameter state.
+    ///
+    /// # Parameters
+    ///
+    /// - `world`: Mutable world reference to build state from
+    ///
+    /// # Returns
+    ///
+    /// A [`State`] instance to be stored and passed to `run` during execution.
     fn build_state(world: &mut world::World) -> State;
 }
 
@@ -232,15 +244,25 @@ macro_rules! system_param_function {
             // and any specific lifetime 'w (runtime with world lifetime)
             for<'w> &'w mut Func: FnMut($($param),*) + FnMut($($param::Value<'w, '_>),*),
         {
+            /// Determine the world access this set of parameters requires. This will merge all the
+            /// individual parameter access requests into a single request.
+            ///
+            /// # Panics
+            /// If any of the parameters have conflicting access (e.g., two mutable accesses to the
+            /// same component type),
             fn required_access(components: &component::Registry) -> world::AccessRequest {
-                // Merge component specs from all parameters
+                // Merge component specs from all parameters, but always ensure no conflicts
                 let mut access = world::AccessRequest::NONE;
                 $(
-                    access = access.merge(&$param::required_access(components));
+                    let required = $param::required_access(components);
+                    assert!(!access.conflicts_with(&required), "Conflicting access in system parameters");
+                    access = access.merge(&required);
                 )*
                 access
             }
 
+            /// Build the parameter state for this set of parameters. The resulting state will be a
+            /// tuple of individual parameter states.
             fn build_state(world: &mut world::World) -> ($(<$param as Parameter>::State,)*) {
                 (
                     $(
@@ -249,6 +271,12 @@ macro_rules! system_param_function {
                 )
             }
 
+            /// Run the parameter extraction and call the function with extracted parameters.
+            ///
+            /// # Safety
+            /// Caller must ensure:
+            /// - Access requests have been validated (no aliasing violations)
+            /// - No other system is concurrently accessing conflicting components
             unsafe fn run(&mut self, shard: &mut world::Shard<'_>, state:  &mut ($($param::State,)*)) {
                 // Helper function to call with extracted parameters
                 // Needed because we can't directly call self($($param),*) due to macro hygiene
