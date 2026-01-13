@@ -132,6 +132,7 @@ mod tests {
         // Given
         static DROP_CALLED: AtomicBool = AtomicBool::new(false);
 
+        #[allow(dead_code)]
         struct DropTracker {
             value: u32,
         }

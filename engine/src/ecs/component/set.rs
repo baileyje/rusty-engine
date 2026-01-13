@@ -36,7 +36,7 @@ impl<C: Component> Set for C {
 
 impl Set for () {
     fn spec(_registry: &Registry) -> Spec {
-        Spec::new(Vec::new())
+        Spec::EMPTY
     }
 
     fn apply<T: Target>(self, _registry: &Registry, _target: &mut T) {

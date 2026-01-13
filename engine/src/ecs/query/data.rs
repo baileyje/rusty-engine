@@ -223,15 +223,12 @@ impl DataSpec {
         let mut immutable_ids: Vec<component::Id> = Vec::new();
         let mut mutable_ids: Vec<component::Id> = Vec::new();
         for param in self.params.iter() {
-            match param {
-                ParameterSpec::Component(id, is_mut, _optional) => {
-                    if *is_mut {
-                        mutable_ids.push(*id);
-                    } else {
-                        immutable_ids.push(*id);
-                    }
+            if let ParameterSpec::Component(id, is_mut, _optional) = param {
+                if *is_mut {
+                    mutable_ids.push(*id);
+                } else {
+                    immutable_ids.push(*id);
                 }
-                _ => {}
             }
         }
         world::AccessRequest::to_components(
@@ -290,13 +287,14 @@ impl DataSpec {
     }
 }
 
-/// A query implementation for any type is is a valid [Param] type. This allows any of the valid
-/// parameter types to be used directly as a query. This enables query by a single component type
-/// or entity.
+/// A [`Data`] implementation for any type that implements [`Parameter`].
+///
+/// This blanket implementation allows any valid parameter type to be used directly as a query,
+/// enabling single-element queries like `Query::<&Position>` or `Query::<Entity>`.
 impl<P: Parameter> Data for P {
     type Data<'w> = P::Value<'w>;
 
-    /// Return [DataSpec] with a single [ParamSpec] derived from [Param] `P`.
+    /// Return [`DataSpec`] with a single [`ParameterSpec`] derived from parameter `P`.
     fn spec(components: &component::Registry) -> DataSpec {
         DataSpec::new(vec![P::spec(components)])
     }
@@ -318,9 +316,10 @@ impl<P: Parameter> Data for P {
     }
 }
 
-/// A query implementation that is empty.
+/// A [`Data`] implementation for the unit type (empty query).
 ///
-/// Note: This is interpreted as I want nothing, and likely useless...
+/// An empty query matches no entities and always returns `None` from fetch operations.
+/// This is primarily useful as a base case for the type system.
 impl Data for () {
     type Data<'w> = ();
     fn spec(_components: &component::Registry) -> DataSpec {
@@ -344,7 +343,7 @@ impl Data for () {
     }
 }
 
-/// Implement Query for tuples of [Data] types.
+/// Implement [`Data`] for tuples of [`Data`] types.
 macro_rules! tuple_query_impl {
     ($($name: ident),*) => {
         impl<$($name: Data),*> Data for ($($name,)*) {
@@ -388,7 +387,7 @@ macro_rules! tuple_query_impl {
     }
 }
 
-/// Implement Query for tuples of [Param] types recursively.
+/// Recursively generate [`Data`] implementations for tuples of decreasing size.
 macro_rules! tuple_query {
     ($head_ty:ident) => {
         tuple_query_impl!($head_ty);
@@ -427,6 +426,7 @@ mod tests {
 
     #[derive(Component)]
     struct Comp3 {
+        #[allow(dead_code)]
         value: i32,
     }
 
@@ -558,10 +558,13 @@ mod tests {
         assert_eq!(params.len(), 3);
 
         let request = spec.as_access_request();
-        assert!(request.grants(&world::AccessRequest::to_components(
-            component::Spec::new(vec![comp2_id, comp3_id]),
-            component::Spec::new(vec![comp1_id]),
-        )));
+        assert_eq!(
+            request,
+            world::AccessRequest::to_components(
+                component::Spec::new(vec![comp2_id, comp3_id]),
+                component::Spec::new(vec![comp1_id]),
+            )
+        );
     }
 
     #[test]
@@ -579,18 +582,24 @@ mod tests {
         let request = spec.as_access_request();
 
         // Should grant access to all components (including optional ones)
-        assert!(request.grants(&world::AccessRequest::to_components(
-            component::Spec::new(vec![comp1_id, comp2_id]),
-            component::Spec::new(vec![comp3_id]),
-        )));
+        assert_eq!(
+            request,
+            world::AccessRequest::to_components(
+                component::Spec::new(vec![comp1_id, comp2_id]),
+                component::Spec::new(vec![comp3_id]),
+            )
+        );
 
         // Should not grant access to components not in query
         // Use a component ID that's definitely not in our query
         let fake_id = component::Id::new(99);
-        assert!(!request.grants(&world::AccessRequest::to_components(
-            component::Spec::new(vec![fake_id]),
-            component::Spec::EMPTY,
-        )));
+        assert_ne!(
+            request,
+            world::AccessRequest::to_components(
+                component::Spec::new(vec![fake_id]),
+                component::Spec::EMPTY,
+            )
+        );
     }
 
     #[test]
@@ -610,10 +619,13 @@ mod tests {
         assert!(!request.world_mut());
 
         // Should grant the component access
-        assert!(request.grants(&world::AccessRequest::to_components(
-            component::Spec::new(vec![comp1_id]),
-            component::Spec::EMPTY,
-        )));
+        assert_eq!(
+            request,
+            world::AccessRequest::to_components(
+                component::Spec::new(vec![comp1_id]),
+                component::Spec::EMPTY,
+            )
+        );
     }
 
     #[test]

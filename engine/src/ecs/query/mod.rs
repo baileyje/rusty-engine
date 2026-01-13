@@ -92,7 +92,6 @@ pub use result::Result;
 ///
 /// # Type Parameters
 ///
-/// - `'w`: The lifetime of the world being queried
 /// - `D`: The query data specification (e.g., `&Component`, `(&C1, &mut C2)`)
 ///
 /// # Construction
@@ -228,6 +227,54 @@ impl<D> Query<D> {
         let table_ids = world.storage().supporting(&comp_spec);
 
         Result::new(world, table_ids)
+    }
+
+    /// Invoke the query on a shard to get an iterator over matching entities.
+    ///
+    /// This is similar to [`invoke`](Self::invoke) but works with a [`world::Shard`]
+    /// instead of a full `World`. The shard's grant should cover the components
+    /// accessed by this query.
+    ///
+    /// # Parameters
+    ///
+    /// - `shard`: Mutable reference to the shard to query
+    ///
+    /// # Returns
+    ///
+    /// An iterator that yields items of type `D` (the query data type).
+    ///
+    /// # Panics
+    ///
+    /// Panics if the query has aliasing violations, same as [`invoke`](Self::invoke).
+    ///
+    /// # Examples
+    ///
+    /// ```rust,ignore
+    /// let query = Query::<(&Position, &mut Velocity)>::new(world.components());
+    /// let shard = world.shard(&access_request)?;
+    ///
+    /// for (pos, vel) in query.invoke_shard(&mut shard) {
+    ///     vel.dx += pos.x * 0.01;
+    /// }
+    /// ```
+    pub fn invoke_shard<'w>(&self, shard: &'w mut world::Shard<'_>) -> Result<'w, D>
+    where
+        D: Data,
+    {
+        // Runtime check to ensure no aliasing violations in component data types.
+        assert!(
+            self.data_spec.is_valid(),
+            "Query aliasing violation: same component requested multiple times"
+        );
+
+        // Create a component spec for the query.
+        let comp_spec = self.data_spec.as_component_spec();
+
+        // Get the table ids that support this component spec.
+        let table_ids = shard.storage().supporting(&comp_spec);
+
+        // SAFETY: Shard has grant covering required access, validated at system execution
+        Result::new(unsafe { shard.world_mut() }, table_ids)
     }
 }
 

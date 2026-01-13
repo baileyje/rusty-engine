@@ -66,6 +66,9 @@
 //! assert!(!held.grants(&write_pos));
 //! ```
 
+use core::fmt;
+use std::marker::PhantomData;
+
 use crate::ecs::component;
 use fixedbitset::FixedBitSet;
 
@@ -116,6 +119,13 @@ impl ComponentSet {
         Self(result)
     }
 }
+
+/// A state type for access that is being requested.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Request;
+/// A state type for access that has granted.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Grant;
 
 /// A specification of access to world resources.
 ///
@@ -208,7 +218,7 @@ impl ComponentSet {
 ///
 /// - Resource access tracking (`Res<T>`, `ResMut<T>`)
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Access {
+pub struct Access<State> {
     /// Access to the world itself, but immutable.
     world: bool,
 
@@ -220,32 +230,20 @@ pub struct Access {
 
     /// Mutable access to a specific set of components.
     components_mut: ComponentSet,
+
+    /// Marker for ZST state type.
+    _marker: PhantomData<State>,
     // TODO: Resources..,
 }
 
-/// Type alias for [`Access`] used to represent an access grant.
-///
-/// Semantically identical to `Access`, but used to clarify intent: this represents
-/// what access is being **granted**.
-///
-pub type AccessGrant = Access;
+/// Type alias for [Access<Grant>] used to represent an access grant.
+pub type AccessGrant = Access<Grant>;
 
-/// Type alias for [`Access`] used to represent an access request.
-///
-/// Semantically identical to `Access`, but used to clarify intent: this represents
-/// what access is being **requested**, not what access is **granted**.
-///
-/// # Example
-///
-/// ```rust,ignore
-/// fn grants_access(granted: &AccessGrant, requested: &AccessRequest) -> bool {
-///     granted.grants(requested)
-/// }
-/// ```
-pub type AccessRequest = Access;
+/// Type alias for [Access<Request>] used to represent an access request.
+pub type AccessRequest = Access<Request>;
 
-impl Access {
-    /// No access to anything.
+impl Access<Request> {
+    /// Requesting access to no wolrd resources.
     ///
     /// This is useful as a starting point when building up access requirements,
     /// or for systems that genuinely need no world access (e.g., pure computation).
@@ -257,12 +255,7 @@ impl Access {
     /// assert!(!access.world());
     /// assert!(!access.world_mut());
     /// ```
-    pub const NONE: Self = Self {
-        world: false,
-        world_mut: false,
-        components: ComponentSet::EMPTY,
-        components_mut: ComponentSet::EMPTY,
-    };
+    pub const NONE: Self = Self::new(false, false, ComponentSet::EMPTY, ComponentSet::EMPTY);
 
     /// Creates world-level access (immutable or mutable).
     ///
@@ -304,12 +297,7 @@ impl Access {
     /// assert!(!world.grants(&Access::to_world(true)));
     /// ```
     pub const fn to_world(mutable: bool) -> Self {
-        Self {
-            world: true,
-            world_mut: mutable,
-            components: ComponentSet::EMPTY,
-            components_mut: ComponentSet::EMPTY,
-        }
+        Self::new(true, mutable, ComponentSet::EMPTY, ComponentSet::EMPTY)
     }
 
     /// Creates component-level access for specific components.
@@ -353,147 +341,26 @@ impl Access {
     /// let write_pos = Access::to_components(Spec::EMPTY, Spec::new([position_id]));
     /// assert!(!access.grants(&write_pos));
     /// ```
+    #[inline]
     pub fn to_components(immutable: component::Spec, mutable: component::Spec) -> Self {
         let immutable_set = ComponentSet::from_spec(&immutable);
         let mutable_set = ComponentSet::from_spec(&mutable);
-
-        Self {
-            world: false,
-            world_mut: false,
-            // We merge in mutable to immutable, as mutable access implies immutable access.
-            components: immutable_set.union(&mutable_set),
-            components_mut: mutable_set,
-        }
+        Self::new(false, false, immutable_set.union(&mutable_set), mutable_set)
     }
 
-    /// Returns `true` if this access includes immutable world access.
-    ///
-    /// # Example
-    ///
-    /// ```rust,ignore
-    /// let access = Access::to_world(false);
-    /// assert!(access.world());
-    /// assert!(!access.world_mut());
-    /// ```
+    /// Convert an access request into an access grant.
     #[inline]
-    pub const fn world(&self) -> bool {
-        self.world
-    }
-
-    /// Returns `true` if this access includes mutable world access.
-    ///
-    /// Note: Mutable world access implies immutable world access as well.
-    ///
-    /// # Example
-    ///
-    /// ```rust,ignore
-    /// let access = Access::to_world(true);
-    /// assert!(access.world());      // true - also has immutable
-    /// assert!(access.world_mut());  // true - has mutable
-    /// ```
-    #[inline]
-    pub const fn world_mut(&self) -> bool {
-        self.world_mut
-    }
-
-    /// Returns `true` if this access conflicts with another access.
-    ///
-    /// Two accesses conflict if they cannot be held simultaneously according to
-    /// Rust's aliasing rules:
-    /// - Multiple immutable accesses to the same resource are OK
-    /// - Mutable access conflicts with any other access (mutable or immutable) to the same resource
-    ///
-    /// # Rules
-    ///
-    /// 1. **Mutable world access** conflicts with any non-empty access
-    /// 2. **Immutable world access** conflicts with any mutable access (world or component)
-    /// 3. **Component access** conflicts if:
-    ///    - Either side has mutable access to a component the other touches
-    ///
-    /// # Examples
-    ///
-    /// ```rust,ignore
-    /// use rusty_engine::ecs::world::access::Access;
-    /// use rusty_engine::ecs::component::Spec;
-    ///
-    /// let read_pos = Access::to_components(Spec::new([pos_id]), Spec::EMPTY);
-    /// let write_pos = Access::to_components(Spec::EMPTY, Spec::new([pos_id]));
-    /// let read_vel = Access::to_components(Spec::new([vel_id]), Spec::EMPTY);
-    ///
-    /// // Multiple readers - no conflict
-    /// assert!(!read_pos.conflicts_with(&read_pos));
-    ///
-    /// // Reader + writer - conflict
-    /// assert!(read_pos.conflicts_with(&write_pos));
-    ///
-    /// // Different components - no conflict
-    /// assert!(!read_pos.conflicts_with(&read_vel));
-    /// ```
-    pub fn conflicts_with(&self, other: &Access) -> bool {
-        // If either is empty, no conflict
-        if self.is_none() || other.is_none() {
-            return false;
-        }
-
-        // Mutable world access conflicts with any non-empty access
-        if self.world_mut || other.world_mut {
-            return true;
-        }
-
-        // Immutable world access conflicts with any mutable access
-        if self.world && !other.components_mut.is_empty() {
-            return true;
-        }
-        if other.world && !self.components_mut.is_empty() {
-            return true;
-        }
-
-        // Component-level conflicts: mutable access to a component conflicts with
-        // any access (mutable or immutable) to the same component
-        if !self.components_mut.0.is_disjoint(&other.components.0) {
-            return true;
-        }
-        if !other.components_mut.0.is_disjoint(&self.components.0) {
-            return true;
-        }
-
-        false
-    }
-
-    /// Returns `true` if this access is nothing (no access to anything).
-    #[inline]
-    pub fn is_none(&self) -> bool {
-        !self.world
-            && !self.world_mut
-            && self.components.is_empty()
-            && self.components_mut.is_empty()
-    }
-
-    /// Merges this access with another, returning a new access that combines both.
-    #[inline]
-    pub fn merge(&self, other: &Access) -> Access {
-        // Determine if merge results in world access.
-        let world_mut = self.world_mut || other.world_mut;
-        let world = self.world || other.world || world_mut; // Ensure mutable implies immutable.
-
-        // If world access is granted, no components, otherwise merge component access as well.
-        let (components, components_mut) = match world {
-            true => (ComponentSet::EMPTY, ComponentSet::EMPTY),
-            false => (
-                self.components.union(&other.components),
-                self.components_mut.union(&other.components_mut),
-            ),
-        };
-        Access {
-            world,
-            world_mut,
-            components,
-            components_mut,
-        }
+    fn as_grant(&self) -> AccessGrant {
+        AccessGrant::new(
+            self.world,
+            self.world_mut,
+            self.components.clone(),
+            self.components_mut.clone(),
+        )
     }
 }
 
-impl AccessGrant {
+impl Access<Grant> {
     /// Determines if this access grants the requested access.
     ///
     /// Returns `true` if the capabilities represented by `self` are sufficient to satisfy
@@ -572,48 +439,271 @@ impl AccessGrant {
     }
 }
 
+impl<State> Access<State> {
+    /// Private constructor for creating an `Access` instances.
+    #[inline]
+    const fn new(
+        world: bool,
+        world_mut: bool,
+        components: ComponentSet,
+        components_mut: ComponentSet,
+    ) -> Self {
+        Self {
+            world,
+            world_mut,
+            components,
+            components_mut,
+            _marker: PhantomData,
+        }
+    }
+
+    /// Returns `true` if this access includes immutable world access.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// let access = Access::to_world(false);
+    /// assert!(access.world());
+    /// assert!(!access.world_mut());
+    /// ```
+    #[inline]
+    pub const fn world(&self) -> bool {
+        self.world
+    }
+
+    /// Returns `true` if this access includes mutable world access.
+    ///
+    /// Note: Mutable world access implies immutable world access as well.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// let access = Access::to_world(true);
+    /// assert!(access.world());      // true - also has immutable
+    /// assert!(access.world_mut());  // true - has mutable
+    /// ```
+    #[inline]
+    pub const fn world_mut(&self) -> bool {
+        self.world_mut
+    }
+
+    /// Returns `true` if this access conflicts with another access.
+    ///
+    /// Two accesses conflict if they cannot be held simultaneously according to
+    /// Rust's aliasing rules:
+    /// - Multiple immutable accesses to the same resource are OK
+    /// - Mutable access conflicts with any other access (mutable or immutable) to the same resource
+    ///
+    /// # Rules
+    ///
+    /// 1. **Mutable world access** conflicts with any non-empty access
+    /// 2. **Immutable world access** conflicts with any mutable access (world or component)
+    /// 3. **Component access** conflicts if:
+    ///    - Either side has mutable access to a component the other touches
+    ///
+    /// # Examples
+    ///
+    /// ```rust,ignore
+    /// use rusty_engine::ecs::world::access::Access;
+    /// use rusty_engine::ecs::component::Spec;
+    ///
+    /// let read_pos = Access::to_components(Spec::new([pos_id]), Spec::EMPTY);
+    /// let write_pos = Access::to_components(Spec::EMPTY, Spec::new([pos_id]));
+    /// let read_vel = Access::to_components(Spec::new([vel_id]), Spec::EMPTY);
+    ///
+    /// // Multiple readers - no conflict
+    /// assert!(!read_pos.conflicts_with(&read_pos));
+    ///
+    /// // Reader + writer - conflict
+    /// assert!(read_pos.conflicts_with(&write_pos));
+    ///
+    /// // Different components - no conflict
+    /// assert!(!read_pos.conflicts_with(&read_vel));
+    /// ```
+    pub fn conflicts_with<Other>(&self, other: &Access<Other>) -> bool {
+        // If either is empty, no conflict
+        if self.is_none() || other.is_none() {
+            return false;
+        }
+
+        // Mutable world access conflicts with any non-empty access
+        if self.world_mut || other.world_mut {
+            return true;
+        }
+
+        // Immutable world access conflicts with any mutable access
+        if self.world && !other.components_mut.is_empty() {
+            return true;
+        }
+        if other.world && !self.components_mut.is_empty() {
+            return true;
+        }
+
+        // Component-level conflicts: mutable access to a component conflicts with
+        // any access (mutable or immutable) to the same component
+        if !self.components_mut.0.is_disjoint(&other.components.0) {
+            return true;
+        }
+        if !other.components_mut.0.is_disjoint(&self.components.0) {
+            return true;
+        }
+
+        false
+    }
+
+    /// Returns `true` if this access is nothing (no access to anything).
+    #[inline]
+    pub fn is_none(&self) -> bool {
+        !self.world
+            && !self.world_mut
+            && self.components.is_empty()
+            && self.components_mut.is_empty()
+    }
+
+    /// Merges this access with another, returning a new access that combines both.
+    #[inline]
+    pub fn merge(&self, other: &Access<State>) -> Access<State> {
+        // Determine if merge results in world access.
+        let world_mut = self.world_mut || other.world_mut;
+        let world = self.world || other.world || world_mut; // Ensure mutable implies immutable.
+
+        // If world access is granted, no components, otherwise merge component access as well.
+        let (components, components_mut) = match world {
+            true => (ComponentSet::EMPTY, ComponentSet::EMPTY),
+            false => (
+                self.components.union(&other.components),
+                self.components_mut.union(&other.components_mut),
+            ),
+        };
+        Access {
+            world,
+            world_mut,
+            components,
+            components_mut,
+            _marker: PhantomData,
+        }
+    }
+}
+
+/// Utility for tracking active access grants in a world. The intent is to maintain any active
+/// grants for the lifetime of a shards or other access-controlled contexts. Once a context is
+/// dropped, the grant should be returned to the world via this tracker.
+///
+///
+/// Note: that this is a simple implementation and may not be optimal for large numbers of grants.
+/// This might be fine for typical ECS usage where the number of concurrent grants is small.
+pub(crate) struct GrantTracker {
+    active: Vec<AccessGrant>,
+}
+
+impl GrantTracker {
+    /// Create a new, empty grant tracker.
+    #[inline]
+    pub const fn new() -> Self {
+        Self { active: Vec::new() }
+    }
+
+    /// Determine whether the given request is valid (does not conflict with any active grants).
+    #[inline]
+    pub fn is_valid(&self, request: &AccessRequest) -> bool {
+        for active in &self.active {
+            if request.conflicts_with(active) {
+                return false;
+            }
+        }
+        true
+    }
+
+    /// Check if the request conflicts with any active grants, and if not, add it to the active
+    /// set.
+    pub fn check_and_grant(
+        &mut self,
+        request: &AccessRequest,
+    ) -> Result<AccessGrant, ConflictError> {
+        if self.is_valid(request) {
+            let grant = request.as_grant();
+            self.active.push(grant.clone());
+            Ok(grant)
+        } else {
+            Err(ConflictError::new(request.clone()))
+        }
+    }
+
+    /// Remove an active grant matching the given request.
+    pub fn remove(&mut self, grant: &AccessGrant) {
+        // Remove matching grant
+        if let Some(pos) = self.active.iter().position(|g| g == grant) {
+            self.active.swap_remove(pos);
+        }
+    }
+}
+
+/// An error indicating a conflict in an access request with the existing grants.
+#[derive(Debug, Clone)]
+pub struct ConflictError {
+    /// The conflicting access request.
+    request: AccessRequest,
+}
+
+impl ConflictError {
+    /// Constructs a new `ConflictError` for the given access request.
+    #[inline]
+    pub const fn new(request: AccessRequest) -> Self {
+        Self { request }
+    }
+}
+
+impl fmt::Display for ConflictError {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "invalid access request: {:?}", self.request)
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use crate::ecs::component;
+    use crate::ecs::{
+        component,
+        world::access::{Access, GrantTracker},
+    };
 
     #[test]
     fn test_world_access() {
         // Given
-        let access = super::Access::to_world(true);
-        let access_req = super::Access::to_world(true);
+        let grant = super::Access::to_world(true).as_grant();
+        let request = super::Access::to_world(true);
 
         // When
-        let grants = access.grants(&access_req);
+        let grants = grant.grants(&request);
 
         // Then
         assert!(grants);
 
         // Given
-        let access = super::Access::to_world(true);
-        let access_req = super::Access::to_world(false);
+        let grant = super::Access::to_world(true).as_grant();
+        let request = super::Access::to_world(false);
 
         // When
-        let grants = access.grants(&access_req);
+        let grants = grant.grants(&request);
 
         // Then
         assert!(grants);
 
         // Given
-        let access = super::Access::to_world(false);
-        let access_req = super::Access::to_world(true);
+        let grant = super::Access::to_world(false).as_grant();
+        let request = super::Access::to_world(true);
 
         // When
-        let grants = access.grants(&access_req);
+        let grants = grant.grants(&request);
 
         // Then
         assert!(!grants);
 
         // Given
-        let access = super::Access::to_world(false);
-        let access_req = super::Access::to_world(false);
+        let grant = super::Access::to_world(false).as_grant();
+        let request = super::Access::to_world(false);
 
         // When
-        let grants = access.grants(&access_req);
+        let grants = grant.grants(&request);
 
         // Then
         assert!(grants);
@@ -622,53 +712,53 @@ mod tests {
     #[test]
     pub fn world_and_component_access() {
         // Given - mutable world access should grant all immutable component access
-        let access = super::Access::to_world(true);
-        let access_req = super::Access::to_components(
+        let grant = super::Access::to_world(true).as_grant();
+        let request = super::Access::to_components(
             component::Spec::new([component::Id::new(0)]),
             component::Spec::EMPTY,
         );
 
         // When
-        let grants = access.grants(&access_req);
+        let grants = grant.grants(&request);
 
         // Then
         assert!(grants);
 
         // Given - mutable world access should grant all mutable component access
-        let access = super::Access::to_world(true);
-        let access_req = super::Access::to_components(
+        let grant = super::Access::to_world(true).as_grant();
+        let request = super::Access::to_components(
             component::Spec::EMPTY,
             component::Spec::new([component::Id::new(0)]),
         );
 
         // When
-        let grants = access.grants(&access_req);
+        let grants = grant.grants(&request);
 
         // Then
         assert!(grants);
 
         // Given - immutable world access should grant all immutable component access
-        let access = super::Access::to_world(false);
-        let access_req = super::Access::to_components(
+        let grant = super::Access::to_world(false).as_grant();
+        let request = super::Access::to_components(
             component::Spec::new([component::Id::new(0)]),
             component::Spec::EMPTY,
         );
 
         // When
-        let grants = access.grants(&access_req);
+        let grants = grant.grants(&request);
 
         // Then
         assert!(grants);
 
         // Given - immutable world access should *not* grant all mutable component access
-        let access = super::Access::to_world(false);
-        let access_req = super::Access::to_components(
+        let grant = super::Access::to_world(false).as_grant();
+        let request = super::Access::to_components(
             component::Spec::EMPTY,
             component::Spec::new([component::Id::new(0)]),
         );
 
         // When
-        let grants = access.grants(&access_req);
+        let grants = grant.grants(&request);
 
         // Then
         assert!(!grants);
@@ -677,10 +767,11 @@ mod tests {
     #[test]
     fn mutable_component_to_mutable_component() {
         // Given - access to mutable Position
-        let access = super::Access::to_components(
+        let grant = super::Access::to_components(
             component::Spec::EMPTY,
             component::Spec::new([component::Id::new(0)]),
-        );
+        )
+        .as_grant();
 
         // When - requesting mutable Position
         let request = super::Access::to_components(
@@ -689,16 +780,17 @@ mod tests {
         );
 
         // Then - should grant
-        assert!(access.grants(&request));
+        assert!(grant.grants(&request));
     }
 
     #[test]
     fn mutable_component_to_immutable_component() {
         // Given - access to mutable Position
-        let access = super::Access::to_components(
+        let grant = super::Access::to_components(
             component::Spec::EMPTY,
             component::Spec::new([component::Id::new(0)]),
-        );
+        )
+        .as_grant();
 
         // When - requesting immutable Position
         let request = super::Access::to_components(
@@ -707,16 +799,17 @@ mod tests {
         );
 
         // Then - should grant (mutable implies immutable)
-        assert!(access.grants(&request));
+        assert!(grant.grants(&request));
     }
 
     #[test]
     fn immutable_component_to_immutable_component() {
         // Given - access to immutable Position
-        let access = super::Access::to_components(
+        let grant = super::Access::to_components(
             component::Spec::new([component::Id::new(0)]),
             component::Spec::EMPTY,
-        );
+        )
+        .as_grant();
 
         // When - requesting immutable Position
         let request = super::Access::to_components(
@@ -725,16 +818,17 @@ mod tests {
         );
 
         // Then - should grant
-        assert!(access.grants(&request));
+        assert!(grant.grants(&request));
     }
 
     #[test]
     fn immutable_component_to_mutable_component() {
         // Given - access to immutable Position
-        let access = super::Access::to_components(
+        let grant = super::Access::to_components(
             component::Spec::new([component::Id::new(0)]),
             component::Spec::EMPTY,
-        );
+        )
+        .as_grant();
 
         // When - requesting mutable Position
         let request = super::Access::to_components(
@@ -743,16 +837,17 @@ mod tests {
         );
 
         // Then - should NOT grant (immutable doesn't grant mutable)
-        assert!(!access.grants(&request));
+        assert!(!grant.grants(&request));
     }
 
     #[test]
     fn multiple_components_subset() {
         // Given - access to Position and Velocity (both mutable)
-        let access = super::Access::to_components(
+        let grant = super::Access::to_components(
             component::Spec::EMPTY,
             component::Spec::new([component::Id::new(0), component::Id::new(1)]),
-        );
+        )
+        .as_grant();
 
         // When - requesting just Position (mutable)
         let request = super::Access::to_components(
@@ -761,16 +856,17 @@ mod tests {
         );
 
         // Then - should grant (subset)
-        assert!(access.grants(&request));
+        assert!(grant.grants(&request));
     }
 
     #[test]
     fn multiple_components_superset() {
         // Given - access to just Position (mutable)
-        let access = super::Access::to_components(
+        let grant = super::Access::to_components(
             component::Spec::EMPTY,
             component::Spec::new([component::Id::new(0)]),
-        );
+        )
+        .as_grant();
 
         // When - requesting Position and Velocity (mutable)
         let request = super::Access::to_components(
@@ -779,16 +875,17 @@ mod tests {
         );
 
         // Then - should NOT grant (doesn't have Velocity)
-        assert!(!access.grants(&request));
+        assert!(!grant.grants(&request));
     }
 
     #[test]
     fn disjoint_components() {
         // Given - access to Position (mutable)
-        let access = super::Access::to_components(
+        let grant = super::Access::to_components(
             component::Spec::EMPTY,
             component::Spec::new([component::Id::new(0)]),
-        );
+        )
+        .as_grant();
 
         // When - requesting Velocity (mutable)
         let request = super::Access::to_components(
@@ -797,16 +894,17 @@ mod tests {
         );
 
         // Then - should NOT grant (completely different component)
-        assert!(!access.grants(&request));
+        assert!(!grant.grants(&request));
     }
 
     #[test]
     fn mixed_mutability_components() {
         // Given - access to Position (immutable) and Velocity (mutable)
-        let access = super::Access::to_components(
+        let grant = super::Access::to_components(
             component::Spec::new([component::Id::new(0)]),
             component::Spec::new([component::Id::new(1)]),
-        );
+        )
+        .as_grant();
 
         // When - requesting Position (immutable) and Velocity (immutable)
         let request = super::Access::to_components(
@@ -815,13 +913,13 @@ mod tests {
         );
 
         // Then - should grant (mutable Velocity grants immutable)
-        assert!(access.grants(&request));
+        assert!(grant.grants(&request));
     }
 
     #[test]
     fn no_access_grants_nothing() {
         // Given - no access at all
-        let access = super::Access::NONE;
+        let grant = super::Access::NONE.as_grant();
 
         // When - requesting any component
         let request = super::Access::to_components(
@@ -830,22 +928,23 @@ mod tests {
         );
 
         // Then - should NOT grant
-        assert!(!access.grants(&request));
+        assert!(!grant.grants(&request));
     }
 
     #[test]
     fn component_access_denies_world_access() {
         // Given - access to some components
-        let access = super::Access::to_components(
+        let grant = super::Access::to_components(
             component::Spec::new([component::Id::new(0)]),
             component::Spec::EMPTY,
-        );
+        )
+        .as_grant();
 
         // When - requesting world access
         let request = super::Access::to_world(false);
 
         // Then - should NOT grant
-        assert!(!access.grants(&request));
+        assert!(!grant.grants(&request));
     }
 
     // ==================== conflicts_with tests ====================
@@ -1036,7 +1135,7 @@ mod tests {
             component::Spec::new([component::Id::new(1)]),
         );
 
-        let result = super::Access::NONE.merge(&comp);
+        let result = super::Access::NONE.merge(&comp).as_grant();
 
         // Should have the component access
         assert!(!result.world());
@@ -1059,7 +1158,7 @@ mod tests {
             component::Spec::EMPTY,
         );
 
-        let result = comp.merge(&super::Access::NONE);
+        let result = comp.merge(&super::Access::NONE).as_grant();
 
         assert!(!result.world());
         assert!(result.grants(&super::Access::to_components(
@@ -1081,7 +1180,7 @@ mod tests {
             component::Spec::new([component::Id::new(1)]),
         );
 
-        let result = a.merge(&b);
+        let result = a.merge(&b).as_grant();
 
         // Should have both accesses
         assert!(!result.world());
@@ -1266,5 +1365,36 @@ mod tests {
         // Also verify against a freshly created world access
         let fresh_world = super::Access::to_world(false);
         assert_eq!(result, fresh_world);
+    }
+
+    #[test]
+    fn grant_tracker_conflict_detection() {
+        let mut tracker = GrantTracker { active: vec![] };
+
+        let read_pos = Access::to_components(
+            component::Spec::new([component::Id::new(0)]),
+            component::Spec::EMPTY,
+        );
+        let write_pos = Access::to_components(
+            component::Spec::EMPTY,
+            component::Spec::new([component::Id::new(0)]),
+        );
+
+        // Check and issue the grant.
+        let grant = tracker.check_and_grant(&read_pos);
+
+        // Add read access - should succeed
+        assert!(grant.is_ok());
+
+        let grant = grant.unwrap();
+
+        // Add write access - should conflict
+        assert!(tracker.check_and_grant(&write_pos).is_err());
+
+        // Remove read access
+        tracker.remove(&grant);
+
+        // Now adding write access should succeed
+        assert!(tracker.check_and_grant(&write_pos.clone()).is_ok());
     }
 }

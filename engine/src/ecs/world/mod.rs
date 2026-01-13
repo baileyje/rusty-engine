@@ -32,6 +32,10 @@
 //! world.despawn(entity);
 //! ```
 mod access;
+mod shard;
+
+use std::cell::RefCell;
+use std::marker::PhantomData;
 
 use crate::ecs::{
     archetype::{self},
@@ -39,10 +43,13 @@ use crate::ecs::{
     entity,
     query::{self},
     storage::{self},
+    system,
+    world::access::{ConflictError, GrantTracker},
 };
 
 /// Exported types for world access control.
 pub use access::{AccessGrant, AccessRequest};
+pub use shard::Shard;
 
 /// A world identifier. This is a unique identifier for a world in the ECS.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -85,6 +92,15 @@ pub struct World {
 
     /// The archetype registry for the world.
     archetypes: archetype::Registry,
+
+    /// The registered systems in the world.
+    systems: system::Registry,
+
+    /// The current access grants for the world.
+    active_grants: RefCell<GrantTracker>,
+
+    /// Marker to make World !Send. World must stay on the main thread.
+    _not_send: PhantomData<*mut ()>,
 }
 impl World {
     pub fn new(id: Id) -> Self {
@@ -95,6 +111,9 @@ impl World {
             components: component::Registry::default(),
             storage: storage::Storage::default(),
             archetypes: archetype::Registry::default(),
+            systems: system::Registry::default(),
+            active_grants: RefCell::new(GrantTracker::new()),
+            _not_send: PhantomData,
         }
     }
 
@@ -232,7 +251,40 @@ impl World {
     pub fn query<'w, D: query::Data>(&'w mut self) -> query::Result<'w, D> {
         query::Query::<D>::one_shot(self)
     }
+
+    /// Create a shard with the requested access.
+    ///
+    /// Takes `&self` to allow multiple shards to coexist.
+    /// Uses interior mutability to track active grants.
+    pub fn shard(&self, access: &AccessRequest) -> Result<Shard<'_>, ConflictError> {
+        // Check for conflicts and register grant
+        let grant = self.active_grants.borrow_mut().check_and_grant(access)?;
+        // Return the shard
+        Ok(Shard::new(self as *const World as *mut World, grant))
+    }
+
+    /// Release a shard of this world.
+    ///
+    /// Must be called on the main thread (where the World lives).
+    pub fn release_shard(&self, shard: Shard) {
+        self.active_grants.borrow_mut().remove(&shard.into_grant());
+    }
+
+    /// Release a grant that was returned from a shard via `into_grant()`. This should consume the
+    /// grant to prevent double-releasing.
+    ///
+    /// Must be called on the main thread (where the World lives).
+    pub fn release_grant(&self, grant: &AccessGrant) {
+        self.active_grants.borrow_mut().remove(grant);
+    }
 }
+
+// World is intentionally !Send and !Sync:
+// - !Send: World must stay on the main thread where it was created
+// - !Sync: RefCell<GrantTracker> is !Sync, and we don't want &World shared across threads
+//
+// The _not_send marker ensures !Send (RefCell is Send, so we need the marker).
+// RefCell naturally provides !Sync.
 
 #[cfg(test)]
 mod test {

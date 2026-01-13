@@ -1,4 +1,38 @@
 //! Query result iterator that yields matching entities across multiple tables.
+//!
+//! This module provides the [`Result`] iterator, which is returned by [`Query::invoke`]
+//! and iterates over all entities matching the query's component requirements.
+//!
+//! # Architecture
+//!
+//! The result iterator traverses multiple tables (archetypes) sequentially:
+//!
+//! 1. For each table that contains all required components
+//! 2. For each entity row within that table
+//! 3. Fetch the requested component data
+//!
+//! # Features
+//!
+//! - **Exact size**: Implements [`ExactSizeIterator`] for efficient allocation
+//! - **Multi-table**: Seamlessly iterates across archetype boundaries
+//! - **Zero-copy**: Returns references directly into storage columns
+//!
+//! # Example
+//!
+//! ```rust,ignore
+//! let query = Query::<(&Position, &mut Velocity)>::new(world.components());
+//! let results = query.invoke(&mut world);
+//!
+//! // Know the count ahead of time
+//! println!("Found {} entities", results.len());
+//!
+//! // Iterate over all matches
+//! for (pos, vel) in results {
+//!     vel.dx += pos.x * 0.01;
+//! }
+//! ```
+//!
+//! [`Query::invoke`]: super::Query::invoke
 
 use std::marker::PhantomData;
 

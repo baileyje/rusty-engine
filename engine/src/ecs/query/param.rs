@@ -33,7 +33,49 @@
 //! ```
 
 use crate::ecs::{component, entity, storage};
+
+/// A single query parameter that can be fetched from the ECS.
+///
+/// This trait represents individual elements that can appear in a query, such as
+/// component references (`&C`, `&mut C`), optional components (`Option<&C>`), or
+/// entity IDs (`Entity`).
+///
+/// # Implementations
+///
+/// The following types implement `Parameter`:
+///
+/// | Type | Description | Mutability | Optional |
+/// |------|-------------|------------|----------|
+/// | `&C` | Immutable component reference | No | No |
+/// | `&mut C` | Mutable component reference | Yes | No |
+/// | `Option<&C>` | Optional immutable reference | No | Yes |
+/// | `Option<&mut C>` | Optional mutable reference | Yes | Yes |
+/// | `Entity` | Entity identifier | N/A | No |
+///
+/// # Relationship to Data
+///
+/// Any type implementing `Parameter` automatically implements [`Data`](super::data::Data),
+/// allowing single-parameter queries. For multi-parameter queries, use tuples of
+/// `Parameter` types.
+///
+/// # Examples
+///
+/// ```rust,ignore
+/// // Single parameter queries
+/// Query::<&Position>::new(world.components())
+/// Query::<Entity>::new(world.components())
+///
+/// // Multi-parameter queries (tuples of Parameters)
+/// Query::<(&Position, &mut Velocity)>::new(world.components())
+/// Query::<(Entity, &Health, Option<&Shield>)>::new(world.components())
+/// ```
 pub trait Parameter: Sized {
+    /// The value type returned when fetching this parameter.
+    ///
+    /// This is typically the parameter type itself with a world lifetime applied:
+    /// - `&C` → `&'w C`
+    /// - `Option<&mut C>` → `Option<&'w mut C>`
+    /// - `Entity` → `Entity` (no lifetime needed)
     type Value<'w>;
 
     /// Get the query parameter specification for this type. The component registry is provided to allow a
@@ -119,10 +161,10 @@ pub enum ParameterSpec {
     Component(component::Id, bool, bool),
 }
 
-/// Implement the [Param] trait for a [component::Component] reference.
+/// Implement the [`Parameter`] trait for an immutable component reference.
 impl<C: component::Component> Parameter for &C {
     type Value<'w> = &'w C;
-    /// Return [ParamSpec::Component] type and mutability `false` and optional `false`.
+    /// Return [`ParameterSpec::Component`] with mutability `false` and optional `false`.
     ///
     /// # Note
     /// This will register the component `C` type if necessary.
@@ -148,11 +190,11 @@ impl<C: component::Component> Parameter for &C {
     }
 }
 
-/// Implement the [Param] trait for a mutable [component::Component] reference.
+/// Implement the [`Parameter`] trait for a mutable component reference.
 impl<C: component::Component> Parameter for &mut C {
     type Value<'w> = &'w mut C;
 
-    /// Return [ParamSpec::Component] type and mutability `true` and optional `false`.
+    /// Return [`ParameterSpec::Component`] with mutability `true` and optional `false`.
     ///
     /// # Note
     /// This will register the [component::Component] `C` type if necessary.
@@ -178,7 +220,7 @@ impl<C: component::Component> Parameter for &mut C {
     }
 }
 
-/// Implement the [Param] trait for an optional [component::Component] reference.
+/// Implement the [`Parameter`] trait for an optional immutable component reference.
 ///
 /// # Optional Component Semantics
 ///
@@ -206,7 +248,7 @@ impl<C: component::Component> Parameter for &mut C {
 /// ```
 impl<C: component::Component> Parameter for Option<&C> {
     type Value<'w> = Option<&'w C>;
-    /// Return [ParamSpec::Component] with mutability `false` and optional `true`.
+    /// Return [`ParameterSpec::Component`] with mutability `false` and optional `true`.
     ///
     /// # Note
     /// This will register the component `C` type if necessary.
@@ -240,7 +282,7 @@ impl<C: component::Component> Parameter for Option<&C> {
     }
 }
 
-/// Implement the [Param] trait for an optional mutable [component::Component] reference.
+/// Implement the [`Parameter`] trait for an optional mutable component reference.
 ///
 /// # Optional Mutable Component Semantics
 ///
@@ -262,7 +304,7 @@ impl<C: component::Component> Parameter for Option<&C> {
 /// ```
 impl<C: component::Component> Parameter for Option<&mut C> {
     type Value<'w> = Option<&'w mut C>;
-    /// Return [ParamSpec::Component] with mutability `true` and optional `true`.
+    /// Return [`ParameterSpec::Component`] with mutability `true` and optional `true`.
     ///
     /// # Note
     /// This will register the component `C` type if necessary.
@@ -296,26 +338,26 @@ impl<C: component::Component> Parameter for Option<&mut C> {
     }
 }
 
-/// Implement the [Param] trait for [entity::Entity].
+/// Implement the [`Parameter`] trait for [`entity::Entity`].
 impl Parameter for entity::Entity {
     type Value<'w> = entity::Entity;
 
-    /// Return [ParamSpec::Entity].
+    /// Return [`ParameterSpec::Entity`].
     fn spec(_components: &component::Registry) -> ParameterSpec {
         ParameterSpec::Entity
     }
 
-    unsafe fn fetch<'w>(
+    unsafe fn fetch(
         entity: entity::Entity,
-        _table: &'w storage::Table,
+        _table: &storage::Table,
         _row: storage::Row,
     ) -> Option<Self> {
         Some(entity)
     }
 
-    unsafe fn fetch_mut<'w>(
+    unsafe fn fetch_mut(
         entity: entity::Entity,
-        _table: &'w mut storage::Table,
+        _table: &mut storage::Table,
         _row: storage::Row,
     ) -> Option<Self> {
         // Safety: Safe to call fetch as we are not mutating anything

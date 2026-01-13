@@ -32,10 +32,12 @@ use crate::ecs::{component, query, world};
 /// using a Higher-Ranked Trait Bound:
 ///
 /// ```rust,ignore
-/// for<'a> &'a mut Func: FnMut(Param) + FnMut(Param::Value<'a>)
+/// for<'a> &'a mut Func: FnMut(Param) + FnMut(Param::Value<'a, '_>)
 /// ```
 ///
 /// This says: "The function must accept both the parameter type AND its value form with any lifetime."
+/// The `'a` is the world lifetime, while the second `'_` is the state lifetime (typically not used
+/// by the function, as state is only accessed during parameter extraction).
 ///
 /// # Implementations
 ///
@@ -43,10 +45,15 @@ use crate::ecs::{component, query, world};
 ///
 /// ```rust,ignore
 /// impl<D: query::Data> Parameter for query::Result<'_, D> {
-///     type Value<'w> = query::Result<'w, D>;
+///     type Value<'w, 's> = query::Result<'w, D>;
+///     type State = query::Query<D>;
 ///
-///     unsafe fn get<'w>(world: &'w mut World) -> query::Result<'w, D> {
-///         world.query::<D>()
+///     fn build_state(world: &mut World) -> Self::State {
+///         query::Query::new(world.components())
+///     }
+///
+///     unsafe fn get<'w, 's>(world: &'w mut World, state: &'s mut Self::State) -> Self::Value<'w, 's> {
+///         state.invoke(world)
 ///     }
 /// }
 /// ```
@@ -64,9 +71,12 @@ use crate::ecs::{component, query, world};
 ///
 /// ```rust,ignore
 /// impl Parameter for &mut world::World {
-///     type Value<'w> = &'w mut World;
+///     type Value<'w, 's> = &'w mut World;
+///     type State = ();
 ///
-///     unsafe fn get<'w>(world: &'w mut World) -> &'w mut World {
+///     fn build_state(_world: &mut World) -> Self::State {}
+///
+///     unsafe fn get<'w, 's>(world: &'w mut World, _state: &'s mut Self::State) -> Self::Value<'w, 's> {
 ///         world
 ///     }
 /// }
@@ -103,18 +113,35 @@ pub trait Parameter: Sized {
     /// This Generic Associated Type (GAT) allows the parameter type to be specified without
     /// a concrete lifetime in function signatures, while the runtime value has the world's lifetime.
     ///
+    /// # Type Parameters
+    ///
+    /// - `'w`: World lifetime - how long the extracted value can reference world data
+    /// - `'s`: State lifetime - how long the value can reference parameter state
+    ///
     /// # Type Relationship
     ///
     /// For query parameters:
     /// - `Self` = `query::Result<'_, D>` (elided lifetime in function signature)
-    /// - `Value<'w>` = `query::Result<'w, D>` (concrete world lifetime at runtime)
+    /// - `Value<'w, 's>` = `query::Result<'w, D>` (concrete world lifetime at runtime)
     ///
     /// For world parameters:
     /// - `Self` = `&mut World` (no lifetime in function signature)
-    /// - `Value<'w>` = `&'w mut World` (concrete world lifetime at runtime)
+    /// - `Value<'w, 's>` = `&'w mut World` (concrete world lifetime at runtime)
     ///
-    /// The `Value<'w>` must also be `Parameter` to allow nested extraction (future feature).
-    type Value<'w>: Parameter;
+    /// The `Value<'w, 's>` must also be `Parameter` to allow nested extraction (future feature).
+    type Value<'w, 's>: Parameter<State = Self::State>;
+
+    /// The runtime state associated with this parameter.
+    ///
+    /// This Generic Associated Type (GAT) allows parameters to maintain state
+    /// with the world's lifetime.
+    type State: 'static;
+
+    /// Build the state for this parameter from the world.
+    ///
+    /// This method is called once per system execution to create any
+    /// necessary state for the parameter.
+    fn build_state(world: &mut world::World) -> Self::State;
 
     /// Get the world access required for this parameter.
     ///
@@ -149,37 +176,39 @@ pub trait Parameter: Sized {
     /// ```
     fn required_access(components: &component::Registry) -> world::AccessRequest;
 
-    /// Extract this parameter's value from the world.
+    /// Extract this parameter's value from a shard.
     ///
     /// This method is called by the system executor to provide parameter values to
-    /// the system function. The returned value has the world's lifetime `'w`.
+    /// the system function. The returned value has the shard's lifetime `'w`.
     ///
     /// # Safety
     ///
     /// Caller must ensure:
-    /// 1. **No aliasing**: Parameters access disjoint data (validated by component specs)
-    /// 2. **Valid lifetime**: World reference is valid for lifetime `'w`
+    /// 1. **No aliasing**: Parameters access disjoint data (validated by access requests)
+    /// 2. **Valid lifetime**: Shard reference is valid for lifetime `'w`
     /// 3. **No concurrency**: System is not executed concurrently with conflicting systems
     ///
     /// The [`super::function::WithSystemParams`] implementation upholds these by:
-    /// - Using raw pointers to create aliased world references (sound due to disjoint access)
-    /// - Relying on scheduler to validate component specs
+    /// - Using raw pointers to create aliased shard references (sound due to disjoint access)
+    /// - Relying on scheduler to validate access requests before execution
     /// - Requiring `&mut self` on system execution (prevents concurrent calls)
     ///
     /// # Examples
     ///
     /// ```rust,ignore
+    /// let state = <query::Result<&Position> as Parameter>::build_state(&mut world);
+    /// let shard = world.shard(&access_request)?;
+    /// 
     /// // Query extraction
-    /// let query = unsafe { <query::Result<&Position> as Parameter>::get(&mut world) };
+    /// let query = unsafe { <query::Result<&Position> as Parameter>::get(&mut shard, &mut state) };
     /// for pos in query {
     ///     println!("({}, {})", pos.x, pos.y);
     /// }
-    ///
-    /// // World extraction
-    /// let world_ref = unsafe { <&mut World as Parameter>::get(&mut world) };
-    /// world_ref.spawn(Entity::new());
     /// ```
-    unsafe fn get<'w>(world: &'w mut world::World) -> Self::Value<'w>;
+    unsafe fn get<'w, 's>(
+        shard: &'w mut world::Shard<'_>,
+        state: &'s mut Self::State,
+    ) -> Self::Value<'w, 's>;
 }
 
 /// Implementation of [`Parameter`] for query results.
@@ -222,6 +251,10 @@ pub trait Parameter: Sized {
 /// }
 ///
 /// // With optional components
+/// //
+/// // Optional components in queries allow matching entities with required components
+/// // that may also have additional components. The archetype storage doesn't store
+/// // optionals - this is resolved at query time by matching multiple archetypes.
 /// fn heal(query: query::Result<(&Player, Option<&mut Health>)>) {
 ///     for (player, health) in query {
 ///         if let Some(h) = health {
@@ -241,8 +274,17 @@ pub trait Parameter: Sized {
 /// and becomes `'w` (world lifetime) at runtime via [`Value`](Parameter::Value).
 ///
 /// See [`query`](crate::ecs::query) module for details on query composition.
-impl<D: query::Data> Parameter for query::Result<'_, D> {
-    type Value<'w> = query::Result<'w, D>;
+impl<D: query::Data + 'static> Parameter for query::Result<'_, D> {
+    /// The value type is the query result with world lifetime.
+    type Value<'w, 's> = query::Result<'w, D>;
+
+    /// The state type is the query instance for this data.
+    type State = query::Query<D>;
+
+    /// Build the query state for this parameter.
+    fn build_state(world: &mut world::World) -> Self::State {
+        query::Query::new(world.components())
+    }
 
     /// Get the world access request for this query parameter.
     /// This delegates to the underlying Data type to determine the required components.
@@ -250,150 +292,87 @@ impl<D: query::Data> Parameter for query::Result<'_, D> {
         D::spec(components).as_access_request()
     }
 
-    /// Get the query results by executing a query for the specific data against the provided world
-    /// instance.
-    unsafe fn get<'w>(world: &'w mut world::World) -> Self::Value<'w> {
-        world.query::<D>()
+    /// Get the query results by executing a query for the specific data against the shard.
+    ///
+    /// The shard provides safe access to components and storage according to its grant,
+    /// ensuring that the query only accesses data permitted by the system's access request.
+    unsafe fn get<'w, 's>(
+        shard: &'w mut world::Shard<'_>,
+        state: &'s mut Self::State,
+    ) -> Self::Value<'w, 's> {
+        state.invoke_shard(shard)
     }
 }
 
 /// Implementation of [`Parameter`] for direct immutable world access.
 ///
-/// This allows systems to read anything from the world directly for operations that don't fit
-/// the query pattern, such as accessing non-component data.
+/// This allows systems to read world structure (entity metadata, etc.) directly.
+/// Note that this parameter type can only be used in exclusive systems (those taking
+/// `&mut World` directly), not in parallel systems with multiple parameters.
 ///
-/// # Performance Implications
+/// # Scheduling Implications
 ///
-/// Immutable World access is **partially exclusive** - multiple systems can access the
-/// immutable world simultaneously with immutable components, but will block any mutable access to
-/// either the world or components.
+/// Immutable world access indicates the system needs read-only access to the world structure
+/// itself (not components). A scheduler should treat this as exclusive access for safety.
 ///
 /// # When to Use
 ///
-/// Use world access when you need to:
+/// Use immutable world access when you need to:
 /// - **Access entity metadata**: Query entity existence, generation counters, etc.
+/// - **Read world configuration**: World ID or other world-level data
 ///
 /// Don't use world access for:
-/// - **Reading components**: Use queries instead
-/// - **Finding entities**: Use queries with filters (future)
+/// - **Reading components**: Use queries instead for better performance
+/// - **Parallel systems**: World parameters bypass shard grants
 ///
 /// # Examples
 ///
 /// ```rust,ignore
-///
-/// // Checking entity existence
-/// fn validator(player_id: entity::Entity, world: &World) {
-///     if world.entity(player_id).is_none() {
-///         println!("Player entity no longer exists!");
+/// // Exclusive system with world access
+/// fn validator(world: &World) {
+///     for entity in some_entity_list {
+///         if world.entity(entity).is_none() {
+///             println!("Entity no longer exists!");
+///         }
 ///     }
 /// }
 /// ```
 ///
 /// # Implementation Details
 ///
-/// - **Value type**: `&'w World` where `'w` is the world lifetime
+/// - **Value type**: `&'w World` where `'w` is the shard lifetime
 /// - **Access request**: Returns access request for immutable world access
-/// - **Extraction**: Returns the world reference directly
+/// - **Extraction**: Extracts world from shard unsafely (bypassing grant)
 ///
 impl Parameter for &world::World {
-    type Value<'w> = &'w world::World;
+    /// The value type is an immutable world reference with shard lifetime.
+    type Value<'w, 's> = &'w world::World;
+
+    /// The state type is empty since no state is needed for immutable world access.
+    type State = ();
+
+    /// Build empty state for this parameter.
+    fn build_state(_world: &mut world::World) -> Self::State {}
 
     /// Get the world access request for this world parameter.
     fn required_access(_components: &component::Registry) -> world::AccessRequest {
         world::AccessRequest::to_world(false)
     }
 
-    /// Get immutable access to the world.
-    unsafe fn get<'w>(world: &'w mut world::World) -> Self::Value<'w> {
-        world
-    }
-}
-
-/// Implementation of [`Parameter`] for direct mutable world access.
-///
-/// This allows systems to access the world directly for operations that don't fit
-/// the query pattern, such as spawning/despawning entities or accessing non-component data.
-///
-/// # Performance Implications
-///
-/// World access is **exclusive** - only one system can have world access at a time.
-/// This limits parallelization opportunities. Prefer using queries when possible.
-///
-/// # When to Use
-///
-/// Use world access when you need to:
-/// - **Spawn entities**: Create new entities with components
-/// - **Despawn entities**: Remove entities from the world
-/// - **Access entity metadata**: Query entity existence, generation counters, etc.
-/// - **Modify world structure**: Change archetypes or tables (advanced)
-///
-/// Don't use world access for:
-/// - **Reading/writing components**: Use queries instead
-/// - **Counting entities**: Use `query.len()` instead
-/// - **Finding entities**: Use queries with filters (future)
-///
-/// # Examples
-///
-/// ```rust,ignore
-/// // Spawning based on query results
-/// fn spawner(enemies: query::Result<&Enemy>, world: &mut World) {
-///     if enemies.len() < 10 {
-///         world.spawn((
-///             Enemy,
-///             Position { x: 0.0, y: 0.0 },
-///             Health { current: 100, max: 100 },
-///         ));
-///     }
-/// }
-///
-/// // Despawning dead entities
-/// fn reaper(
-///     dead: query::Result<(entity::Entity, &Health)>,
-///     world: &mut World,
-/// ) {
-///     let to_remove: Vec<_> = dead
-///         .filter(|(_, health)| health.current <= 0)
-///         .map(|(entity, _)| entity)
-///         .collect();
-///
-///     for entity in to_remove {
-///         world.despawn(entity);
-///     }
-/// }
-///
-/// // Checking entity existence
-/// fn validator(player_id: entity::Entity, world: &mut World) {
-///     if world.entity(player_id).is_none() {
-///         println!("Player entity no longer exists!");
-///     }
-/// }
-/// ```
-///
-/// # Implementation Details
-///
-/// - **Value type**: `&'w mut World` where `'w` is the world lifetime
-/// - **Access request**: Access request for mutable world access
-/// - **Extraction**: Returns the world reference directly
-///
-/// # Future
-///
-/// A `Commands` parameter type will be added for deferred spawning/despawning,
-/// which won't require exclusive access and can run in parallel.
-impl Parameter for &mut world::World {
-    type Value<'w> = &'w mut world::World;
-
-    /// Get the component specification for this world parameter.
-    /// Since we don't currently have any way to signify this should block all component access,
-    /// we are just bailing with no components.
+    /// Get immutable access to the world from the shard.
     ///
-    /// Note: Replace with full world access request.
-    fn required_access(_components: &component::Registry) -> world::AccessRequest {
-        world::AccessRequest::to_world(true)
-    }
-
-    /// Get the world.....
-    unsafe fn get<'w>(world: &'w mut world::World) -> Self::Value<'w> {
-        world
+    /// # Safety
+    ///
+    /// This bypasses the shard's grant checking and accesses the world directly.
+    /// It should only be used in systems that have been validated to require
+    /// world-level access. Typically, world parameters indicate the system should
+    /// be exclusive rather than parallel.
+    unsafe fn get<'w, 's>(
+        shard: &'w mut world::Shard<'_>,
+        _state: &'s mut Self::State,
+    ) -> Self::Value<'w, 's> {
+        // SAFETY: Caller ensures this system has exclusive world access rights
+        unsafe { &*shard.world_mut() }
     }
 }
 
@@ -443,27 +422,22 @@ mod tests {
     }
 
     #[test]
-    fn world_mut_param_component_spec() {
-        // Given
-        let (world, _) = test_setup();
-
-        // When
-        let access = <&mut world::World as Parameter>::required_access(world.components());
-
-        // Then
-        assert!(access.world_mut());
-    }
-
-    #[test]
     fn world_param_get() {
         // Given
         let (mut world, _) = test_setup();
+        #[allow(clippy::let_unit_value)]
+        let mut state = <&world::World as Parameter>::build_state(&mut world);
+        let access = <&world::World as Parameter>::required_access(world.components());
+        let mut shard = world.shard(&access).expect("Failed to create shard");
 
         // When
-        let world_ref = unsafe { <&mut world::World as Parameter>::get(&mut world) };
+        let world_ref = unsafe { <&world::World as Parameter>::get(&mut shard, &mut state) };
 
         // Then
         assert_eq!(world_ref.id(), world.id());
+        
+        // Release shard
+        world.release_shard(shard);
     }
 
     #[test]
@@ -492,9 +466,13 @@ mod tests {
     fn comp_param_component_get() {
         // Given
         let (mut world, _) = test_setup();
+        let mut state = <query::Result<&Comp1> as Parameter>::build_state(&mut world);
+        let access = <query::Result<&Comp1> as Parameter>::required_access(world.components());
+        let mut shard = world.shard(&access).expect("Failed to create shard");
 
         // When
-        let mut result = unsafe { <query::Result<&Comp1> as Parameter>::get(&mut world) };
+        let mut result =
+            unsafe { <query::Result<&Comp1> as Parameter>::get(&mut shard, &mut state) };
 
         // Then
         assert_eq!(result.len(), 2);
@@ -502,15 +480,22 @@ mod tests {
         assert_eq!(row.value, 10);
         let row = result.next().unwrap();
         assert_eq!(row.value, 30);
+        
+        // Release shard
+        world.release_shard(shard);
     }
 
     #[test]
     fn comp_param_component_get_mut() {
         // Given
         let (mut world, _) = test_setup();
+        let mut state = <query::Result<&mut Comp1> as Parameter>::build_state(&mut world);
+        let access = <query::Result<&mut Comp1> as Parameter>::required_access(world.components());
+        let mut shard = world.shard(&access).expect("Failed to create shard");
 
         // When
-        let mut result = unsafe { <query::Result<&mut Comp1> as Parameter>::get(&mut world) };
+        let mut result =
+            unsafe { <query::Result<&mut Comp1> as Parameter>::get(&mut shard, &mut state) };
 
         // Then
         assert_eq!(result.len(), 2);
@@ -518,9 +503,16 @@ mod tests {
         comp.value += 1;
         let comp = result.next().unwrap();
         comp.value += 2;
+        
+        // Release shard
+        world.release_shard(shard);
 
         // And When
-        let mut result = unsafe { <query::Result<&Comp1> as Parameter>::get(&mut world) };
+        let mut state = <query::Result<&Comp1> as Parameter>::build_state(&mut world);
+        let access = <query::Result<&Comp1> as Parameter>::required_access(world.components());
+        let mut shard = world.shard(&access).expect("Failed to create shard");
+        let mut result =
+            unsafe { <query::Result<&Comp1> as Parameter>::get(&mut shard, &mut state) };
 
         // Then
         assert_eq!(result.len(), 2);
@@ -528,6 +520,9 @@ mod tests {
         assert_eq!(comp.value, 11);
         let comp = result.next().unwrap();
         assert_eq!(comp.value, 32);
+        
+        // Release shard
+        world.release_shard(shard);
     }
 
     #[test]
@@ -547,9 +542,13 @@ mod tests {
     fn comp_param_entity_get() {
         // Given
         let (mut world, (entity1, entity2, entity3)) = test_setup();
+        let mut state = <query::Result<entity::Entity> as Parameter>::build_state(&mut world);
+        let access = <query::Result<entity::Entity> as Parameter>::required_access(world.components());
+        let mut shard = world.shard(&access).expect("Failed to create shard");
 
         // When
-        let mut result = unsafe { <query::Result<entity::Entity> as Parameter>::get(&mut world) };
+        let mut result =
+            unsafe { <query::Result<entity::Entity> as Parameter>::get(&mut shard, &mut state) };
 
         // Then
         assert_eq!(result.len(), 3);
@@ -560,6 +559,9 @@ mod tests {
         assert_eq!(entity, entity2);
         let entity = result.next().unwrap();
         assert_eq!(entity, entity3);
+        
+        // Release shard
+        world.release_shard(shard);
     }
 
     #[test]
@@ -587,11 +589,17 @@ mod tests {
     fn comp_param_entity_comps_get() {
         // Given
         let (mut world, (entity1, _, entity3)) = test_setup();
+        let mut state =
+            <query::Result<(entity::Entity, &Comp1, Option<&mut Comp2>)> as Parameter>::build_state(
+                &mut world,
+            );
+        let access = <query::Result<(entity::Entity, &Comp1, Option<&mut Comp2>)> as Parameter>::required_access(world.components());
+        let mut shard = world.shard(&access).expect("Failed to create shard");
 
         // When
         let mut result = unsafe {
             <query::Result<(entity::Entity, &Comp1, Option<&mut Comp2>)> as Parameter>::get(
-                &mut world,
+                &mut shard, &mut state,
             )
         };
 
@@ -607,5 +615,8 @@ mod tests {
         assert_eq!(comp1.value, 30);
         assert!(comp2.is_some());
         assert_eq!(comp2.unwrap().value, 40);
+        
+        // Release shard
+        world.release_shard(shard);
     }
 }

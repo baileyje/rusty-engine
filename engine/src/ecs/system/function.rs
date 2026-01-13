@@ -24,7 +24,7 @@
 //! # The Parameter Extraction Process
 //!
 //! 1. **Function signature**: `fn(query: query::Result<&Comp>)` has elided lifetime `'_`
-//! 2. **Wrapper creation**: Analyzes parameters via [`Parameter::component_spec()`]
+//! 2. **Wrapper creation**: Analyzes parameters via [`Parameter::required_access()`]
 //! 3. **System execution**: Calls [`Parameter::get()`] for each parameter
 //! 4. **Function invocation**: Passes runtime values with world lifetime `'w`
 //!
@@ -52,158 +52,50 @@
 //!
 //! See [`WithSystemParams`] for detailed safety documentation.
 
-use std::marker::PhantomData;
-
 use crate::ecs::{
     component,
-    system::{System, param::Parameter},
+    system::{IntoSystem, System, param::Parameter},
     world,
 };
 
-/// Wraps a function to implement the [`System`] trait.
+/// Implement [`IntoSystem`] for functions with parameters.
 ///
-/// `Wrapper` converts a function that accepts [`Parameter`] types into a system
-/// that can be executed on a world. The function can have 0-26 parameters.
-///
-/// # Type Parameters
-///
-/// - `F`: The function type (implements [`WithSystemParams`])
-/// - `Params`: Tuple of parameter types (e.g., `(QueryParam<&Comp>,)`)
-///
-/// # Examples
-///
-/// ```rust,ignore
-/// use rusty_engine::ecs::system::function::Wrapper;
-///
-/// // Simple system with one parameter
-/// fn movement(query: query::Result<(&Velocity, &mut Position)>) {
-///     for (vel, pos) in query {
-///         pos.x += vel.dx;
-///     }
-/// }
-///
-/// let system = Wrapper::new(world.components(), movement);
-///
-/// // System with multiple parameters
-/// fn complex(
-///     positions: query::Result<&Position>,
-///     velocities: query::Result<&mut Velocity>,
-///     world: &mut World,
-/// ) {
-///     // System logic
-/// }
-///
-/// let system = Wrapper::new(world.components(), complex);
-/// ```
-///
-/// # Component Spec
-///
-/// The wrapper computes a component spec when created by analyzing all parameters.
-/// This spec describes which components the system accesses and how (read/write).
-///
-/// The scheduler will use this to:
-/// - Detect conflicts between systems
-/// - Determine safe execution order
-/// - Enable parallel execution (future)
-pub struct Wrapper<F, Params> {
-    /// The world accesses required for this system's parameters.
-    ///
-    /// Computed by merging specs from all parameters via [`WithSystemParams::required_access()`].
-    /// Used by the scheduler to validate system compatibility.
-    required_access: world::AccessRequest,
-
-    /// The function to execute.
-    ///
-    /// Must implement [`WithSystemParams`] to be called with world data.
-    func: F,
-
-    /// Phantom data for the parameter tuple type.
-    ///
-    /// Needed for type safety even though we don't store actual parameter values.
-    _marker: PhantomData<Params>,
-}
-
-impl<F, Params> Wrapper<F, Params> {
-    /// Construct a new function system from a function.
-    ///
-    /// This wraps any function that takes 0-26 [`Parameter`] arguments and converts it
-    /// into a [`System`] that can be executed on a world.
-    ///
-    /// # Parameters
-    ///
-    /// - `components`: Component registry for looking up component IDs
-    /// - `func`: The function to wrap (must implement [`WithSystemParams`])
-    ///
-    /// # Returns
-    ///
-    /// A [`Wrapper`] containing the function and its computed component spec.
-    ///
-    /// # Examples
-    ///
-    /// ```rust,ignore
-    /// // Zero parameters
-    /// fn tick() {
-    ///     println!("Tick!");
-    /// }
-    /// let sys = Wrapper::new(&registry, tick);
-    ///
-    /// // One parameter
-    /// fn movement(query: query::Result<(&Velocity, &mut Position)>) {
-    ///     for (vel, pos) in query {
-    ///         pos.x += vel.dx;
-    ///     }
-    /// }
-    /// let sys = Wrapper::new(&registry, movement);
-    ///
-    /// // Multiple parameters
-    /// fn physics(
-    ///     positions: query::Result<&Position>,
-    ///     velocities: query::Result<&mut Velocity>,
-    ///     world: &mut World,
-    /// ) {
-    ///     // System logic
-    /// }
-    /// let sys = Wrapper::new(&registry, physics);
-    /// ```
-    ///
-    /// # Type Inference
-    ///
-    /// The `Params` type parameter is inferred from the function signature:
-    /// - `fn()` → `Params = ()`
-    /// - `fn(A)` → `Params = (A,)`
-    /// - `fn(A, B)` → `Params = (A, B)`
-    /// - etc.
-    ///
-    /// where A, B, etc. implement [`Parameter`].
-    pub fn new(components: &component::Registry, func: F) -> Self
-    where
-        F: WithSystemParams<Params>,
-    {
-        Self {
-            required_access: F::required_access(components),
-            func,
-            _marker: PhantomData,
-        }
-    }
-}
-
-/// Implement [System] for the function wrapper struct. This applies the restriction that the
-/// wrapped function must take only system [Parameter] types as arguments.
-impl<F, Params> System for Wrapper<F, Params>
+/// This creates a parallel-capable system when the function and its state are `Send + Sync`.
+/// The marker type `(Params, State)` distinguishes this implementation from the
+/// exclusive world function implementation.
+impl<Func, Params, State> IntoSystem<(Params, State)> for Func
 where
-    F: WithSystemParams<Params> + Send + Sync,
-    Params: Send + Sync,
+    Func: WithSystemParams<Params, State> + Send + Sync + 'static,
+    Params: 'static,
+    State: Send + Sync + 'static,
 {
-    /// Get the required world access for a wrapped function.
-    fn required_access(&self) -> &world::AccessRequest {
-        &self.required_access
+    fn into_system(mut instance: Self, world: &mut world::World) -> System {
+        let access = Func::required_access(world.components());
+        let mut state = Func::build_state(world);
+        System::parallel(access, move |shard| unsafe {
+            instance.run(shard, &mut state);
+        })
     }
+}
 
-    /// Invoke the wrapped function with the world reference.
-    unsafe fn run(&mut self, world: &mut world::World) {
-        unsafe {
-            self.func.run(world);
-        }
+/// Marker type for `fn(&mut World)` to `WorldSystem` conversion.
+///
+/// This distinguishes world functions from parameter-based functions in the
+/// `IntoSystem` trait implementation.
+pub struct WorldFnMarker;
+
+/// Implement [`IntoSystem`] for functions that take only `&mut World`.
+///
+/// This creates an exclusive system that requires main-thread execution with full
+/// mutable world access. The [`WorldFnMarker`] distinguishes this from parameter-based systems.
+impl<F> IntoSystem<WorldFnMarker> for F
+where
+    F: FnMut(&mut world::World) + 'static,
+{
+    fn into_system(mut instance: Self, _world: &mut world::World) -> System {
+        System::exclusive(world::AccessRequest::to_world(true), move |world| {
+            instance(world)
+        })
     }
 }
 
@@ -216,16 +108,17 @@ where
 /// The implementations use Higher-Ranked Trait Bounds to achieve lifetime flexibility:
 ///
 /// ```rust,ignore
-/// impl<Func, A: Parameter> WithSystemParams<(A,)> for Func
+/// impl<Func, A: Parameter> WithSystemParams<(A,), (A::State,)> for Func
 /// where
 ///     for<'a> &'a mut Func:
-///         FnMut(A) +              // Signature: accepts parameter type
-///         FnMut(A::Value<'a>),    // Runtime: accepts value with any lifetime
+///         FnMut(A) +                    // Signature: accepts parameter type
+///         FnMut(A::Value<'a, '_>),      // Runtime: accepts value with any lifetime
 /// ```
 ///
 /// This says the function must work with:
 /// - **Parameter type** with elided lifetime (e.g., `query::Result<&Comp>`)
-/// - **Value type** with any lifetime `'a` (e.g., `query::Result<'w, &Comp>`)
+/// - **Value type** with any world lifetime `'a` (e.g., `query::Result<'a, &Comp>`)
+/// - The state lifetime `'_` is handled separately during extraction
 ///
 /// When executed, `'a` becomes `'w` (the world's lifetime), bridging the gap.
 ///
@@ -276,7 +169,7 @@ where
 /// //     query::Result<'_, &mut Velocity>,
 /// // )>
 /// ```
-pub trait WithSystemParams<Params>: 'static {
+pub trait WithSystemParams<Params, State>: 'static {
     /// Compute the combined required world access for all parameters.
     ///
     /// This merges the required_access from each parameter to create a unified
@@ -292,26 +185,29 @@ pub trait WithSystemParams<Params>: 'static {
     /// needed by the system's parameters.
     fn required_access(components: &component::Registry) -> world::AccessRequest;
 
-    /// Execute the function with parameters extracted from the world.
+    /// Execute the function with parameters extracted from the shard.
     ///
     /// This method:
-    /// 1. Extracts each parameter's value from the world via [`Parameter::get()`]
+    /// 1. Extracts each parameter's value from the shard via [`Parameter::get()`]
     /// 2. Invokes the function with all extracted values
     ///
     /// # Safety
     ///
     /// Caller must ensure:
-    /// - Component specs have been validated (no aliasing violations)
+    /// - Access requests have been validated (no aliasing violations)
     /// - No other system is concurrently accessing conflicting components
-    /// - World reference is valid for the call duration
+    /// - Shard has appropriate grant for the required access
     ///
-    /// The implementation creates aliased mutable world pointers, which is safe
+    /// The implementation creates aliased mutable shard pointers, which is safe
     /// only when parameters access disjoint data.
     ///
     /// # Parameters
     ///
-    /// - `world`: Mutable world reference with lifetime `'w`
-    unsafe fn run(&mut self, world: &mut world::World);
+    /// - `shard`: Mutable shard reference with validated grant
+    /// - `state`: Mutable reference to parameter state
+    unsafe fn run(&mut self, shard: &mut world::Shard<'_>, state: &mut State);
+
+    fn build_state(world: &mut world::World) -> State;
 }
 
 /// Implementation for functions with zero parameters.
@@ -329,21 +225,23 @@ pub trait WithSystemParams<Params>: 'static {
 ///     println!("Tick!");
 /// }
 ///
-/// let system = Wrapper::new(&components, tick_counter);
+/// let system = IntoSystem::into_system(&world, tick_counter);
 /// ```
-impl<F> WithSystemParams<()> for F
+impl<Func> WithSystemParams<(), ()> for Func
 where
-    F: FnMut() + 'static,
+    Func: FnMut() + 'static,
 {
     /// Returns an empty access request since no components are accessed.
-    fn required_access(components: &component::Registry) -> world::AccessRequest {
+    fn required_access(_components: &component::Registry) -> world::AccessRequest {
         world::AccessRequest::NONE
     }
 
-    /// Invokes the function without accessing the world.
-    unsafe fn run(&mut self, _world: &mut world::World) {
+    /// Invokes the function without accessing the shard.
+    unsafe fn run(&mut self, _shard: &mut world::Shard<'_>, _state: &mut ()) {
         self();
     }
+
+    fn build_state(_world: &mut world::World) {}
 }
 
 /// Macro implementing [`WithSystemParams`] for functions with N parameters.
@@ -354,18 +252,19 @@ where
 ///
 /// # Generated Implementation
 ///
-/// - **component_spec**: Merges specs from all parameters
+/// - **required_access**: Merges access requests from all parameters
 /// - **run**: Extracts each parameter from world, calls function
 ///
 /// # The HRTB Constraint
 ///
 /// ```ignore
-/// for<'a> &'a mut Func: FnMut($($param),*) + FnMut($($param::Value<'a>),*)
+/// for<'a> &'a mut Func: FnMut($($param),*) + FnMut($($param::Value<'a, '_>),*)
 /// ```
 ///
 /// This requires the function to accept both:
 /// 1. Parameters with elided lifetimes (signature)
-/// 2. Parameter values with any lifetime (runtime)
+/// 2. Parameter values with any world lifetime (runtime)
+/// 3. State lifetime is handled separately during extraction (the second `'_`)
 ///
 /// # Safety
 ///
@@ -376,12 +275,12 @@ where
 /// - The scheduler prevents concurrent conflicting access
 macro_rules! system_param_function_impl {
     ($($param:ident),*) => {
-        impl<Func, $($param: Parameter),*> WithSystemParams<($($param,)*)> for Func
+        impl<Func, $($param: Parameter, )*> WithSystemParams<($($param, )*), ($($param::State,)*)> for Func
         where
             Func: 'static,
             // HRTB: Function must work with both elided lifetimes (signature)
             // and any specific lifetime 'a (runtime with world lifetime)
-            for<'a> &'a mut Func: FnMut($($param),*) + FnMut($($param::Value<'a>),*),
+            for<'a> &'a mut Func: FnMut($($param),*) + FnMut($($param::Value<'a, '_>),*),
         {
             fn required_access(components: &component::Registry) -> world::AccessRequest {
                 // Merge component specs from all parameters
@@ -392,7 +291,15 @@ macro_rules! system_param_function_impl {
                 access
             }
 
-            unsafe fn run(&mut self, world: &mut world::World) {
+            fn build_state(world: &mut world::World) -> ($(<$param as Parameter>::State,)*) {
+                (
+                    $(
+                        $param::build_state(world),
+                    )*
+                )
+            }
+
+            unsafe fn run(&mut self, shard: &mut world::Shard<'_>, state:  &mut ($($param::State,)*)) {
                 // Helper function to call with extracted parameters
                 // Needed because we can't directly call self($($param),*) due to macro hygiene
                 #[allow(clippy::too_many_arguments, non_snake_case)]
@@ -400,14 +307,18 @@ macro_rules! system_param_function_impl {
                     func($($param),*);
                 }
 
-                // Extract each parameter from the world
+                #[allow(non_snake_case)]
+                let ($($param,)*) = state;
+
+                // Extract each parameter from the shard
                 $(
-                    // SAFETY: Creating aliased mutable world pointers is safe because:
+                    // SAFETY: Creating aliased mutable shard pointers is safe because:
                     // 1. Each Parameter::get() accesses different components (disjoint data)
-                    // 2. Component specs validated this at system registration
+                    // 2. Access requests validated this at system registration
                     // 3. Scheduler ensures no concurrent conflicting access
+                    // 4. Shard has grant covering all required access
                     #[allow(non_snake_case)]
-                    let $param = unsafe { $param::get(&mut *(world as *mut world::World)) };
+                    let $param = unsafe { $param::get(&mut *(shard as *mut world::Shard<'_>), $param) };
                 )*
 
                 // Call the function with all extracted parameters
@@ -459,9 +370,10 @@ system_param_function! {
 
 #[cfg(test)]
 mod tests {
+
     use crate::ecs::{
         component, query,
-        system::{System, function::Wrapper},
+        system::{IntoSystem, System},
         world,
     };
 
@@ -477,16 +389,39 @@ mod tests {
         value: i32,
     }
 
+    fn into_system<M>(world: &mut world::World, sys: impl IntoSystem<M>) -> System {
+        IntoSystem::into_system(sys, world)
+    }
+
     #[test]
     fn no_param_function_system() {
+        // Given
+
         fn my_system() {
             // No-op
         }
 
-        let components = component::Registry::new();
-        let mut system = Wrapper::new(&components, my_system);
+        let mut world = world::World::new(world::Id::new(0));
+
+        // When
+        let mut system = into_system(&mut world, my_system);
+
+        // Then
+        unsafe {
+            system.run(&mut world);
+        }
+    }
+
+    #[test]
+    fn world_mut_param_function_system() {
+        fn my_system(world: &mut world::World) {
+            // Verify we can access the world
+            assert_eq!(world.id(), world::Id::new(0));
+        }
 
         let mut world = world::World::new(world::Id::new(0));
+        let mut system = into_system(&mut world, my_system);
+
         unsafe {
             system.run(&mut world);
         }
@@ -494,15 +429,14 @@ mod tests {
 
     #[test]
     fn world_param_function_system() {
-        fn my_system(world: &mut world::World) {
+        fn my_system(world: &world::World) {
             // Verify we can access the world
             assert_eq!(world.id(), world::Id::new(0));
         }
 
-        let components = component::Registry::new();
-        let mut system = Wrapper::new(&components, my_system);
-
         let mut world = world::World::new(world::Id::new(0));
+        let mut system = into_system(&mut world, my_system);
+
         unsafe {
             system.run(&mut world);
         }
@@ -519,8 +453,7 @@ mod tests {
         let mut world = world::World::new(world::Id::new(0));
         world.spawn(Comp1 { value: 42 });
 
-        let components = world.components();
-        let mut system = Wrapper::new(components, my_system);
+        let mut system = into_system(&mut world, my_system);
 
         unsafe {
             system.run(&mut world);
@@ -539,8 +472,7 @@ mod tests {
         world.spawn(Comp1 { value: 5 });
         world.spawn(Comp1 { value: 10 });
 
-        let components = world.components();
-        let mut system = Wrapper::new(components, increment_system);
+        let mut system = into_system(&mut world, increment_system);
 
         unsafe {
             system.run(&mut world);
@@ -564,8 +496,7 @@ mod tests {
         world.spawn((Comp1 { value: 2 }, Comp2 { value: 20 }));
         world.spawn(Comp1 { value: 3 }); // Only Comp1, won't match
 
-        let components = world.components();
-        let mut system = Wrapper::new(components, count_system);
+        let mut system = into_system(&mut world, count_system);
 
         unsafe {
             system.run(&mut world);
@@ -584,8 +515,7 @@ mod tests {
         world.spawn((Comp1 { value: 5 }, Comp2 { value: 0 }));
         world.spawn((Comp1 { value: 10 }, Comp2 { value: 0 }));
 
-        let components = world.components();
-        let mut system = Wrapper::new(components, physics_system);
+        let mut system = into_system(&mut world, physics_system);
 
         unsafe {
             system.run(&mut world);
@@ -611,53 +541,34 @@ mod tests {
         world.spawn((Comp1 { value: 2 }, Comp2 { value: 20 }));
         world.spawn(Comp1 { value: 3 }); // Only Comp1
 
-        let components = world.components();
-        let mut system = Wrapper::new(components, two_query_system);
+        let mut system = into_system(&mut world, two_query_system);
 
         unsafe {
             system.run(&mut world);
         }
     }
 
-    #[test]
-    fn query_and_world_parameters_system() {
-        fn spawner_system(query: query::Result<&Comp1>, world: &mut world::World) {
-            let count = query.count();
-            if count < 5 {
-                world.spawn(Comp1 { value: 100 });
-            }
-        }
-
-        let mut world = world::World::new(world::Id::new(0));
-        world.spawn(Comp1 { value: 1 });
-
-        let components = world.components();
-        let mut system = Wrapper::new(components, spawner_system);
-
-        unsafe {
-            system.run(&mut world);
-        }
-
-        // Verify entity was spawned
-        let count = world.query::<&Comp1>().count();
-        assert_eq!(count, 2);
-    }
+    // NOTE: Tests for systems with both queries and &mut World have been removed.
+    // Such systems are no longer supported - use WorldSystem for exclusive world access,
+    // or Wrapper for query-based systems. This separation ensures that systems with
+    // exclusive world access cannot accidentally run in parallel.
 
     #[test]
     fn access_single_query() {
+        // Given
         fn my_system(_query: query::Result<&Comp1>) {}
 
-        let components = component::Registry::new();
-        components.register::<Comp1>();
+        let mut world = world::World::new(world::Id::new(0));
+        world.components().register::<Comp1>();
 
-        let system = Wrapper::new(&components, my_system);
+        let system = into_system(&mut world, my_system);
         let access = system.required_access();
 
         // Should have Comp1 in the access request
         assert_eq!(
             *access,
             world::AccessRequest::to_components(
-                component::Spec::new(vec![components.get::<Comp1>().unwrap()]),
+                component::Spec::new(vec![world.components().get::<Comp1>().unwrap()]),
                 component::Spec::EMPTY
             )
         );
@@ -667,11 +578,11 @@ mod tests {
     fn access_multiple_queries() {
         fn my_system(_query1: query::Result<&Comp1>, _query2: query::Result<&Comp2>) {}
 
-        let components = component::Registry::new();
-        let id1 = components.register::<Comp1>();
-        let id2 = components.register::<Comp2>();
+        let mut world = world::World::new(world::Id::new(0));
+        let id1 = world.components().register::<Comp1>();
+        let id2 = world.components().register::<Comp2>();
 
-        let system = Wrapper::new(&components, my_system);
+        let system = into_system(&mut world, my_system);
         let access = system.required_access();
 
         // Should have both components in the merged spec
@@ -688,11 +599,11 @@ mod tests {
     fn component_spec_mixed_query() {
         fn my_system(_query: query::Result<(&Comp1, &Comp2)>) {}
 
-        let components = component::Registry::new();
-        let id1 = components.register::<Comp1>();
-        let id2 = components.register::<Comp2>();
+        let mut world = world::World::new(world::Id::new(0));
+        let id1 = world.components().register::<Comp1>();
+        let id2 = world.components().register::<Comp2>();
 
-        let system = Wrapper::new(&components, my_system);
+        let system = into_system(&mut world, my_system);
         let access = system.required_access();
 
         // Should have both components
@@ -723,8 +634,7 @@ mod tests {
         world.spawn(Comp1 { value: 5 });
         world.spawn(Comp1 { value: 10 });
 
-        let components = world.components();
-        let mut system = Wrapper::new(components, entity_system);
+        let mut system = into_system(&mut world, entity_system);
 
         unsafe {
             system.run(&mut world);
@@ -741,8 +651,7 @@ mod tests {
         let mut world = world::World::new(world::Id::new(0));
         // Don't spawn any entities
 
-        let components = world.components();
-        let mut system = Wrapper::new(components, empty_system);
+        let mut system = into_system(&mut world, empty_system);
 
         unsafe {
             system.run(&mut world);
@@ -750,12 +659,8 @@ mod tests {
     }
 
     #[test]
-    fn three_parameter_system() {
-        fn three_param_system(
-            query1: query::Result<&Comp1>,
-            query2: query::Result<&Comp2>,
-            _world: &mut world::World,
-        ) {
+    fn two_query_parameter_system() {
+        fn two_query_system(query1: query::Result<&Comp1>, query2: query::Result<&Comp2>) {
             assert_eq!(query1.count(), 2);
             assert_eq!(query2.count(), 1);
         }
@@ -764,8 +669,7 @@ mod tests {
         world.spawn(Comp1 { value: 1 });
         world.spawn((Comp1 { value: 2 }, Comp2 { value: 10 }));
 
-        let components = world.components();
-        let mut system = Wrapper::new(components, three_param_system);
+        let mut system = into_system(&mut world, two_query_system);
 
         unsafe {
             system.run(&mut world);
@@ -783,8 +687,7 @@ mod tests {
         let mut world = world::World::new(world::Id::new(0));
         world.spawn(Comp1 { value: 0 });
 
-        let components = world.components();
-        let mut system = Wrapper::new(components, increment_system);
+        let mut system = into_system(&mut world, increment_system);
 
         // Run system 3 times
         unsafe {
@@ -811,8 +714,7 @@ mod tests {
         world.spawn((Comp1 { value: 4 }, Comp2 { value: 5 }));
         world.spawn((Comp1 { value: 10 }, Comp2 { value: 10 }));
 
-        let components = world.components();
-        let mut system = Wrapper::new(components, multiply_system);
+        let mut system = into_system(&mut world, multiply_system);
 
         unsafe {
             system.run(&mut world);
@@ -828,8 +730,8 @@ mod tests {
     fn component_spec_empty_system() {
         fn my_system() {}
 
-        let components = component::Registry::new();
-        let system = Wrapper::new(&components, my_system);
+        let mut world = world::World::new(world::Id::new(0));
+        let system = into_system(&mut world, my_system);
         let access = system.required_access();
 
         // Should have empty spec
@@ -841,8 +743,9 @@ mod tests {
         // Given
         fn my_system(_world: &mut world::World) {}
 
-        let components = component::Registry::new();
-        let system = Wrapper::new(&components, my_system);
+        let mut world = world::World::new(world::Id::new(0));
+
+        let system = into_system(&mut world, my_system);
 
         // When
         let access = system.required_access();

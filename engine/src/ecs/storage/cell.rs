@@ -191,9 +191,7 @@ impl<'a> CellMut<'a> {
         #[cfg(debug_assertions)]
         ensure_type::<C>(self.info);
 
-        unsafe {
-            ptr::write(self.as_ptr() as *mut C, value);
-        }
+        unsafe { ptr::write(self.as_ptr() as *mut C, value) };
     }
 
     /// Get a mutable reference to the cell's value, consuming the cell.
