@@ -1,16 +1,15 @@
 //! System parameter extraction using Generic Associated Types.
 //!
 //! This module defines the [`Parameter`] trait, which enables clean system function signatures
-//! without explicit lifetime parameters. The key innovation is using a Generic Associated Type
-//! (GAT) to carry the world lifetime, separating the parameter's static type from its runtime value.
+//! without explicit lifetime parameters.
 
 use crate::ecs::{component, query, world};
 
 /// A type that can be passed as a parameter to a system function.
 ///
 /// The `Parameter` trait enables extracting data from the world with clean function signatures.
-/// The secret is the [`Value`](Parameter::Value) Generic Associated Type (GAT), which carries
-/// the world's lifetime without appearing in the function signature.
+/// The [`Value`](Parameter::Value) Generic Associated Type (GAT), carries the world's lifetime
+/// without appearing in the function signature.
 ///
 /// # How It Works
 ///
@@ -198,7 +197,7 @@ pub trait Parameter: Sized {
     /// ```rust,ignore
     /// let state = <query::Result<&Position> as Parameter>::build_state(&mut world);
     /// let shard = world.shard(&access_request)?;
-    /// 
+    ///
     /// // Query extraction
     /// let query = unsafe { <query::Result<&Position> as Parameter>::get(&mut shard, &mut state) };
     /// for pos in query {
@@ -435,7 +434,7 @@ mod tests {
 
         // Then
         assert_eq!(world_ref.id(), world.id());
-        
+
         // Release shard
         world.release_shard(shard);
     }
@@ -480,7 +479,7 @@ mod tests {
         assert_eq!(row.value, 10);
         let row = result.next().unwrap();
         assert_eq!(row.value, 30);
-        
+
         // Release shard
         world.release_shard(shard);
     }
@@ -503,7 +502,7 @@ mod tests {
         comp.value += 1;
         let comp = result.next().unwrap();
         comp.value += 2;
-        
+
         // Release shard
         world.release_shard(shard);
 
@@ -520,7 +519,7 @@ mod tests {
         assert_eq!(comp.value, 11);
         let comp = result.next().unwrap();
         assert_eq!(comp.value, 32);
-        
+
         // Release shard
         world.release_shard(shard);
     }
@@ -543,7 +542,8 @@ mod tests {
         // Given
         let (mut world, (entity1, entity2, entity3)) = test_setup();
         let mut state = <query::Result<entity::Entity> as Parameter>::build_state(&mut world);
-        let access = <query::Result<entity::Entity> as Parameter>::required_access(world.components());
+        let access =
+            <query::Result<entity::Entity> as Parameter>::required_access(world.components());
         let mut shard = world.shard(&access).expect("Failed to create shard");
 
         // When
@@ -559,7 +559,7 @@ mod tests {
         assert_eq!(entity, entity2);
         let entity = result.next().unwrap();
         assert_eq!(entity, entity3);
-        
+
         // Release shard
         world.release_shard(shard);
     }
@@ -615,7 +615,7 @@ mod tests {
         assert_eq!(comp1.value, 30);
         assert!(comp2.is_some());
         assert_eq!(comp2.unwrap().value, 40);
-        
+
         // Release shard
         world.release_shard(shard);
     }

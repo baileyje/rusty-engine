@@ -348,8 +348,15 @@ impl System {
     }
 }
 
-/// A trait for converting types into boxed systems.
+/// A trait for converting types into systems.
+///
+/// This is the primary way to create systems as they are added to the world. The system is given
+/// access to the world to extract any necessary state data during creation.
 pub trait IntoSystem<Marker = ()>: Sized {
-    /// Convert the instance into System.
+    /// Convert the instance into System with the World.
+    ///
+    /// The world is provided to allow extraction of any necessary state. The system should not
+    /// take any reference to the world that outlives this call. Any state needed by the system
+    /// should be copied or cloned as necessary.
     fn into_system(instance: Self, world: &mut world::World) -> System;
 }

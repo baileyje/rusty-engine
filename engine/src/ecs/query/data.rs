@@ -22,10 +22,13 @@
 
 use std::collections::HashSet;
 
-use crate::ecs::{
-    component, entity,
-    query::param::{Parameter, ParameterSpec},
-    storage, world,
+use crate::{
+    all_tuples,
+    ecs::{
+        component, entity,
+        query::param::{Parameter, ParameterSpec},
+        storage, world,
+    },
 };
 
 /// Types that can be used as complete query specifications.
@@ -344,7 +347,7 @@ impl Data for () {
 }
 
 /// Implement [`Data`] for tuples of [`Data`] types.
-macro_rules! tuple_query_impl {
+macro_rules! tuple_query {
     ($($name: ident),*) => {
         impl<$($name: Data),*> Data for ($($name,)*) {
 
@@ -387,21 +390,8 @@ macro_rules! tuple_query_impl {
     }
 }
 
-/// Recursively generate [`Data`] implementations for tuples of decreasing size.
-macro_rules! tuple_query {
-    ($head_ty:ident) => {
-        tuple_query_impl!($head_ty);
-    };
-    ($head_ty:ident, $( $tail_ty:ident ),*) => (
-        tuple_query_impl!($head_ty, $( $tail_ty ),*);
-        tuple_query!($( $tail_ty ),*);
-    );
-}
-
 // Generate implementations for tuples up to 26 elements (A-Z)
-tuple_query! {
-    A, B, C, D, E, F, G, H, I, J, K, L, M, N, O, P, Q, R, S, T, U, V, W, X, Y, Z
-}
+all_tuples!(tuple_query);
 
 #[cfg(test)]
 mod tests {

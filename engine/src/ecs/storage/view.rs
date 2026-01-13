@@ -111,10 +111,13 @@
 
 use std::{any::TypeId, collections::HashSet};
 
-use crate::ecs::{
-    component::Component,
-    entity,
-    storage::{row::Row, table::Table},
+use crate::{
+    all_tuples,
+    ecs::{
+        component::Component,
+        entity,
+        storage::{row::Row, table::Table},
+    },
 };
 
 /// Trait for types that can be fetched as a view of components for a single entity row.
@@ -495,7 +498,7 @@ impl<'a> View<'a> for () {
 ///
 /// This generates implementations for tuples of various sizes, supporting
 /// both immutable and mutable component references.
-macro_rules! tuple_view_impl {
+macro_rules! tuple_view {
     ($($name: ident),*) => {
         impl<'a, $($name: View<'a>),*> View<'a> for ($($name,)*) {
             unsafe fn fetch(table: &'a Table, row: Row) -> Option<Self> {
@@ -541,21 +544,8 @@ macro_rules! tuple_view_impl {
     }
 }
 
-/// Generate View implementations for tuples of increasing size.
-macro_rules! tuple_view {
-    ($head:ident) => {
-        tuple_view_impl!($head);
-    };
-    ($head:ident, $($tail:ident),*) => {
-        tuple_view_impl!($head, $($tail),*);
-        tuple_view!($($tail),*);
-    };
-}
-
 // Generate implementations for tuples up to 26 elements (A-Z)
-tuple_view! {
-    A, B, C, D, E, F, G, H, I, J, K, L, M, N, O, P, Q, R, S, T, U, V, W, X, Y, Z
-}
+all_tuples!(tuple_view);
 
 #[cfg(test)]
 mod tests {

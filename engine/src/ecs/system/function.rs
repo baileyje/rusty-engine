@@ -1,7 +1,8 @@
 //! Function system wrapper and parameter extraction.
 //!
-//! This module provides [`Wrapper`], which converts regular functions into systems,
-//! and [`WithSystemParams`], the trait that enables parameter extraction.
+//! This module provides [`WithSystemParams`], the trait that enables parameter extraction. This
+//! trait combined with [`IntoSystem`] allows any functions that can be expressed with system
+//! parameters to be added as systems.
 //!
 //! # Overview
 //!
@@ -15,10 +16,10 @@
 //! }
 //! ```
 //!
-//! These functions are wrapped using [`Wrapper`] to implement the [`System`] trait:
+//! These functions are turned into systems via the [`IntoSystem`] trait, which is implemented
 //!
 //! ```rust,ignore
-//! let system = Wrapper::new(world.components(), my_system);
+//! let system = IntoSystem::into_system(my_system, world);
 //! ```
 //!
 //! # The Parameter Extraction Process
@@ -27,20 +28,6 @@
 //! 2. **Wrapper creation**: Analyzes parameters via [`Parameter::required_access()`]
 //! 3. **System execution**: Calls [`Parameter::get()`] for each parameter
 //! 4. **Function invocation**: Passes runtime values with world lifetime `'w`
-//!
-//! # The HRTB Magic
-//!
-//! The key to making this work is the Higher-Ranked Trait Bound in [`WithSystemParams`]:
-//!
-//! ```rust,ignore
-//! for<'a> &'a mut Func: FnMut(Param) + FnMut(Param::Value<'a>)
-//! ```
-//!
-//! This says the function must accept:
-//! - The **parameter type** (with elided lifetime) - used in signature
-//! - The **value type** (with any lifetime `'a`) - used at runtime
-//!
-//! When executed, `'a` becomes `'w` (world lifetime), bridging the gap.
 //!
 //! # Safety
 //!
@@ -52,52 +39,14 @@
 //!
 //! See [`WithSystemParams`] for detailed safety documentation.
 
-use crate::ecs::{
-    component,
-    system::{IntoSystem, System, param::Parameter},
-    world,
+use crate::{
+    all_tuples,
+    ecs::{
+        component,
+        system::{IntoSystem, System, param::Parameter},
+        world,
+    },
 };
-
-/// Implement [`IntoSystem`] for functions with parameters.
-///
-/// This creates a parallel-capable system when the function and its state are `Send + Sync`.
-/// The marker type `(Params, State)` distinguishes this implementation from the
-/// exclusive world function implementation.
-impl<Func, Params, State> IntoSystem<(Params, State)> for Func
-where
-    Func: WithSystemParams<Params, State> + Send + Sync + 'static,
-    Params: 'static,
-    State: Send + Sync + 'static,
-{
-    fn into_system(mut instance: Self, world: &mut world::World) -> System {
-        let access = Func::required_access(world.components());
-        let mut state = Func::build_state(world);
-        System::parallel(access, move |shard| unsafe {
-            instance.run(shard, &mut state);
-        })
-    }
-}
-
-/// Marker type for `fn(&mut World)` to `WorldSystem` conversion.
-///
-/// This distinguishes world functions from parameter-based functions in the
-/// `IntoSystem` trait implementation.
-pub struct WorldFnMarker;
-
-/// Implement [`IntoSystem`] for functions that take only `&mut World`.
-///
-/// This creates an exclusive system that requires main-thread execution with full
-/// mutable world access. The [`WorldFnMarker`] distinguishes this from parameter-based systems.
-impl<F> IntoSystem<WorldFnMarker> for F
-where
-    F: FnMut(&mut world::World) + 'static,
-{
-    fn into_system(mut instance: Self, _world: &mut world::World) -> System {
-        System::exclusive(world::AccessRequest::to_world(true), move |world| {
-            instance(world)
-        })
-    }
-}
 
 /// Trait enabling functions to be called with system parameters.
 ///
@@ -137,15 +86,15 @@ where
 /// - Functions with 1-26 parameters: `fn(A)`, `fn(A, B)`, ..., `fn(A, B, ..., Z)`
 ///
 /// Each implementation:
-/// 1. Merges component specs from all parameters
+/// 1. Merges required_access from all parameters
 /// 2. Extracts parameter values from world at runtime
 /// 3. Calls the function with the extracted values
 ///
 /// # Safety
 ///
-/// The `run` method creates aliased mutable world pointers. This is safe because:
+/// The `run` method is executed with an access restricted world [`Shard`]. This is safe because:
 /// - Each parameter accesses disjoint data (different components)
-/// - Component specs validate no aliasing at system registration
+/// - AccessGrant validate no aliasing at system registration
 /// - The scheduler ensures no conflicting systems run concurrently
 ///
 /// # Examples
@@ -241,6 +190,7 @@ where
         self();
     }
 
+    // Build empty state
     fn build_state(_world: &mut world::World) {}
 }
 
@@ -269,18 +219,18 @@ where
 /// # Safety
 ///
 /// The `run` implementation creates aliased mutable world pointers by casting
-/// `&mut World` to `*mut World` for each parameter. This is safe because:
+/// `&mut Shard` to `*mut Shard` for each parameter. This is safe because:
 /// - Each `Parameter::get()` accesses disjoint components
 /// - Component specs are validated before execution
 /// - The scheduler prevents concurrent conflicting access
-macro_rules! system_param_function_impl {
+macro_rules! system_param_function {
     ($($param:ident),*) => {
         impl<Func, $($param: Parameter, )*> WithSystemParams<($($param, )*), ($($param::State,)*)> for Func
         where
             Func: 'static,
             // HRTB: Function must work with both elided lifetimes (signature)
-            // and any specific lifetime 'a (runtime with world lifetime)
-            for<'a> &'a mut Func: FnMut($($param),*) + FnMut($($param::Value<'a, '_>),*),
+            // and any specific lifetime 'w (runtime with world lifetime)
+            for<'w> &'w mut Func: FnMut($($param),*) + FnMut($($param::Value<'w, '_>),*),
         {
             fn required_access(components: &component::Registry) -> world::AccessRequest {
                 // Merge component specs from all parameters
@@ -328,44 +278,50 @@ macro_rules! system_param_function_impl {
     };
 }
 
-/// Recursive macro to generate [`WithSystemParams`] for all parameter counts.
-///
-/// Given a list of type parameters like `A, B, C`, this macro generates implementations for:
-/// - `(A, B, C)` - 3 parameters
-/// - `(B, C)` - 2 parameters
-/// - `(C)` - 1 parameter
-///
-/// This allows the same invocation to cover all parameter counts from N down to 1.
-///
-/// # Example
-///
-/// ```ignore
-/// system_param_function!(A, B, C);
-/// ```
-///
-/// Generates:
-/// - `impl WithSystemParams<(A, B, C)> for Func where ...`
-/// - `impl WithSystemParams<(B, C)> for Func where ...`
-/// - `impl WithSystemParams<(C,)> for Func where ...`
-macro_rules! system_param_function {
-    // Base case: single parameter
-    ($head_ty:ident) => {
-        system_param_function_impl!($head_ty);
-    };
-    // Recursive case: head + tail
-    ($head_ty:ident, $( $tail_ty:ident ),*) => (
-        // Generate implementation for full parameter list
-        system_param_function_impl!($head_ty, $( $tail_ty ),*);
-        // Recurse with tail (one fewer parameter)
-        system_param_function!($( $tail_ty ),*);
-    );
-}
-
 // Generate WithSystemParams implementations for functions with 1-26 parameters.
 // This covers the vast majority of real-world systems. If you need more than 26 parameters,
 // consider breaking your system into smaller systems or using a resource to pass shared data.
-system_param_function! {
-    A, B, C, D, E, F, G, H, I, J, K, L, M, N, O, P, Q, R, S, T, U, V, W, X, Y, Z
+all_tuples!(system_param_function);
+
+/// Marker type for `fn(&mut World)` to `WorldSystem` conversion.
+///
+/// This distinguishes world functions from parameter-based functions in the
+/// `IntoSystem` trait implementation.
+pub struct WorldFnMarker;
+
+/// Implement [`IntoSystem`] for functions that take only `&mut World`.
+///
+/// This creates an exclusive system that requires main-thread execution with full
+/// mutable world access. The [`WorldFnMarker`] distinguishes this from parameter-based systems.
+impl<F> IntoSystem<WorldFnMarker> for F
+where
+    F: FnMut(&mut world::World) + 'static,
+{
+    fn into_system(mut instance: Self, _world: &mut world::World) -> System {
+        System::exclusive(world::AccessRequest::to_world(true), move |world| {
+            instance(world)
+        })
+    }
+}
+
+/// Implement [`IntoSystem`] for functions with parameters.
+///
+/// This creates a parallel-capable system when the function and its state are `Send + Sync`.
+/// The marker type `(Params, State)` distinguishes this implementation from the
+/// exclusive world function implementation.
+impl<Func, Params, State> IntoSystem<(Params, State)> for Func
+where
+    Func: WithSystemParams<Params, State> + Send + Sync + 'static,
+    Params: 'static,
+    State: Send + Sync + 'static,
+{
+    fn into_system(mut instance: Self, world: &mut world::World) -> System {
+        let access = Func::required_access(world.components());
+        let mut state = Func::build_state(world);
+        System::parallel(access, move |shard| unsafe {
+            instance.run(shard, &mut state);
+        })
+    }
 }
 
 #[cfg(test)]

@@ -1,6 +1,9 @@
 use std::slice;
 
-use crate::ecs::component::{Component, Id, Registry, Spec};
+use crate::{
+    all_tuples,
+    ecs::component::{Component, Id, Registry, Spec},
+};
 
 /// Trait describing a target that can have component values applied to it from a `Set`.
 pub trait Target {
@@ -45,7 +48,7 @@ impl Set for () {
 }
 
 /// Implement Set for tuples of component types.
-macro_rules! tuple_set_impl {
+macro_rules! tuple_set {
     ($($name: ident),*) => {
         impl<$($name: Set),*> Set for ($($name,)*) {
             fn spec(registry: &Registry) -> Spec {
@@ -65,21 +68,8 @@ macro_rules! tuple_set_impl {
     }
 }
 
-/// Implement Set for tuples of component types recursively.
-macro_rules! tuple_set {
-    ($head_ty:ident) => {
-        tuple_set_impl!($head_ty);
-    };
-    ($head_ty:ident, $( $tail_ty:ident ),*) => (
-        tuple_set_impl!($head_ty, $( $tail_ty ),*);
-        tuple_set!($( $tail_ty ),*);
-    );
-}
-
-// Generate implementations for tuples up to 26 elements (A-Z)
-tuple_set! {
-    A, B, C, D, E, F, G, H, I, J, K, L, M, N, O, P, Q, R, S, T, U, V, W, X, Y, Z
-}
+// Implement the tuple Set for all tuples up to 26 elements.
+all_tuples!(tuple_set);
 
 #[cfg(test)]
 mod tests {
