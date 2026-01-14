@@ -96,7 +96,7 @@ mod tests {
     use crate::ecs::{
         component::{self},
         entity::{self},
-        storage::{table, Table},
+        storage::{Table, table},
     };
     use rusty_macros::Component;
 
@@ -121,10 +121,8 @@ mod tests {
     fn ref_get_existing_component() {
         // Given
         let registry = component::Registry::new();
-        let pos_id = registry.register::<Position>();
-        let vel_id = registry.register::<Velocity>();
 
-        let spec = component::Spec::new(vec![pos_id, vel_id]);
+        let spec = registry.spec::<(Position, Velocity)>();
         let mut table = Table::new(table::Id::new(0), spec, &registry);
 
         let mut allocator = entity::Allocator::new();
@@ -148,9 +146,8 @@ mod tests {
     fn ref_get_nonexistent_component() {
         // Given
         let registry = component::Registry::new();
-        let pos_id = registry.register::<Position>();
 
-        let spec = component::Spec::new(vec![pos_id]);
+        let spec = registry.spec::<Position>();
         let mut table = Table::new(table::Id::new(0), spec, &registry);
 
         let mut allocator = entity::Allocator::new();
@@ -171,10 +168,9 @@ mod tests {
     fn ref_get_unregistered_component() {
         // Given
         let registry = component::Registry::new();
-        let pos_id = registry.register::<Position>();
         // Note: Health is NOT registered
 
-        let spec = component::Spec::new(vec![pos_id]);
+        let spec = registry.spec::<Position>();
         let mut table = Table::new(table::Id::new(0), spec, &registry);
 
         let mut allocator = entity::Allocator::new();
@@ -195,11 +191,8 @@ mod tests {
     fn ref_get_multiple_components() {
         // Given
         let registry = component::Registry::new();
-        let pos_id = registry.register::<Position>();
-        let vel_id = registry.register::<Velocity>();
-        let health_id = registry.register::<Health>();
+        let spec = registry.spec::<(Position, Velocity, Health)>();
 
-        let spec = component::Spec::new(vec![pos_id, vel_id, health_id]);
         let mut table = Table::new(table::Id::new(0), spec, &registry);
 
         let mut allocator = entity::Allocator::new();
@@ -228,9 +221,8 @@ mod tests {
     fn ref_for_nonexistent_entity() {
         // Given
         let registry = component::Registry::new();
-        let pos_id = registry.register::<Position>();
 
-        let spec = component::Spec::new(vec![pos_id]);
+        let spec = registry.spec::<Position>();
         let mut table = Table::new(table::Id::new(0), spec, &registry);
 
         let mut allocator = entity::Allocator::new();
@@ -252,10 +244,8 @@ mod tests {
     fn ref_mut_get_existing_component() {
         // Given
         let registry = component::Registry::new();
-        let pos_id = registry.register::<Position>();
-        let vel_id = registry.register::<Velocity>();
 
-        let spec = component::Spec::new(vec![pos_id, vel_id]);
+        let spec = registry.spec::<(Position, Velocity)>();
         let mut table = Table::new(table::Id::new(0), spec, &registry);
 
         let mut allocator = entity::Allocator::new();
@@ -279,9 +269,8 @@ mod tests {
     fn ref_mut_get_nonexistent_component() {
         // Given
         let registry = component::Registry::new();
-        let pos_id = registry.register::<Position>();
 
-        let spec = component::Spec::new(vec![pos_id]);
+        let spec = registry.spec::<Position>();
         let mut table = Table::new(table::Id::new(0), spec, &registry);
 
         let mut allocator = entity::Allocator::new();
@@ -302,10 +291,8 @@ mod tests {
     fn ref_mut_get_mut_existing_component() {
         // Given
         let registry = component::Registry::new();
-        let pos_id = registry.register::<Position>();
-        let vel_id = registry.register::<Velocity>();
 
-        let spec = component::Spec::new(vec![pos_id, vel_id]);
+        let spec = registry.spec::<(Position, Velocity)>();
         let mut table = Table::new(table::Id::new(0), spec, &registry);
 
         let mut allocator = entity::Allocator::new();

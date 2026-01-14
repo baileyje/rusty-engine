@@ -1,4 +1,9 @@
-use crate::ecs::component::Id;
+use core::slice;
+
+use crate::{
+    all_tuples,
+    ecs::component::{Component, Id, Registry},
+};
 
 /// A specification for the components required for an entity or archetype.
 /// This is a sorted vector of component IDs that can be used as a Hash key
@@ -65,6 +70,46 @@ impl Spec {
     }
 }
 
+/// Trait for converting a type into a component specification (`Spec`).
+pub trait IntoSpec<Marker = ()> {
+    /// Convert the type into a component specification using the given registry.
+    fn into_spec(registry: &Registry) -> Spec;
+}
+
+/// [`IntoSpec`] implementation for the empty tuple.
+impl IntoSpec for () {
+    /// Convert the empty tuple into an empty Spec.
+    fn into_spec(_registry: &Registry) -> Spec {
+        Spec::EMPTY
+    }
+}
+
+/// [`IntoSpec`] implementation for single component types.
+impl<C: Component> IntoSpec for C {
+    fn into_spec(registry: &Registry) -> Spec {
+        Spec::new(slice::from_ref(&registry.register::<C>()))
+    }
+}
+
+/// [`IntoSpec`] implementation for tuples of other [`IntoSpec`] types.
+macro_rules! tuple_spec {
+    ($($name: ident),*) => {
+        impl<$($name: IntoSpec),*> IntoSpec for ($($name,)*) {
+            fn into_spec(registry: &Registry) -> Spec {
+                let mut ids = Vec::new();
+                // $(ids.extend(registry).ids());.spec::<$name as IntoSpec>()*
+                $(
+                    ids.extend(registry.spec::<$name>().ids());
+                )*
+                Spec::new(ids)
+            }
+        }
+    }
+}
+
+// Implement the tuple -> Spec for all tuples up to 26 elements.
+all_tuples!(tuple_spec);
+
 #[cfg(test)]
 mod tests {
     use rusty_macros::Component;
@@ -86,6 +131,7 @@ mod tests {
     fn component_id_order() {
         // Given
         let registry = Registry::new();
+
         let id1 = registry.register::<Comp1>();
         let id2 = registry.register::<Comp2>();
         let id3 = registry.register::<Comp3>();

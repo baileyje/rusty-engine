@@ -574,11 +574,8 @@ mod tests {
 
     fn setup_table() -> (Table, component::Registry, entity::Allocator) {
         let registry = component::Registry::new();
-        let pos_id = registry.register::<Position>();
-        let vel_id = registry.register::<Velocity>();
-        let health_id = registry.register::<Health>();
 
-        let spec = component::Spec::new(vec![pos_id, vel_id, health_id]);
+        let spec = registry.spec::<(Position, Velocity, Health)>();
         let table = Table::new(super::super::table::Id::new(0), spec, &registry);
         let allocator = entity::Allocator::new();
 
@@ -888,12 +885,7 @@ mod tests {
         #[derive(Component, Debug, PartialEq)]
         struct Comp4(u32);
 
-        let id1 = registry.register::<Comp1>();
-        let id2 = registry.register::<Comp2>();
-        let id3 = registry.register::<Comp3>();
-        let id4 = registry.register::<Comp4>();
-
-        let spec = component::Spec::new(vec![id1, id2, id3, id4]);
+        let spec = registry.spec::<(Comp1, Comp2, Comp3, Comp4)>();
         let mut table = Table::new(super::super::table::Id::new(0), spec, &registry);
 
         let mut allocator = entity::Allocator::new();
@@ -928,12 +920,7 @@ mod tests {
         #[derive(Component, Debug, PartialEq)]
         struct Comp4(u32);
 
-        let id1 = registry.register::<Comp1>();
-        let id2 = registry.register::<Comp2>();
-        let id3 = registry.register::<Comp3>();
-        let id4 = registry.register::<Comp4>();
-
-        let spec = component::Spec::new(vec![id1, id2, id3, id4]);
+        let spec = registry.spec::<(Comp1, Comp2, Comp3, Comp4)>();
         let mut table = Table::new(super::super::table::Id::new(0), spec, &registry);
 
         let mut allocator = entity::Allocator::new();

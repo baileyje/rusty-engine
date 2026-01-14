@@ -45,7 +45,7 @@ pub(crate) use info::Info;
 pub use registry::Registry;
 use rusty_macros::Component;
 pub(crate) use set::{Set, Target as SetTarget};
-pub(crate) use spec::Spec;
+pub use spec::{IntoSpec, Spec};
 
 /// A component identifier. This is a non-zero unique identifier for a component type in the ECS.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]

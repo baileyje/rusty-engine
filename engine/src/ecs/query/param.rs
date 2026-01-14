@@ -32,7 +32,10 @@
 //! let query = Query::<(&Position, Option<&Velocity>)>::new(world.components());
 //! ```
 
-use crate::ecs::{component, entity, storage};
+use crate::ecs::{
+    component::{self},
+    entity, storage,
+};
 
 /// A single query parameter that can be fetched from the ECS.
 ///

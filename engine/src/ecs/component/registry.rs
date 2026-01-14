@@ -1,12 +1,12 @@
 use std::{
     any::TypeId,
-    sync::atomic::{AtomicU32, Ordering},
     sync::RwLock,
+    sync::atomic::{AtomicU32, Ordering},
 };
 
 use dashmap::DashMap;
 
-use crate::ecs::component::{Component, Id, Info};
+use crate::ecs::component::{Component, Id, Info, IntoSpec, Spec, info};
 
 /// A thread-safe component registry. This is responsible for managing component types and their
 /// identifiers within the ECS.
@@ -113,6 +113,12 @@ impl Registry {
     pub fn get_info_by_id(&self, id: Id) -> Option<Info> {
         let components = self.components.read().unwrap();
         components.get(id.index()).and_then(|i| *i)
+    }
+
+    /// Get a component specification for a generic type `IS` which implements [`IntoSpec`].
+    #[inline]
+    pub fn spec<IS: IntoSpec>(&self) -> Spec {
+        IS::into_spec(self)
     }
 }
 

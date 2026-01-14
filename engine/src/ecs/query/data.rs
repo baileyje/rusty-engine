@@ -25,7 +25,8 @@ use std::collections::HashSet;
 use crate::{
     all_tuples,
     ecs::{
-        component, entity,
+        component::{self},
+        entity,
         query::{
             IntoQuery, Query,
             param::{Parameter, ParameterSpec},
@@ -433,11 +434,7 @@ mod tests {
 
     fn test_setup() -> (world::World, storage::Table) {
         let world = world::World::new(world::Id::new(0));
-        let spec = component::Spec::new(vec![
-            world.components().register::<Comp1>(),
-            world.components().register::<Comp2>(),
-            world.components().register::<Comp3>(),
-        ]);
+        let spec = world.components().spec::<(Comp1, Comp2, Comp3)>();
         let table = storage::Table::new(storage::table::Id::new(0), spec, world.components());
         (world, table)
     }

@@ -116,13 +116,10 @@ mod tests {
         impl component::Component for Comp3 {}
 
         let registry = component::Registry::new();
-        let id1 = registry.register::<Comp1>();
-        let id2 = registry.register::<Comp2>();
-        let id3 = registry.register::<Comp3>();
 
         // When
-        let ids1 = component::Spec::new(vec![id2, id1, id3]);
-        let ids2 = component::Spec::new(vec![id1, id2, id3]);
+        let ids1 = registry.spec::<(Comp2, Comp1, Comp3)>();
+        let ids2 = registry.spec::<(Comp1, Comp2, Comp3)>();
 
         // Then
         assert_eq!(ids1, ids2);
@@ -146,20 +143,22 @@ mod tests {
         #[derive(Component)]
         pub struct Comp3 {}
 
-        let id1 = component_registry.register::<Comp1>();
-        let id2 = component_registry.register::<Comp2>();
-        let id3 = component_registry.register::<Comp3>();
-
         // When
         let arch1 = registry
-            .get_or_create(component::Spec::new([id1, id2]), storage::table::Id::new(0))
+            .get_or_create(
+                component_registry.spec::<(Comp1, Comp2)>(),
+                storage::table::Id::new(0),
+            )
             .id();
         let arch2 = registry
-            .get_or_create(component::Spec::new([id1, id3]), storage::table::Id::new(1))
+            .get_or_create(
+                component_registry.spec::<(Comp1, Comp3)>(),
+                storage::table::Id::new(1),
+            )
             .id();
         let arch3 = registry
             .get_or_create(
-                component::Spec::new([id1, id2, id3]),
+                component_registry.spec::<(Comp1, Comp2, Comp3)>(),
                 storage::table::Id::new(2),
             )
             .id();
@@ -171,7 +170,10 @@ mod tests {
 
         // And When
         let arch4 = registry
-            .get_or_create(component::Spec::new([id1, id3]), storage::table::Id::new(1))
+            .get_or_create(
+                component_registry.spec::<(Comp1, Comp3)>(),
+                storage::table::Id::new(1),
+            )
             .id();
 
         // Then

@@ -136,9 +136,9 @@ impl Table {
         // Verify set matches table spec
         #[cfg(debug_assertions)]
         {
-            let set_spec = S::spec(registry);
             debug_assert_eq!(
-                set_spec, self.components,
+                registry.spec::<S>(),
+                self.components,
                 "set spec does not match table spec"
             );
         }
@@ -568,20 +568,37 @@ mod tests {
 
     use super::*;
 
+    #[derive(Component, Copy, Clone, Debug, PartialEq)]
+    struct Position {
+        x: f32,
+        y: f32,
+    }
+
+    #[derive(Component, Copy, Clone, Debug, PartialEq)]
+    struct Velocity {
+        dx: f32,
+        dy: f32,
+    }
+
+    #[derive(Component, Copy, Clone, Debug, PartialEq)]
+    struct Health {
+        value: i32,
+    }
+
+    #[derive(Component, Copy, Clone, Debug, PartialEq)]
+    struct Score {
+        points: u32,
+    }
+
     #[test]
     fn table_creation_with_default_index() {
         // Given
         let component_registry = component::Registry::new();
-        #[derive(Component)]
-        struct Comp1 {}
 
-        #[derive(Component)]
-        struct Comp2 {}
+        let pos_id = component_registry.register::<Position>();
+        let vel_id = component_registry.register::<Velocity>();
 
-        let pos_id = component_registry.register::<Comp1>();
-        let vel_id = component_registry.register::<Comp2>();
-
-        let spec = component::Spec::new(vec![pos_id, vel_id]);
+        let spec = component_registry.spec::<(Position, Velocity)>();
 
         // When
         let table = Table::new(Id::new(0), spec, &component_registry);
@@ -599,13 +616,8 @@ mod tests {
         // Given
         let component_registry = component::Registry::new();
 
-        #[derive(Component, Copy, Clone, Debug, PartialEq)]
-        struct Health {
-            value: i32,
-        }
-
         let health_id = component_registry.register::<Health>();
-        let spec = component::Spec::new(vec![health_id]);
+        let spec = component_registry.spec::<Health>();
         let mut table = Table::new(Id::new(0), spec, &component_registry);
 
         let mut allocator = entity::Allocator::new();
@@ -637,30 +649,12 @@ mod tests {
     fn table_with_multiple_component_types() {
         // Given
         let component_registry = component::Registry::new();
-
-        #[derive(Component, Copy, Clone, Debug, PartialEq)]
-        struct Position {
-            x: f32,
-            y: f32,
-        }
-
-        #[derive(Component, Copy, Clone, Debug, PartialEq)]
-        struct Velocity {
-            dx: f32,
-            dy: f32,
-        }
-
-        #[derive(Component, Copy, Clone, Debug, PartialEq)]
-        struct Health {
-            value: i32,
-        }
-
         let pos_id = component_registry.register::<Position>();
         let vel_id = component_registry.register::<Velocity>();
         let health_id = component_registry.register::<Health>();
 
         // Create a table with three different component types
-        let spec = component::Spec::new(vec![pos_id, vel_id, health_id]);
+        let spec = component_registry.spec::<(Position, Velocity, Health)>();
         let mut table = Table::new(Id::new(0), spec, &component_registry);
 
         let mut allocator = entity::Allocator::new();
@@ -727,14 +721,8 @@ mod tests {
         // Given
         let component_registry = component::Registry::new();
 
-        #[derive(Debug)]
-        struct Score {
-            points: u32,
-        }
-        impl component::Component for Score {}
-
         let score_id = component_registry.register::<Score>();
-        let spec = component::Spec::new(vec![score_id]);
+        let spec = component_registry.spec::<Score>();
         let mut table = Table::new(Id::new(0), spec, &component_registry);
 
         let mut allocator = entity::Allocator::new();
@@ -779,23 +767,14 @@ mod tests {
         // Given
         let component_registry = component::Registry::new();
 
-        #[derive(Component)]
-        struct Position {}
-
-        #[derive(Component)]
-        struct Velocity {}
-
-        let pos_id = component_registry.register::<Position>();
-        let vel_id = component_registry.register::<Velocity>();
-
-        let spec = component::Spec::new(vec![pos_id, vel_id]);
+        let spec = component_registry.spec::<(Position, Velocity)>();
         let mut table = Table::new(Id::new(0), spec, &component_registry);
 
         let mut allocator = entity::Allocator::new();
         let entity = allocator.alloc();
 
         // When Then - should panic because we don't add velocity
-        table.add_entity(entity, Position {}, &component_registry);
+        table.add_entity(entity, Position { x: 0.0, y: 0.0 }, &component_registry);
     }
 
     #[test]
@@ -803,13 +782,8 @@ mod tests {
         // Given
         let component_registry = component::Registry::new();
 
-        #[derive(Component, Copy, Clone, Debug, PartialEq)]
-        struct Value {
-            n: u32,
-        }
-
-        let value_id = component_registry.register::<Value>();
-        let spec = component::Spec::new(vec![value_id]);
+        let value_id = component_registry.register::<Health>();
+        let spec = component_registry.spec::<Health>();
         let mut table = Table::new(Id::new(0), spec, &component_registry);
 
         let mut allocator = entity::Allocator::new();
@@ -817,9 +791,9 @@ mod tests {
         let entity2 = allocator.alloc();
         let entity3 = allocator.alloc();
 
-        table.add_entity(entity1, Value { n: 100 }, &component_registry);
-        table.add_entity(entity2, Value { n: 200 }, &component_registry);
-        table.add_entity(entity3, Value { n: 300 }, &component_registry);
+        table.add_entity(entity1, Health { value: 100 }, &component_registry);
+        table.add_entity(entity2, Health { value: 200 }, &component_registry);
+        table.add_entity(entity3, Health { value: 300 }, &component_registry);
 
         assert_eq!(table.len(), 3);
 
@@ -835,7 +809,7 @@ mod tests {
         // Verify column data
         let column = table.get_column_by_id(value_id).unwrap();
         unsafe {
-            let values: Vec<u32> = column.iter::<Value>().map(|v| v.n).collect();
+            let values: Vec<i32> = column.iter::<Health>().map(|v| v.value).collect();
             assert_eq!(values, vec![100, 300]);
         }
 
@@ -860,11 +834,7 @@ mod tests {
         // Given
         let component_registry = component::Registry::new();
 
-        #[derive(Component)]
-        struct Comp {}
-
-        let comp_id = component_registry.register::<Comp>();
-        let spec = component::Spec::new(vec![comp_id]);
+        let spec = component_registry.spec::<Position>();
         let mut table = Table::new(Id::new(0), spec, &component_registry);
 
         // When - try to remove from empty table
@@ -875,7 +845,11 @@ mod tests {
 
         // When - add entity and try to remove out of bounds
         let mut allocator = entity::Allocator::new();
-        table.add_entity(allocator.alloc(), Comp {}, &component_registry);
+        table.add_entity(
+            allocator.alloc(),
+            Position { x: 0.0, y: 0.0 },
+            &component_registry,
+        );
 
         table.swap_remove_row(Row::new(10));
     }
@@ -885,21 +859,7 @@ mod tests {
         // Given
         let component_registry = component::Registry::new();
 
-        #[derive(Component, Debug, PartialEq)]
-        struct Position {
-            x: f32,
-            y: f32,
-        }
-
-        #[derive(Component, Debug, PartialEq)]
-        struct Velocity {
-            dx: f32,
-            dy: f32,
-        }
-
-        let pos_id = component_registry.register::<Position>();
-        let vel_id = component_registry.register::<Velocity>();
-        let spec = component::Spec::new(vec![pos_id, vel_id]);
+        let spec = component_registry.spec::<(Position, Velocity)>();
         let mut table = Table::new(Id::new(0), spec, &component_registry);
 
         let mut allocator = entity::Allocator::new();
@@ -947,13 +907,7 @@ mod tests {
         // Given
         let component_registry = component::Registry::new();
 
-        #[derive(Component, Debug, PartialEq)]
-        struct Health {
-            value: i32,
-        }
-
-        let health_id = component_registry.register::<Health>();
-        let spec = component::Spec::new(vec![health_id]);
+        let spec = component_registry.spec::<Health>();
         let mut table = Table::new(Id::new(0), spec, &component_registry);
 
         let mut allocator = entity::Allocator::new();
@@ -978,8 +932,8 @@ mod tests {
     #[test]
     fn table_drop_components() {
         // Given
-        use std::sync::atomic::{AtomicUsize, Ordering};
         use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
 
         #[derive(Debug)]
         struct DropTracker(Arc<AtomicUsize>);
@@ -993,8 +947,7 @@ mod tests {
         impl component::Component for DropTracker {}
 
         let component_registry = component::Registry::new();
-        let tracker_id = component_registry.register::<DropTracker>();
-        let spec = component::Spec::new(vec![tracker_id]);
+        let spec = component_registry.spec::<DropTracker>();
         let mut table = Table::new(Id::new(0), spec, &component_registry);
 
         let counter = Arc::new(AtomicUsize::new(0));
@@ -1042,8 +995,7 @@ mod tests {
         #[derive(Component)]
         struct Empty;
 
-        let empty_id = component_registry.register::<Empty>();
-        let spec = component::Spec::new(vec![empty_id]);
+        let spec = component_registry.spec::<Empty>();
         let table = Table::new(Id::new(0), spec, &component_registry);
 
         // Then
@@ -1060,20 +1012,11 @@ mod tests {
         // Given
         let component_registry = component::Registry::new();
 
-        #[derive(Component)]
-        struct Comp1 {}
-
-        #[derive(Component)]
-        struct Comp2 {}
-
-        let comp1_id = component_registry.register::<Comp1>();
-        let comp2_id = component_registry.register::<Comp2>();
-        let spec = component::Spec::new(vec![comp1_id, comp2_id]);
+        let spec = component_registry.spec::<(Position, Velocity)>();
         let table = Table::new(Id::new(0), spec.clone(), &component_registry);
 
         // When/Then
         assert_eq!(table.components(), &spec);
-        assert_eq!(table.components().ids(), &[comp1_id, comp2_id]);
     }
 
     #[test]
@@ -1081,11 +1024,7 @@ mod tests {
         // Given
         let component_registry = component::Registry::new();
 
-        #[derive(Component)]
-        struct Comp1 {}
-
-        let comp1_id = component_registry.register::<Comp1>();
-        let spec = component::Spec::new(vec![comp1_id]);
+        let spec = component_registry.spec::<Position>();
         let mut table = Table::new(Id::new(0), spec, &component_registry);
 
         // When - try to get column for component not in table
@@ -1103,23 +1042,17 @@ mod tests {
         // Given
         let component_registry = component::Registry::new();
 
-        #[derive(Component, Debug, PartialEq)]
-        struct Value {
-            n: u32,
-        }
-
-        let value_id = component_registry.register::<Value>();
-        let spec = component::Spec::new(vec![value_id]);
+        let spec = component_registry.spec::<Health>();
         let mut table = Table::new(Id::new(0), spec, &component_registry);
 
         let mut allocator = entity::Allocator::new();
         let entity = allocator.alloc();
 
-        table.add_entity(entity, Value { n: 100 }, &component_registry);
+        table.add_entity(entity, Health { value: 100 }, &component_registry);
 
         // When/Then - entity not in table returns None
         unsafe {
-            assert_eq!(table.get::<Value>(1.into()), None);
+            assert_eq!(table.get::<Health>(1.into()), None);
         }
     }
 
@@ -1128,14 +1061,7 @@ mod tests {
         // Given
         let component_registry = component::Registry::new();
 
-        #[derive(Component, Debug, PartialEq)]
-        struct Position {
-            x: f32,
-            y: f32,
-        }
-
-        let pos_id = component_registry.register::<Position>();
-        let spec = component::Spec::new(vec![pos_id]);
+        let spec = component_registry.spec::<Position>();
         let mut table = Table::new(Id::new(0), spec, &component_registry);
 
         let mut allocator = entity::Allocator::new();
@@ -1158,13 +1084,7 @@ mod tests {
         // Given
         let component_registry = component::Registry::new();
 
-        #[derive(Component, Debug, PartialEq)]
-        struct Health {
-            value: i32,
-        }
-
-        let health_id = component_registry.register::<Health>();
-        let spec = component::Spec::new(vec![health_id]);
+        let spec = component_registry.spec::<Health>();
         let mut table = Table::new(Id::new(0), spec, &component_registry);
 
         let mut allocator = entity::Allocator::new();
@@ -1190,21 +1110,7 @@ mod tests {
         // Given
         let component_registry = component::Registry::new();
 
-        #[derive(Component, Debug, PartialEq)]
-        struct Position {
-            x: f32,
-            y: f32,
-        }
-
-        #[derive(Component, Debug, PartialEq)]
-        struct Velocity {
-            dx: f32,
-            dy: f32,
-        }
-
-        let pos_id = component_registry.register::<Position>();
-        let vel_id = component_registry.register::<Velocity>();
-        let spec = component::Spec::new(vec![pos_id, vel_id]);
+        let spec = component_registry.spec::<(Position, Velocity)>();
         let mut table = Table::new(Id::new(0), spec, &component_registry);
 
         let mut allocator = entity::Allocator::new();
@@ -1233,21 +1139,8 @@ mod tests {
         // Given
         let component_registry = component::Registry::new();
 
-        #[derive(Component, Debug, PartialEq)]
-        struct Position {
-            x: f32,
-            y: f32,
-        }
+        let spec = component_registry.spec::<(Position, Velocity)>();
 
-        #[derive(Component, Debug, PartialEq)]
-        struct Velocity {
-            dx: f32,
-            dy: f32,
-        }
-
-        let pos_id = component_registry.register::<Position>();
-        let vel_id = component_registry.register::<Velocity>();
-        let spec = component::Spec::new(vec![pos_id, vel_id]);
         let mut table = Table::new(Id::new(0), spec, &component_registry);
 
         let mut allocator = entity::Allocator::new();
@@ -1282,15 +1175,11 @@ mod tests {
         // Given
         let component_registry = component::Registry::new();
 
-        #[derive(Component)]
-        struct Comp;
-
-        let comp_id = component_registry.register::<Comp>();
-        let spec = component::Spec::new(vec![comp_id]);
+        let spec = component_registry.spec::<Position>();
         let table = Table::new(Id::new(0), spec, &component_registry);
 
         // When
-        let view: Option<&Comp> = unsafe { table.view(Row::new(999)) };
+        let view: Option<&Position> = unsafe { table.view(Row::new(999)) };
 
         // Then
         assert!(view.is_none());
@@ -1301,24 +1190,27 @@ mod tests {
         // Given
         let component_registry = component::Registry::new();
 
-        #[derive(Component, Debug, PartialEq, Clone, Copy)]
-        struct Value {
-            n: u32,
-        }
-
-        let value_id = component_registry.register::<Value>();
-        let spec = component::Spec::new(vec![value_id]);
+        let spec = component_registry.spec::<Health>();
         let mut table = Table::new(Id::new(0), spec, &component_registry);
 
         let mut allocator = entity::Allocator::new();
 
         // Add entities
         for i in 0..5 {
-            table.add_entity(allocator.alloc(), Value { n: i * 10 }, &component_registry);
+            table.add_entity(
+                allocator.alloc(),
+                Health { value: i * 10 },
+                &component_registry,
+            );
         }
 
         // When
-        let values: Vec<u32> = unsafe { table.iter_views::<&Value>().map(|(_e, v)| v.n).collect() };
+        let values: Vec<i32> = unsafe {
+            table
+                .iter_views::<&Health>()
+                .map(|(_e, v)| v.value)
+                .collect()
+        };
 
         // Then
         assert_eq!(values, vec![0, 10, 20, 30, 40]);
@@ -1334,8 +1226,7 @@ mod tests {
             value: i32,
         }
 
-        let counter_id = component_registry.register::<Counter>();
-        let spec = component::Spec::new(vec![counter_id]);
+        let spec = component_registry.spec::<Counter>();
         let mut table = Table::new(Id::new(0), spec, &component_registry);
 
         let mut allocator = entity::Allocator::new();
@@ -1364,21 +1255,7 @@ mod tests {
         // Given
         let component_registry = component::Registry::new();
 
-        #[derive(Component, Debug, PartialEq)]
-        struct Position {
-            x: f32,
-            y: f32,
-        }
-
-        #[derive(Component, Debug, PartialEq)]
-        struct Velocity {
-            dx: f32,
-            dy: f32,
-        }
-
-        let pos_id = component_registry.register::<Position>();
-        let vel_id = component_registry.register::<Velocity>();
-        let spec = component::Spec::new(vec![pos_id, vel_id]);
+        let spec = component_registry.spec::<(Position, Velocity)>();
         let mut table = Table::new(Id::new(0), spec, &component_registry);
 
         let mut allocator = entity::Allocator::new();
@@ -1416,15 +1293,11 @@ mod tests {
         // Given
         let component_registry = component::Registry::new();
 
-        #[derive(Component)]
-        struct Comp;
-
-        let comp_id = component_registry.register::<Comp>();
-        let spec = component::Spec::new(vec![comp_id]);
+        let spec = component_registry.spec::<Position>();
         let table = Table::new(Id::new(0), spec, &component_registry);
 
         // When
-        let count = unsafe { table.iter_views::<&Comp>() }.count();
+        let count = unsafe { table.iter_views::<&Position>() }.count();
 
         // Then
         assert_eq!(count, 0);
@@ -1435,23 +1308,16 @@ mod tests {
         // Given
         let component_registry = component::Registry::new();
 
-        #[derive(Component)]
-        struct Comp {
-            #[allow(dead_code)]
-            x: i32,
-        }
-
-        let comp_id = component_registry.register::<Comp>();
-        let spec = component::Spec::new(vec![comp_id]);
+        let spec = component_registry.spec::<Health>();
         let mut table = Table::new(Id::new(0), spec, &component_registry);
 
         let mut allocator = entity::Allocator::new();
         for i in 0..10 {
-            table.add_entity(allocator.alloc(), Comp { x: i }, &component_registry);
+            table.add_entity(allocator.alloc(), Health { value: i }, &component_registry);
         }
 
         // When
-        let iter = unsafe { table.iter_views::<&Comp>() };
+        let iter = unsafe { table.iter_views::<&Health>() };
 
         // Then
         assert_eq!(iter.len(), 10);
@@ -1464,29 +1330,17 @@ mod tests {
         // This test verifies that Table::apply (via Column::push) validates types
         // in BOTH debug and release builds
 
-        // Given
-        #[derive(Component)]
-        struct TypeA {
-            #[allow(dead_code)]
-            value: u32,
-        }
-
-        #[derive(Component)]
-        struct TypeB {
-            #[allow(dead_code)]
-            value: u32,
-        }
-
         let component_registry = component::Registry::new();
-        let type_a_id = component_registry.register::<TypeA>();
-        let _type_b_id = component_registry.register::<TypeB>();
 
         // Create a table with TypeA
-        let spec = component::Spec::new(vec![type_a_id]);
+        let spec = component_registry.spec::<Position>();
         let mut table = Table::new(Id::new(0), spec, &component_registry);
 
         // When/Then - should panic when applying wrong type to component ID
         // We're using TypeA's ID but passing a TypeB value
-        table.apply(type_a_id, TypeB { value: 99 });
+        table.apply(
+            component_registry.get::<Position>().unwrap(),
+            Health { value: 99 },
+        );
     }
 }

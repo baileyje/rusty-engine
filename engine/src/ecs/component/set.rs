@@ -1,8 +1,6 @@
-use std::slice;
-
 use crate::{
     all_tuples,
-    ecs::component::{Component, Id, Registry, Spec},
+    ecs::component::{Component, Id, IntoSpec, Registry},
 };
 
 /// Trait describing a target that can have component values applied to it from a `Set`.
@@ -16,32 +14,19 @@ pub trait Target {
 ///
 /// Examples of sets include: a single component type, a tuple of component types, or something
 /// hand created.
-pub trait Set: Sized + 'static {
-    /// Get the component specification for this set.
-    fn spec(registry: &Registry) -> Spec;
-
+pub trait Set: IntoSpec + Sized + 'static {
     /// Apply the component values in this set to the given target. This takes ownership of self.
     fn apply<T: Target>(self, registry: &Registry, target: &mut T);
 }
 
 /// Implement Set for single component types.
 impl<C: Component> Set for C {
-    /// Get the component specification for this set. Always a single component.
-    fn spec(registry: &Registry) -> Spec {
-        let id = registry.register::<C>();
-        Spec::new(slice::from_ref(&id))
-    }
-
     fn apply<T: Target>(self, registry: &Registry, target: &mut T) {
         target.apply::<C>(registry.register::<C>(), self);
     }
 }
 
 impl Set for () {
-    fn spec(_registry: &Registry) -> Spec {
-        Spec::EMPTY
-    }
-
     fn apply<T: Target>(self, _registry: &Registry, _target: &mut T) {
         // No components to apply.
     }
@@ -51,19 +36,14 @@ impl Set for () {
 macro_rules! tuple_set {
     ($($name: ident),*) => {
         impl<$($name: Set),*> Set for ($($name,)*) {
-            fn spec(registry: &Registry) -> Spec {
-                let mut ids = Vec::new();
-                $(ids.extend(<$name as Set>::spec(registry).ids());)*
-                Spec::new(ids)
-            }
 
+            /// Apply each component in the tuple to the target.
             fn apply<CT: Target>(self, registry: &Registry, target: &mut CT) {
                  #[allow(non_snake_case)]
                 let ( $($name,)* ) = self;
                  #[allow(non_snake_case)]
                 $(<$name as Set>::apply($name, registry, target);)*
             }
-
         }
     }
 }
@@ -78,6 +58,7 @@ mod tests {
 
     #[cfg(test)]
     use crate::ecs::component::Id;
+    use crate::ecs::component::Spec;
 
     use super::*;
 
@@ -101,7 +82,7 @@ mod tests {
 
         set.apply(registry, &mut target);
 
-        (S::spec(registry), target.ids, target.vals)
+        (registry.spec::<S>(), target.ids, target.vals)
     }
 
     #[test]

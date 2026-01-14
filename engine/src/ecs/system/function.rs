@@ -543,8 +543,6 @@ mod tests {
         fn my_system(_query: query::Result<&Comp1>) {}
 
         let mut world = world::World::new(world::Id::new(0));
-        world.components().register::<Comp1>();
-
         let system = into_system(&mut world, my_system);
         let access = system.required_access();
 
@@ -552,7 +550,7 @@ mod tests {
         assert_eq!(
             *access,
             world::AccessRequest::to_components(
-                component::Spec::new(vec![world.components().get::<Comp1>().unwrap()]),
+                world.components().spec::<Comp1>(),
                 component::Spec::EMPTY
             )
         );
@@ -563,8 +561,6 @@ mod tests {
         fn my_system(_query1: query::Result<&Comp1>, _query2: query::Result<&Comp2>) {}
 
         let mut world = world::World::new(world::Id::new(0));
-        let id1 = world.components().register::<Comp1>();
-        let id2 = world.components().register::<Comp2>();
 
         let system = into_system(&mut world, my_system);
         let access = system.required_access();
@@ -573,7 +569,7 @@ mod tests {
         assert_eq!(
             *access,
             world::AccessRequest::to_components(
-                component::Spec::new(vec![id1, id2]),
+                world.components().spec::<(Comp1, Comp2)>(),
                 component::Spec::EMPTY
             )
         )
@@ -584,8 +580,6 @@ mod tests {
         fn my_system(_query: query::Result<(&Comp1, &Comp2)>) {}
 
         let mut world = world::World::new(world::Id::new(0));
-        let id1 = world.components().register::<Comp1>();
-        let id2 = world.components().register::<Comp2>();
 
         let system = into_system(&mut world, my_system);
         let access = system.required_access();
@@ -594,7 +588,7 @@ mod tests {
         assert_eq!(
             *access,
             world::AccessRequest::to_components(
-                component::Spec::new(vec![id1, id2]),
+                world.components().spec::<(Comp1, Comp2)>(),
                 component::Spec::EMPTY
             )
         )

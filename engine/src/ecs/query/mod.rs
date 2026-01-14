@@ -229,7 +229,10 @@ impl<D> Query<D> {
         D: Data,
     {
         // Ensure the data source allows the required access for this query.
-        debug_assert!(source.allows(&self.required_access),);
+        debug_assert!(
+            source.allows(&self.required_access),
+            "Access violation: the data source does not permit the required access for this query."
+        );
 
         // Get the table ids that support this component spec.
         //

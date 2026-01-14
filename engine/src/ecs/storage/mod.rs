@@ -311,8 +311,7 @@ impl Storage {
         // Add the table to the map (requires one clone for HashMap key)
         self.table_map.insert(components.clone(), id);
         // Create a new table from this archetype's components (moves components)
-        self.tables
-            .push(Table::new(id, components, registry));
+        self.tables.push(Table::new(id, components, registry));
         // Return a mutable reference
         self.get_mut(id)
     }
@@ -417,8 +416,7 @@ mod tests {
         let mut storage = Storage::new();
         let component_registry = component::Registry::new();
 
-        let pos_id = component_registry.register::<Position>();
-        let spec = component::Spec::new(vec![pos_id]);
+        let spec = component_registry.spec::<Position>();
 
         // When
         let table = storage.get_or_create_table(spec.clone(), &component_registry);
@@ -437,8 +435,7 @@ mod tests {
         let mut storage = Storage::new();
         let component_registry = component::Registry::new();
 
-        let pos_id = component_registry.register::<Position>();
-        let spec = component::Spec::new(vec![pos_id]);
+        let spec = component_registry.spec::<Position>();
 
         // Create the table once
         let _ = storage.get_or_create_table(spec.clone(), &component_registry);
@@ -460,11 +457,8 @@ mod tests {
         let mut storage = Storage::new();
         let component_registry = component::Registry::new();
 
-        let pos_id = component_registry.register::<Position>();
-        let vel_id = component_registry.register::<Velocity>();
-
-        let spec1 = component::Spec::new(vec![pos_id]);
-        let spec2 = component::Spec::new(vec![pos_id, vel_id]);
+        let spec1 = &component_registry.spec::<Position>();
+        let spec2 = &component_registry.spec::<(Position, Velocity)>();
 
         // When
         let _ = storage.get_or_create_table(spec1.clone(), &component_registry);
@@ -493,10 +487,7 @@ mod tests {
         // Given
         let mut storage = Storage::new();
         let component_registry = component::Registry::new();
-
-        let pos_id = component_registry.register::<Position>();
-        let spec = component::Spec::new(vec![pos_id]);
-
+        let spec = component_registry.spec::<Position>();
         let table_id = storage.get_or_create_table(spec, &component_registry).id();
 
         // When
@@ -521,10 +512,7 @@ mod tests {
         // Given
         let mut storage = Storage::new();
         let component_registry = component::Registry::new();
-
-        let pos_id = component_registry.register::<Position>();
-        let spec = component::Spec::new(vec![pos_id]);
-
+        let spec = component_registry.spec::<Position>();
         let table_id = storage.get_or_create_table(spec, &component_registry).id();
 
         // When
@@ -596,9 +584,7 @@ mod tests {
         // Given
         let mut storage = Storage::new();
         let component_registry = component::Registry::new();
-
-        let pos_id = component_registry.register::<Position>();
-        let spec = component::Spec::new(vec![pos_id]);
+        let spec = &component_registry.spec::<Position>();
 
         // When - call multiple times
         let _ = storage.get_or_create_table(spec.clone(), &component_registry);

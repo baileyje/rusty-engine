@@ -149,7 +149,7 @@ impl World {
         let entity = self.entity_allocator.alloc();
 
         // Construct the component specification for this set of components.
-        let spec = S::spec(&self.components);
+        let spec = self.components.spec::<S>();
 
         // Get the table for the entity's archetype
         let table = self
