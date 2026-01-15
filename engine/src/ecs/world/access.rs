@@ -81,11 +81,19 @@ use fixedbitset::FixedBitSet;
 /// scheduler's conflict detection hot path. The bitset automatically grows to accommodate
 /// any component ID, making it future-proof.
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct ComponentSet(FixedBitSet);
+struct ComponentSet {
+    /// The bitset for tracking components.
+    bitset: FixedBitSet,
+    /// Cache the component length for scheduler complexity analysis.
+    length: usize,
+}
 
 impl ComponentSet {
     /// Empty set with no components.
-    const EMPTY: Self = Self(FixedBitSet::new());
+    const EMPTY: Self = Self {
+        bitset: FixedBitSet::new(),
+        length: 0,
+    };
 
     /// Creates a new component set from a component specification.
     #[inline]
@@ -96,27 +104,41 @@ impl ComponentSet {
             bitset.grow(index + 1);
             bitset.insert(index);
         }
-        Self(bitset)
+        Self {
+            bitset,
+            length: spec.ids().len(),
+        }
     }
 
     /// Check if this set contains all components in another set.
     #[inline]
     fn contains_all(&self, other: &Self) -> bool {
-        self.0.is_superset(&other.0)
+        self.bitset.is_superset(&other.bitset)
     }
 
     /// Check if this set is empty (no components).
     #[inline]
     fn is_empty(&self) -> bool {
-        self.0.is_clear()
+        self.bitset.is_clear()
     }
 
     /// Union of two sets (merge).
     #[inline]
     fn union(&self, other: &Self) -> Self {
-        let mut result = self.0.clone();
-        result.union_with(&other.0);
-        Self(result)
+        let mut union = self.bitset.clone();
+        union.union_with(&other.bitset);
+        // Calculate new length
+        let length = union.count_ones(..);
+        Self {
+            bitset: union,
+            length,
+        }
+    }
+
+    /// Get the number of components in this set.
+    #[inline]
+    fn len(&self) -> usize {
+        self.length
     }
 }
 
@@ -488,6 +510,18 @@ impl<State> Access<State> {
         self.world_mut
     }
 
+    /// Get the length of immutable component access.
+    #[inline]
+    pub fn components_len(&self) -> usize {
+        self.components.len()
+    }
+
+    /// Get the length of mutable component access.
+    #[inline]
+    pub fn components_mut_len(&self) -> usize {
+        self.components_mut.len()
+    }
+
     /// Returns `true` if this access conflicts with another access.
     ///
     /// Two accesses conflict if they cannot be held simultaneously according to
@@ -542,10 +576,18 @@ impl<State> Access<State> {
 
         // Component-level conflicts: mutable access to a component conflicts with
         // any access (mutable or immutable) to the same component
-        if !self.components_mut.0.is_disjoint(&other.components.0) {
+        if !self
+            .components_mut
+            .bitset
+            .is_disjoint(&other.components.bitset)
+        {
             return true;
         }
-        if !other.components_mut.0.is_disjoint(&self.components.0) {
+        if !other
+            .components_mut
+            .bitset
+            .is_disjoint(&self.components.bitset)
+        {
             return true;
         }
 

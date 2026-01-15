@@ -24,7 +24,7 @@
 //! }
 //!
 //! // Convert the function into a system
-//! let mut system = IntoSystem::into_system(movement, &mut world);
+//! let mut system = movement.into_system( &mut world);
 //!
 //! // Execute the system
 //! unsafe {
@@ -94,7 +94,7 @@
 //! }
 //!
 //! // Creates an exclusive system (runs on main thread only)
-//! let mut system = IntoSystem::into_system(spawner, &mut world);
+//! let mut system = spawner.into_system( &mut world);
 //! ```
 //!
 //! ## Optional Components
@@ -266,7 +266,7 @@ impl System {
     ///
     /// ```rust,ignore
     /// // Create a system
-    /// let mut system = IntoSystem::into_system(my_system, &mut world);
+    /// let mut system = my_system.into_system(&mut world);
     ///
     /// // Validate access (scheduler's responsibility)
     /// if !conflicts_with_running_systems(system.required_access()) {
@@ -346,6 +346,11 @@ impl System {
             RunMode::Parallel(func) => func(shard),
         }
     }
+
+    /// Get the run mode of this system.
+    pub fn run_mode(&self) -> &RunMode {
+        &self.run_mode
+    }
 }
 
 /// A trait for converting types into systems.
@@ -358,5 +363,5 @@ pub trait IntoSystem<Marker = ()>: Sized {
     /// The world is provided to allow extraction of any necessary state. The system should not
     /// take any reference to the world that outlives this call. Any state needed by the system
     /// should be copied or cloned as necessary.
-    fn into_system(instance: Self, world: &mut world::World) -> System;
+    fn into_system(self, world: &mut world::World) -> System;
 }

@@ -467,8 +467,8 @@ mod tests {
         // Then
         assert_eq!(storage.tables.len(), 2);
         assert_eq!(storage.table_map.len(), 2);
-        assert!(storage.table_map.contains_key(&spec1));
-        assert!(storage.table_map.contains_key(&spec2));
+        assert!(storage.table_map.contains_key(spec1));
+        assert!(storage.table_map.contains_key(spec2));
     }
 
     #[test]

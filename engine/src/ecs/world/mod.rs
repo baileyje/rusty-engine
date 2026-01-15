@@ -43,7 +43,6 @@ use crate::ecs::{
     entity,
     query::{self},
     storage::{self},
-    system,
     world::access::{ConflictError, GrantTracker},
 };
 
@@ -93,9 +92,6 @@ pub struct World {
     /// The archetype registry for the world.
     archetypes: archetype::Registry,
 
-    /// The registered systems in the world.
-    systems: system::Registry,
-
     /// The current access grants for the world.
     active_grants: RefCell<GrantTracker>,
 
@@ -111,7 +107,6 @@ impl World {
             components: component::Registry::default(),
             storage: storage::Storage::default(),
             archetypes: archetype::Registry::default(),
-            systems: system::Registry::default(),
             active_grants: RefCell::new(GrantTracker::new()),
             _not_send: PhantomData,
         }

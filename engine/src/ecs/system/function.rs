@@ -19,7 +19,7 @@
 //! These functions are turned into systems via the [`IntoSystem`] trait, which is implemented
 //!
 //! ```rust,ignore
-//! let system = IntoSystem::into_system(my_system, world);
+//! let system = my_system.into_system(, world);
 //! ```
 //!
 //! # The Parameter Extraction Process
@@ -186,7 +186,7 @@ pub trait WithSystemParams<Params, State>: 'static {
 ///     println!("Tick!");
 /// }
 ///
-/// let system = IntoSystem::into_system(&world, tick_counter);
+/// let system = ticke_counter.into_system(&world);
 /// ```
 impl<Func> WithSystemParams<(), ()> for Func
 where
@@ -325,9 +325,9 @@ impl<F> IntoSystem<WorldFnMarker> for F
 where
     F: FnMut(&mut world::World) + 'static,
 {
-    fn into_system(mut instance: Self, _world: &mut world::World) -> System {
+    fn into_system(mut self, _world: &mut world::World) -> System {
         System::exclusive(world::AccessRequest::to_world(true), move |world| {
-            instance(world)
+            self(world)
         })
     }
 }
@@ -343,11 +343,11 @@ where
     Params: 'static,
     State: Send + Sync + 'static,
 {
-    fn into_system(mut instance: Self, world: &mut world::World) -> System {
+    fn into_system(mut self, world: &mut world::World) -> System {
         let access = Func::required_access(world.components());
         let mut state = Func::build_state(world);
         System::parallel(access, move |shard| unsafe {
-            instance.run(shard, &mut state);
+            self.run(shard, &mut state);
         })
     }
 }
@@ -355,11 +355,7 @@ where
 #[cfg(test)]
 mod tests {
 
-    use crate::ecs::{
-        component, query,
-        system::{IntoSystem, System},
-        world,
-    };
+    use crate::ecs::{component, query, system::IntoSystem, world};
 
     use rusty_macros::Component;
 
@@ -373,10 +369,6 @@ mod tests {
         value: i32,
     }
 
-    fn into_system<M>(world: &mut world::World, sys: impl IntoSystem<M>) -> System {
-        IntoSystem::into_system(sys, world)
-    }
-
     #[test]
     fn no_param_function_system() {
         // Given
@@ -388,7 +380,7 @@ mod tests {
         let mut world = world::World::new(world::Id::new(0));
 
         // When
-        let mut system = into_system(&mut world, my_system);
+        let mut system = my_system.into_system(&mut world);
 
         // Then
         unsafe {
@@ -404,7 +396,7 @@ mod tests {
         }
 
         let mut world = world::World::new(world::Id::new(0));
-        let mut system = into_system(&mut world, my_system);
+        let mut system = my_system.into_system(&mut world);
 
         unsafe {
             system.run(&mut world);
@@ -419,7 +411,7 @@ mod tests {
         }
 
         let mut world = world::World::new(world::Id::new(0));
-        let mut system = into_system(&mut world, my_system);
+        let mut system = my_system.into_system(&mut world);
 
         unsafe {
             system.run(&mut world);
@@ -437,7 +429,7 @@ mod tests {
         let mut world = world::World::new(world::Id::new(0));
         world.spawn(Comp1 { value: 42 });
 
-        let mut system = into_system(&mut world, my_system);
+        let mut system = my_system.into_system(&mut world);
 
         unsafe {
             system.run(&mut world);
@@ -456,7 +448,7 @@ mod tests {
         world.spawn(Comp1 { value: 5 });
         world.spawn(Comp1 { value: 10 });
 
-        let mut system = into_system(&mut world, increment_system);
+        let mut system = increment_system.into_system(&mut world);
 
         unsafe {
             system.run(&mut world);
@@ -480,7 +472,7 @@ mod tests {
         world.spawn((Comp1 { value: 2 }, Comp2 { value: 20 }));
         world.spawn(Comp1 { value: 3 }); // Only Comp1, won't match
 
-        let mut system = into_system(&mut world, count_system);
+        let mut system = count_system.into_system(&mut world);
 
         unsafe {
             system.run(&mut world);
@@ -499,7 +491,7 @@ mod tests {
         world.spawn((Comp1 { value: 5 }, Comp2 { value: 0 }));
         world.spawn((Comp1 { value: 10 }, Comp2 { value: 0 }));
 
-        let mut system = into_system(&mut world, physics_system);
+        let mut system = physics_system.into_system(&mut world);
 
         unsafe {
             system.run(&mut world);
@@ -525,7 +517,7 @@ mod tests {
         world.spawn((Comp1 { value: 2 }, Comp2 { value: 20 }));
         world.spawn(Comp1 { value: 3 }); // Only Comp1
 
-        let mut system = into_system(&mut world, two_query_system);
+        let mut system = two_query_system.into_system(&mut world);
 
         unsafe {
             system.run(&mut world);
@@ -543,7 +535,7 @@ mod tests {
         fn my_system(_query: query::Result<&Comp1>) {}
 
         let mut world = world::World::new(world::Id::new(0));
-        let system = into_system(&mut world, my_system);
+        let system = my_system.into_system(&mut world);
         let access = system.required_access();
 
         // Should have Comp1 in the access request
@@ -562,7 +554,7 @@ mod tests {
 
         let mut world = world::World::new(world::Id::new(0));
 
-        let system = into_system(&mut world, my_system);
+        let system = my_system.into_system(&mut world);
         let access = system.required_access();
 
         // Should have both components in the merged spec
@@ -581,7 +573,7 @@ mod tests {
 
         let mut world = world::World::new(world::Id::new(0));
 
-        let system = into_system(&mut world, my_system);
+        let system = my_system.into_system(&mut world);
         let access = system.required_access();
 
         // Should have both components
@@ -612,7 +604,7 @@ mod tests {
         world.spawn(Comp1 { value: 5 });
         world.spawn(Comp1 { value: 10 });
 
-        let mut system = into_system(&mut world, entity_system);
+        let mut system = entity_system.into_system(&mut world);
 
         unsafe {
             system.run(&mut world);
@@ -629,7 +621,7 @@ mod tests {
         let mut world = world::World::new(world::Id::new(0));
         // Don't spawn any entities
 
-        let mut system = into_system(&mut world, empty_system);
+        let mut system = empty_system.into_system(&mut world);
 
         unsafe {
             system.run(&mut world);
@@ -647,7 +639,7 @@ mod tests {
         world.spawn(Comp1 { value: 1 });
         world.spawn((Comp1 { value: 2 }, Comp2 { value: 10 }));
 
-        let mut system = into_system(&mut world, two_query_system);
+        let mut system = two_query_system.into_system(&mut world);
 
         unsafe {
             system.run(&mut world);
@@ -665,7 +657,7 @@ mod tests {
         let mut world = world::World::new(world::Id::new(0));
         world.spawn(Comp1 { value: 0 });
 
-        let mut system = into_system(&mut world, increment_system);
+        let mut system = increment_system.into_system(&mut world);
 
         // Run system 3 times
         unsafe {
@@ -692,7 +684,7 @@ mod tests {
         world.spawn((Comp1 { value: 4 }, Comp2 { value: 5 }));
         world.spawn((Comp1 { value: 10 }, Comp2 { value: 10 }));
 
-        let mut system = into_system(&mut world, multiply_system);
+        let mut system = multiply_system.into_system(&mut world);
 
         unsafe {
             system.run(&mut world);
@@ -709,7 +701,7 @@ mod tests {
         fn my_system() {}
 
         let mut world = world::World::new(world::Id::new(0));
-        let system = into_system(&mut world, my_system);
+        let system = my_system.into_system(&mut world);
         let access = system.required_access();
 
         // Should have empty spec
@@ -723,7 +715,7 @@ mod tests {
 
         let mut world = world::World::new(world::Id::new(0));
 
-        let system = into_system(&mut world, my_system);
+        let system = my_system.into_system(&mut world);
 
         // When
         let access = system.required_access();

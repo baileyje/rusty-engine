@@ -6,7 +6,7 @@ use std::{
 
 use dashmap::DashMap;
 
-use crate::ecs::component::{Component, Id, Info, IntoSpec, Spec, info};
+use crate::ecs::component::{Component, Id, Info, IntoSpec, Spec};
 
 /// A thread-safe component registry. This is responsible for managing component types and their
 /// identifiers within the ECS.
