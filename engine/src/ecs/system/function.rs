@@ -9,7 +9,7 @@
 //! The function system design allows you to write game logic as regular Rust functions:
 //!
 //! ```rust,ignore
-//! fn my_system(query: query::Result<(&Velocity, &mut Position)>) {
+//! fn my_system(query: Query<(&Velocity, &mut Position)>) {
 //!     for (vel, pos) in query {
 //!         pos.x += vel.dx;
 //!     }
@@ -24,7 +24,7 @@
 //!
 //! # The Parameter Extraction Process
 //!
-//! 1. **Function signature**: `fn(query: query::Result<&Comp>)` has elided lifetime `'_`
+//! 1. **Function signature**: `fn(query: Query<&Comp>)` has elided lifetime `'_`
 //! 2. **Wrapper creation**: Analyzes parameters via [`Parameter::required_access()`]
 //! 3. **System execution**: Calls [`Parameter::get()`] for each parameter
 //! 4. **Function invocation**: Passes runtime values with world lifetime `'w`
@@ -64,18 +64,18 @@ use crate::{
 /// ```
 ///
 /// This says the function must work with:
-/// - **Parameter type** with elided lifetime (e.g., `query::Result<&Comp>`)
-/// - **Value type** with any world lifetime `'a` (e.g., `query::Result<'a, &Comp>`)
+/// - **Parameter type** with elided lifetime (e.g., `Query<&Comp>`)
+/// - **Value type** with any world lifetime `'a` (e.g., `Query<'a, &Comp>`)
 /// - The state lifetime `'_` is handled separately during extraction
 ///
 /// When executed, `'a` becomes `'w` (the world's lifetime), bridging the gap.
 ///
 /// # Why This Works
 ///
-/// 1. You write: `fn my_system(query: query::Result<&Position>)`
-/// 2. Elided lifetime: Actually `query::Result<'_, &Position>`
+/// 1. You write: `fn my_system(query: Query<&Position>)`
+/// 2. Elided lifetime: Actually `Query<'_, &Position>`
 /// 3. HRTB `for<'a>`: Matches any lifetime, including `'_`
-/// 4. Runtime: Passes `query::Result<'w, &Position>` where `'w` is world lifetime
+/// 4. Runtime: Passes `Query<'w, &Position>` where `'w` is world lifetime
 /// 5. Type system: Verifies everything is sound
 ///
 /// # Implementation
@@ -104,17 +104,17 @@ use crate::{
 /// // Implements: WithSystemParams<()>
 ///
 /// // One parameter
-/// fn movement(query: query::Result<&Position>) { }
-/// // Implements: WithSystemParams<(query::Result<'_, &Position>,)>
+/// fn movement(query: Query<&Position>) { }
+/// // Implements: WithSystemParams<(Query<'_, &Position>,)>
 ///
 /// // Multiple parameters
 /// fn physics(
-///     positions: query::Result<&Position>,
-///     velocities: query::Result<&mut Velocity>,
+///     positions: Query<&Position>,
+///     velocities: Query<&mut Velocity>,
 /// ) { }
 /// // Implements: WithSystemParams<(
-/// //     query::Result<'_, &Position>,
-/// //     query::Result<'_, &mut Velocity>,
+/// //     Query<'_, &Position>,
+/// //     Query<'_, &mut Velocity>,
 /// // )>
 /// ```
 pub trait WithSystemParams<Params, State>: 'static {
@@ -354,7 +354,10 @@ where
 #[cfg(test)]
 mod tests {
 
-    use crate::ecs::{query, system::IntoSystem, world};
+    use crate::ecs::{
+        system::{IntoSystem, param::Query},
+        world,
+    };
 
     use rusty_macros::Component;
 
@@ -419,7 +422,7 @@ mod tests {
 
     #[test]
     fn single_query_handle_function_system() {
-        fn my_system(query: query::Result<&Comp1>) {
+        fn my_system(query: Query<&Comp1>) {
             for comp in query {
                 assert_eq!(comp.value, 42);
             }
@@ -437,7 +440,7 @@ mod tests {
 
     #[test]
     fn mutable_query_system() {
-        fn increment_system(query: query::Result<&mut Comp1>) {
+        fn increment_system(query: Query<&mut Comp1>) {
             for comp in query {
                 comp.value += 1;
             }
@@ -461,7 +464,7 @@ mod tests {
 
     #[test]
     fn multiple_entities_query_system() {
-        fn count_system(query: query::Result<(&Comp1, &Comp2)>) {
+        fn count_system(query: Query<(&Comp1, &Comp2)>) {
             let count = query.count();
             assert_eq!(count, 2);
         }
@@ -480,7 +483,7 @@ mod tests {
 
     #[test]
     fn mixed_mutability_query_system() {
-        fn physics_system(query: query::Result<(&Comp1, &mut Comp2)>) {
+        fn physics_system(query: Query<(&Comp1, &mut Comp2)>) {
             for (c1, c2) in query {
                 c2.value = c1.value * 2;
             }
@@ -504,7 +507,7 @@ mod tests {
 
     #[test]
     fn multiple_query_parameters_system() {
-        fn two_query_system(query1: query::Result<&Comp1>, query2: query::Result<&Comp2>) {
+        fn two_query_system(query1: Query<&Comp1>, query2: Query<&Comp2>) {
             let count1 = query1.count();
             let count2 = query2.count();
             assert_eq!(count1, 3);
@@ -531,7 +534,7 @@ mod tests {
     #[test]
     fn access_single_query() {
         // Given
-        fn my_system(_query: query::Result<&Comp1>) {}
+        fn my_system(_query: Query<&Comp1>) {}
 
         let mut world = world::World::new(world::Id::new(0));
         let system = my_system.into_system(&mut world);
@@ -546,7 +549,7 @@ mod tests {
 
     #[test]
     fn access_multiple_queries() {
-        fn my_system(_query1: query::Result<&Comp1>, _query2: query::Result<&Comp2>) {}
+        fn my_system(_query1: Query<&Comp1>, _query2: Query<&Comp2>) {}
 
         let mut world = world::World::new(world::Id::new(0));
 
@@ -568,7 +571,7 @@ mod tests {
 
     #[test]
     fn component_spec_mixed_query() {
-        fn my_system(_query: query::Result<(&Comp1, &Comp2)>) {}
+        fn my_system(_query: Query<(&Comp1, &Comp2)>) {}
 
         let mut world = world::World::new(world::Id::new(0));
 
@@ -592,7 +595,7 @@ mod tests {
     fn entity_id_query_system() {
         use crate::ecs::entity;
 
-        fn entity_system(query: query::Result<(entity::Entity, &Comp1)>) {
+        fn entity_system(query: Query<(entity::Entity, &Comp1)>) {
             let mut count = 0;
             for (_entity, comp) in query {
                 // Just verify we get entity along with component
@@ -615,7 +618,7 @@ mod tests {
 
     #[test]
     fn empty_query_system() {
-        fn empty_system(query: query::Result<&Comp1>) {
+        fn empty_system(query: Query<&Comp1>) {
             let count = query.count();
             assert_eq!(count, 0);
         }
@@ -632,7 +635,7 @@ mod tests {
 
     #[test]
     fn two_query_parameter_system() {
-        fn two_query_system(query1: query::Result<&Comp1>, query2: query::Result<&Comp2>) {
+        fn two_query_system(query1: Query<&Comp1>, query2: Query<&Comp2>) {
             assert_eq!(query1.count(), 2);
             assert_eq!(query2.count(), 1);
         }
@@ -650,7 +653,7 @@ mod tests {
 
     #[test]
     fn system_can_be_run_multiple_times() {
-        fn increment_system(query: query::Result<&mut Comp1>) {
+        fn increment_system(query: Query<&mut Comp1>) {
             for comp in query {
                 comp.value += 1;
             }
@@ -675,7 +678,7 @@ mod tests {
 
     #[test]
     fn mutable_query_with_multiple_entities() {
-        fn multiply_system(query: query::Result<(&Comp1, &mut Comp2)>) {
+        fn multiply_system(query: Query<(&Comp1, &mut Comp2)>) {
             for (c1, c2) in query {
                 c2.value *= c1.value;
             }

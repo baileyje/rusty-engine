@@ -144,10 +144,8 @@ use crate::ecs::world;
 
 pub mod function;
 pub mod param;
-pub mod registry;
 
-pub use param::Parameter;
-pub use registry::Registry;
+pub use param::*;
 
 /// A system identifier. This is a non-zero unique identifier for a system type in the ECS.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]

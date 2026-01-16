@@ -9,6 +9,7 @@ mod world;
 
 use crate::ecs::world as ecs_world;
 
+pub use query::Query;
 pub use unique::{Uniq, UniqMut};
 
 /// A type that can be passed as a parameter to a system function.

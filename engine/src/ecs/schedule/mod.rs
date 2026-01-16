@@ -348,7 +348,10 @@ mod tests {
     use crate::{
         core::tasks,
         define_phase,
-        ecs::{query, system::param::UniqMut, world},
+        ecs::{
+            system::param::{Query, UniqMut},
+            world,
+        },
     };
 
     use super::*;
@@ -544,7 +547,7 @@ mod tests {
             value: i32,
         }
 
-        fn increment(counters: query::Result<&mut Counter>) {
+        fn increment(counters: system::param::Query<&mut Counter>) {
             for counter in counters {
                 counter.value += 1;
             }
@@ -581,14 +584,14 @@ mod tests {
         }
 
         // FixedUpdate: Increment items
-        fn increment_items(items: query::Result<&mut Item>) {
+        fn increment_items(items: Query<&mut Item>) {
             for item in items {
                 item.value += 5;
             }
         }
 
         // Update: Sum items into total
-        fn sum_items(items: query::Result<&Item>, mut total: UniqMut<Total>) {
+        fn sum_items(items: Query<&Item>, mut total: UniqMut<Total>) {
             let sum: i32 = items.map(|i| i.value).sum();
             total.num = sum;
         }

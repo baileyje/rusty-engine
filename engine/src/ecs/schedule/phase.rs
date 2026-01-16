@@ -701,7 +701,10 @@ mod tests {
 
     use rusty_macros::Component;
 
-    use crate::ecs::{query, system::IntoSystem, world};
+    use crate::ecs::{
+        system::{IntoSystem, param::Query},
+        world,
+    };
 
     use super::*;
 
@@ -857,7 +860,7 @@ mod tests {
         // System A: Read Position (should run in parallel with B)
         let start_clone = Arc::clone(&start_time);
         let times_clone = Arc::clone(&system_times);
-        let system_a = move |_query: query::Result<&Position>| {
+        let system_a = move |_query: Query<&Position>| {
             let start = start_clone.lock().unwrap().unwrap();
             thread::sleep(Duration::from_millis(50));
             let elapsed = start.elapsed().as_millis();
@@ -867,7 +870,7 @@ mod tests {
         // System B: Read Health (should run in parallel with A)
         let start_clone2 = Arc::clone(&start_time);
         let times_clone2 = Arc::clone(&system_times);
-        let system_b = move |_query: query::Result<&Health>| {
+        let system_b = move |_query: Query<&Health>| {
             let start = start_clone2.lock().unwrap().unwrap();
             thread::sleep(Duration::from_millis(50));
             let elapsed = start.elapsed().as_millis();
@@ -906,7 +909,7 @@ mod tests {
 
         // System A: Write Position
         let times1 = Arc::clone(&execution_times);
-        let system_a = move |_query: query::Result<&mut Position>| {
+        let system_a = move |_query: Query<&mut Position>| {
             let start = std::time::Instant::now();
             thread::sleep(Duration::from_millis(50));
             times1
@@ -917,7 +920,7 @@ mod tests {
 
         // System B: Read Position (conflicts with A)
         let times2 = Arc::clone(&execution_times);
-        let system_b = move |_query: query::Result<&Position>| {
+        let system_b = move |_query: Query<&Position>| {
             let start = std::time::Instant::now();
             thread::sleep(Duration::from_millis(50));
             times2
@@ -955,20 +958,20 @@ mod tests {
 
         // Group 1 (Parallel): These can run simultaneously
         let log1 = Arc::clone(&execution_log);
-        let reader_position = move |_query: query::Result<&Position>| {
+        let reader_position = move |_query: Query<&Position>| {
             log1.lock().unwrap().push("read_position");
             thread::sleep(Duration::from_millis(20));
         };
 
         let log2 = Arc::clone(&execution_log);
-        let reader_health = move |_query: query::Result<&Health>| {
+        let reader_health = move |_query: Query<&Health>| {
             log2.lock().unwrap().push("read_health");
             thread::sleep(Duration::from_millis(20));
         };
 
         // Group 2 (Sequential after Group 1): Writes Position
         let log3 = Arc::clone(&execution_log);
-        let writer_position = move |_query: query::Result<&mut Position>| {
+        let writer_position = move |_query: Query<&mut Position>| {
             log3.lock().unwrap().push("write_position");
             thread::sleep(Duration::from_millis(20));
         };
@@ -1009,24 +1012,24 @@ mod tests {
 
         // Physics: Apply forces (read pos, write vel) - can bundle with other force systems
         let phases1 = Arc::clone(&execution_phases);
-        let apply_gravity = move |_query: query::Result<(&Position, &mut Velocity)>| {
+        let apply_gravity = move |_query: Query<(&Position, &mut Velocity)>| {
             phases1.lock().unwrap().push("gravity");
         };
 
         let phases2 = Arc::clone(&execution_phases);
-        let apply_wind = move |_query: query::Result<(&Position, &mut Velocity)>| {
+        let apply_wind = move |_query: Query<(&Position, &mut Velocity)>| {
             phases2.lock().unwrap().push("wind");
         };
 
         // Physics: Integration (read vel, write pos) - conflicts with forces
         let phases3 = Arc::clone(&execution_phases);
-        let integrate = move |_query: query::Result<(&Velocity, &mut Position)>| {
+        let integrate = move |_query: Query<(&Velocity, &mut Position)>| {
             phases3.lock().unwrap().push("integrate");
         };
 
         // Rendering: Culling (read pos) - can run parallel with forces
         let phases4 = Arc::clone(&execution_phases);
-        let culling = move |_query: query::Result<&Position>| {
+        let culling = move |_query: Query<&Position>| {
             phases4.lock().unwrap().push("culling");
         };
 
@@ -1085,7 +1088,7 @@ mod tests {
         let mut phase = Phase::new();
         for _ in 0..5 {
             let exec_clone = Arc::clone(&executions);
-            let system = move |_query: query::Result<&Position>| {
+            let system = move |_query: Query<&Position>| {
                 exec_clone.fetch_add(1, Ordering::SeqCst);
             };
             phase.add_system(system.into_system(&mut world));
@@ -1123,7 +1126,7 @@ mod tests {
         let mut phase = Phase::new();
         for _ in 0..3 {
             let reads_clone = Arc::clone(&reads);
-            let reader = move |_query: query::Result<&Position>| {
+            let reader = move |_query: Query<&Position>| {
                 reads_clone.fetch_add(1, Ordering::SeqCst);
             };
             phase.add_system(reader.into_system(&mut world));
@@ -1146,12 +1149,12 @@ mod tests {
         let operations = Arc::new(Mutex::new(Vec::new()));
 
         let ops1 = Arc::clone(&operations);
-        let reader = move |_query: query::Result<&Position>| {
+        let reader = move |_query: Query<&Position>| {
             ops1.lock().unwrap().push("read");
         };
 
         let ops2 = Arc::clone(&operations);
-        let writer = move |_query: query::Result<&mut Position>| {
+        let writer = move |_query: Query<&mut Position>| {
             ops2.lock().unwrap().push("write");
         };
 

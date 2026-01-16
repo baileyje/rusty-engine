@@ -1,7 +1,7 @@
 use super::Parameter;
 use crate::ecs::{query, world};
 
-/// Implementation of [`Parameter`] for query results.
+/// System parameter for a world Query.
 ///
 /// This allows systems to declare queries they want to run on the world, enabling
 /// iteration over entities that match specific component criteria.
@@ -20,21 +20,21 @@ use crate::ecs::{query, world};
 ///
 /// ```rust,ignore
 /// // Read-only query
-/// fn print_positions(query: query::Result<&Position>) {
+/// fn print_positions(query: Query<&Position>) {
 ///     for pos in query {
 ///         println!("({}, {})", pos.x, pos.y);
 ///     }
 /// }
 ///
 /// // Mutable query
-/// fn apply_gravity(query: query::Result<&mut Velocity>) {
+/// fn apply_gravity(query: Query<&mut Velocity>) {
 ///     for vel in query {
 ///         vel.dy -= 9.8;
 ///     }
 /// }
 ///
 /// // Mixed access
-/// fn movement(query: query::Result<(&Velocity, &mut Position)>) {
+/// fn movement(query: Query<(&Velocity, &mut Position)>) {
 ///     for (vel, pos) in query {
 ///         pos.x += vel.dx;
 ///     }
@@ -45,7 +45,7 @@ use crate::ecs::{query, world};
 /// // Optional components in queries allow matching entities with required components
 /// // that may also have additional components. The archetype storage doesn't store
 /// // optionals - this is resolved at query time by matching multiple archetypes.
-/// fn heal(query: query::Result<(&Player, Option<&mut Health>)>) {
+/// fn heal(query: Query<(&Player, Option<&mut Health>)>) {
 ///     for (player, health) in query {
 ///         if let Some(h) = health {
 ///             h.current += 1;
@@ -53,21 +53,50 @@ use crate::ecs::{query, world};
 ///     }
 /// }
 /// ```
+pub struct Query<'w, D: query::Data> {
+    inner: query::Result<'w, D>,
+}
+
+impl<'w, D: query::Data> Query<'w, D> {
+    /// Create a new query parameter from the inner query result.
+    pub fn new(inner: query::Result<'w, D>) -> Self {
+        Self { inner }
+    }
+}
+
+/// Implementation of iterator for world Query.
+///
+/// Delegates to the inner [`query::Result`] iterator.
+impl<'w, D: query::Data> Iterator for Query<'w, D> {
+    type Item = D::Data<'w>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.inner.next()
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        self.inner.size_hint()
+    }
+}
+
+impl<'w, D: query::Data> ExactSizeIterator for Query<'w, D> {}
+
+/// Implementation of [`Parameter`] for world Query .
 ///
 /// # Implementation Details
 ///
-/// - **Value type**: `query::Result<'w, D>` where `'w` is the world lifetime
+/// - **Value type**: `Query<'w, D>` where `'w` is the world lifetime
 /// - **Access request**: Delegates to `D::spec()` which analyzes the query type
 /// - **Extraction**: Calls `world.query::<D>()` to create the iterator
 ///
-/// The lifetime `'_` in `query::Result<'_, D>` is elided in function signatures,
+/// The lifetime `'_` in `Query<'_, D>` is elided in function signatures,
 /// and becomes `'w` (world lifetime) at runtime via [`Value`](Parameter::Value).
 ///
 ///
 /// See [`query`](crate::ecs::query) module for details on query composition.
-impl<D: query::Data + 'static> Parameter for query::Result<'_, D> {
+impl<D: query::Data + 'static> Parameter for Query<'_, D> {
     /// The value type is the query result with world lifetime.
-    type Value<'w, 's> = query::Result<'w, D>;
+    type Value<'w, 's> = Query<'w, D>;
 
     /// The state type is the query instance for this data.
     type State = query::Query<D>;
@@ -96,15 +125,15 @@ impl<D: query::Data + 'static> Parameter for query::Result<'_, D> {
         //Safety: Caller ensures disjoint access via access requests - The query invoke
         // method is safe, but its unclear it should be since the table access is only checked at
         // debug. That being said, the world manages the grants for shards so its probably ok.
-        state.invoke(shard)
+        Query::new(state.invoke(shard))
     }
 }
 
 #[cfg(test)]
 mod tests {
 
-    use super::Parameter;
-    use crate::ecs::{component, entity, query, world};
+    use super::*;
+    use crate::ecs::{component, entity, world};
     use rusty_macros::Component;
 
     #[derive(Component)]
@@ -140,7 +169,7 @@ mod tests {
         let (world, _) = test_setup();
 
         // When
-        let access = <query::Result<(&Comp1, &Comp2)> as Parameter>::required_access(&world);
+        let access = <Query<(&Comp1, &Comp2)>>::required_access(&world);
 
         // Then
         assert_eq!(
@@ -159,13 +188,12 @@ mod tests {
     fn comp_param_component_get() {
         // Given
         let (mut world, _) = test_setup();
-        let mut state = <query::Result<&Comp1> as Parameter>::build_state(&mut world);
-        let access = <query::Result<&Comp1> as Parameter>::required_access(&world);
+        let mut state = <Query<&Comp1>>::build_state(&mut world);
+        let access = <Query<&Comp1>>::required_access(&world);
         let mut shard = world.shard(&access).expect("Failed to create shard");
 
         // When
-        let mut result =
-            unsafe { <query::Result<&Comp1> as Parameter>::get(&mut shard, &mut state) };
+        let mut result = unsafe { <Query<&Comp1>>::get(&mut shard, &mut state) };
 
         // Then
         assert_eq!(result.len(), 2);
@@ -182,13 +210,12 @@ mod tests {
     fn comp_param_component_get_mut() {
         // Given
         let (mut world, _) = test_setup();
-        let mut state = <query::Result<&mut Comp1> as Parameter>::build_state(&mut world);
-        let access = <query::Result<&mut Comp1> as Parameter>::required_access(&world);
+        let mut state = <Query<&mut Comp1>>::build_state(&mut world);
+        let access = <Query<&mut Comp1>>::required_access(&world);
         let mut shard = world.shard(&access).expect("Failed to create shard");
 
         // When
-        let mut result =
-            unsafe { <query::Result<&mut Comp1> as Parameter>::get(&mut shard, &mut state) };
+        let mut result = unsafe { <Query<&mut Comp1>>::get(&mut shard, &mut state) };
 
         // Then
         assert_eq!(result.len(), 2);
@@ -201,11 +228,10 @@ mod tests {
         world.release_shard(shard);
 
         // And When
-        let mut state = <query::Result<&Comp1> as Parameter>::build_state(&mut world);
-        let access = <query::Result<&Comp1> as Parameter>::required_access(&world);
+        let mut state = <Query<&Comp1>>::build_state(&mut world);
+        let access = <Query<&Comp1>>::required_access(&world);
         let mut shard = world.shard(&access).expect("Failed to create shard");
-        let mut result =
-            unsafe { <query::Result<&Comp1> as Parameter>::get(&mut shard, &mut state) };
+        let mut result = unsafe { <Query<&Comp1>>::get(&mut shard, &mut state) };
 
         // Then
         assert_eq!(result.len(), 2);
@@ -224,7 +250,7 @@ mod tests {
         let (world, _) = test_setup();
 
         // When
-        let access = <query::Result<entity::Entity> as Parameter>::required_access(&world);
+        let access = <Query<entity::Entity>>::required_access(&world);
 
         // Then
         assert!(access.is_none());
@@ -234,13 +260,12 @@ mod tests {
     fn comp_param_entity_get() {
         // Given
         let (mut world, (entity1, entity2, entity3)) = test_setup();
-        let mut state = <query::Result<entity::Entity> as Parameter>::build_state(&mut world);
-        let access = <query::Result<entity::Entity> as Parameter>::required_access(&world);
+        let mut state = <Query<entity::Entity>>::build_state(&mut world);
+        let access = <Query<entity::Entity>>::required_access(&world);
         let mut shard = world.shard(&access).expect("Failed to create shard");
 
         // When
-        let mut result =
-            unsafe { <query::Result<entity::Entity> as Parameter>::get(&mut shard, &mut state) };
+        let mut result = unsafe { <Query<entity::Entity>>::get(&mut shard, &mut state) };
 
         // Then
         assert_eq!(result.len(), 3);
@@ -262,10 +287,7 @@ mod tests {
         let (world, _) = test_setup();
 
         // When
-        let access =
-            <query::Result<(entity::Entity, &Comp1, &mut Comp2)> as Parameter>::required_access(
-                &world,
-            );
+        let access = <Query<(entity::Entity, &Comp1, &mut Comp2)>>::required_access(&world);
 
         // Then
         assert_eq!(
@@ -282,17 +304,13 @@ mod tests {
         // Given
         let (mut world, (entity1, _, entity3)) = test_setup();
         let mut state =
-            <query::Result<(entity::Entity, &Comp1, Option<&mut Comp2>)> as Parameter>::build_state(
-                &mut world,
-            );
-        let access = <query::Result<(entity::Entity, &Comp1, Option<&mut Comp2>)> as Parameter>::required_access(&world);
+            <Query<(entity::Entity, &Comp1, Option<&mut Comp2>)>>::build_state(&mut world);
+        let access = <Query<(entity::Entity, &Comp1, Option<&mut Comp2>)>>::required_access(&world);
         let mut shard = world.shard(&access).expect("Failed to create shard");
 
         // When
         let mut result = unsafe {
-            <query::Result<(entity::Entity, &Comp1, Option<&mut Comp2>)> as Parameter>::get(
-                &mut shard, &mut state,
-            )
+            <Query<(entity::Entity, &Comp1, Option<&mut Comp2>)>>::get(&mut shard, &mut state)
         };
 
         // Then
