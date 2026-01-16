@@ -146,7 +146,7 @@
 //! struct Velocity { dx: f32, dy: f32 }
 //!
 //! // Setup
-//! let mut registry = component::Registry::new();
+//! let mut registry = world::TypeRegistry::new();
 //! let pos_id = registry.register::<Position>();
 //! let vel_id = registry.register::<Velocity>();
 //!
@@ -270,7 +270,11 @@ pub use location::Location;
 pub use row::Row;
 pub use table::Table;
 
-use crate::ecs::{component, storage::table::Id};
+use crate::ecs::{
+    component,
+    storage::{table::Id, unique::Uniques},
+    world,
+};
 
 pub(crate) mod cell;
 pub(crate) mod column;
@@ -279,16 +283,19 @@ pub(crate) mod location;
 pub(crate) mod mem;
 pub(crate) mod row;
 pub(crate) mod table;
+pub(crate) mod unique;
 pub mod view;
 
 /// A collection of tables, each storing entities with a specific component layout.
-#[derive(Default)]
 pub struct Storage {
     /// The vec of know tables.
     tables: Vec<Table>,
 
     /// A map from archetype to table.
     table_map: HashMap<component::Spec, table::Id>,
+
+    /// The unique resource storage for the world.
+    uniques: Uniques,
 }
 
 impl Storage {
@@ -298,13 +305,14 @@ impl Storage {
         Self {
             tables: Vec::new(),
             table_map: HashMap::new(),
+            uniques: Uniques::new(),
         }
     }
 
     pub fn create(
         &mut self,
         components: component::Spec,
-        registry: &component::Registry,
+        registry: &world::TypeRegistry,
     ) -> &mut Table {
         // Grab the index the table will be stored at.
         let id = table::Id::new(self.tables.len() as u32);
@@ -324,7 +332,7 @@ impl Storage {
     pub fn get_or_create_table(
         &mut self,
         components: component::Spec,
-        registry: &component::Registry,
+        registry: &world::TypeRegistry,
     ) -> &mut Table {
         if let Some(id) = self.table_map.get(&components) {
             return self.get_mut(*id);
@@ -369,11 +377,32 @@ impl Storage {
             })
             .collect()
     }
+
+    /// Get access to the resources.
+    #[inline]
+    pub fn uniques(&self) -> &Uniques {
+        &self.uniques
+    }
+
+    /// Get mutable access to the resources.
+    #[inline]
+    pub fn uniques_mut(&mut self) -> &mut Uniques {
+        &mut self.uniques
+    }
+}
+
+impl Default for Storage {
+    #[inline]
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use rusty_macros::Component;
+
+    use crate::ecs::{component::IntoSpec, world};
 
     use super::*;
 
@@ -405,7 +434,7 @@ mod tests {
 
     #[test]
     fn storage_default_is_empty() {
-        let storage = Storage::default();
+        let storage = Storage::new();
         assert_eq!(storage.tables.len(), 0);
         assert_eq!(storage.table_map.len(), 0);
     }
@@ -414,12 +443,12 @@ mod tests {
     fn get_or_create_table_creates_new_table() {
         // Given
         let mut storage = Storage::new();
-        let component_registry = component::Registry::new();
+        let registry = world::TypeRegistry::new();
 
-        let spec = component_registry.spec::<Position>();
+        let spec = <Position>::into_spec(&registry);
 
         // When
-        let table = storage.get_or_create_table(spec.clone(), &component_registry);
+        let table = storage.get_or_create_table(spec.clone(), &registry);
         let table_len = table.len();
 
         // Then
@@ -433,15 +462,15 @@ mod tests {
     fn get_or_create_table_returns_existing_table() {
         // Given
         let mut storage = Storage::new();
-        let component_registry = component::Registry::new();
+        let registry = world::TypeRegistry::new();
 
-        let spec = component_registry.spec::<Position>();
+        let spec = <Position>::into_spec(&registry);
 
         // Create the table once
-        let _ = storage.get_or_create_table(spec.clone(), &component_registry);
+        let _ = storage.get_or_create_table(spec.clone(), &registry);
 
         // When - get it again
-        let table = storage.get_or_create_table(spec, &component_registry);
+        let table = storage.get_or_create_table(spec, &registry);
         let table_len = table.len();
 
         // Then - should not create a new table
@@ -455,20 +484,20 @@ mod tests {
         // Given
 
         let mut storage = Storage::new();
-        let component_registry = component::Registry::new();
+        let registry = world::TypeRegistry::new();
 
-        let spec1 = &component_registry.spec::<Position>();
-        let spec2 = &component_registry.spec::<(Position, Velocity)>();
+        let spec1 = <Position>::into_spec(&registry);
+        let spec2 = <(Position, Velocity)>::into_spec(&registry);
 
         // When
-        let _ = storage.get_or_create_table(spec1.clone(), &component_registry);
-        let _ = storage.get_or_create_table(spec2.clone(), &component_registry);
+        let _ = storage.get_or_create_table(spec1.clone(), &registry);
+        let _ = storage.get_or_create_table(spec2.clone(), &registry);
 
         // Then
         assert_eq!(storage.tables.len(), 2);
         assert_eq!(storage.table_map.len(), 2);
-        assert!(storage.table_map.contains_key(spec1));
-        assert!(storage.table_map.contains_key(spec2));
+        assert!(storage.table_map.contains_key(&spec1));
+        assert!(storage.table_map.contains_key(&spec2));
     }
 
     #[test]
@@ -486,9 +515,9 @@ mod tests {
     fn get_returns_existing_table() {
         // Given
         let mut storage = Storage::new();
-        let component_registry = component::Registry::new();
-        let spec = component_registry.spec::<Position>();
-        let table_id = storage.get_or_create_table(spec, &component_registry).id();
+        let registry = world::TypeRegistry::new();
+        let spec = <Position>::into_spec(&registry);
+        let table_id = storage.get_or_create_table(spec, &registry).id();
 
         // When
         let table = storage.get(table_id);
@@ -511,9 +540,9 @@ mod tests {
     fn get_mut_returns_existing_table() {
         // Given
         let mut storage = Storage::new();
-        let component_registry = component::Registry::new();
-        let spec = component_registry.spec::<Position>();
-        let table_id = storage.get_or_create_table(spec, &component_registry).id();
+        let registry = world::TypeRegistry::new();
+        let spec = <Position>::into_spec(&registry);
+        let table_id = storage.get_or_create_table(spec, &registry).id();
 
         // When
         let table = storage.get_mut(table_id);
@@ -527,11 +556,11 @@ mod tests {
     //     // Given
     //
     //     let mut storage = Storage::new();
-    //     let component_registry = component::Registry::new();
+    //     let registry = world::TypeRegistry::new();
     //
-    //     let pos_id = component_registry.register::<Position>();
-    //     let vel_id = component_registry.register::<Velocity>();
-    //     let health_id = component_registry.register::<Health>();
+    //     let pos_id = registry.register::<Position>();
+    //     let vel_id = registry.register::<Velocity>();
+    //     let health_id = registry.register::<Health>();
     //
     //     // Create three different archetypes
     //     let spec1 = component::Spec::new(vec![pos_id]);
@@ -544,13 +573,13 @@ mod tests {
     //
     //     // When
     //     let _ = storage
-    //         .get_or_create_table(&archetype1, &component_registry)
+    //         .get_or_create_table(&archetype1, &registry)
     //         .id();
     //     let _ = storage
-    //         .get_or_create_table(&archetype2, &component_registry)
+    //         .get_or_create_table(&archetype2, &registry)
     //         .id();
     //     let _ = storage
-    //         .get_or_create_table(&archetype3, &component_registry)
+    //         .get_or_create_table(&archetype3, &registry)
     //         .id();
     //
     //     // Then - all three tables should exist independently
@@ -566,9 +595,9 @@ mod tests {
     // fn for_archetype_mut_returns_none_for_nonexistent_archetype() {
     //     // Given
     //     let mut storage = Storage::new();
-    //     let component_registry = component::Registry::new();
+    //     let registry = world::TypeRegistry::new();
     //
-    //     let pos_id = component_registry.register::<Position>();
+    //     let pos_id = registry.register::<Position>();
     //
     //     // Create three different archetypes
     //     let spec = component::Spec::new(vec![pos_id]);
@@ -583,13 +612,13 @@ mod tests {
     fn get_or_create_table_idempotent() {
         // Given
         let mut storage = Storage::new();
-        let component_registry = component::Registry::new();
-        let spec = &component_registry.spec::<Position>();
+        let registry = world::TypeRegistry::new();
+        let spec = <Position>::into_spec(&registry);
 
         // When - call multiple times
-        let _ = storage.get_or_create_table(spec.clone(), &component_registry);
-        let _ = storage.get_or_create_table(spec.clone(), &component_registry);
-        let _ = storage.get_or_create_table(spec.clone(), &component_registry);
+        let _ = storage.get_or_create_table(spec.clone(), &registry);
+        let _ = storage.get_or_create_table(spec.clone(), &registry);
+        let _ = storage.get_or_create_table(spec.clone(), &registry);
 
         // Then - should still only have one table
         assert_eq!(storage.tables.len(), 1);

@@ -3,7 +3,12 @@ use std::any::TypeId;
 use crate::ecs::{
     component::{self, Component, Set, SetTarget},
     entity::{self},
-    storage::{column::Column, row::Row, view, view::View},
+    storage::{
+        column::Column,
+        row::Row,
+        view::{self, View},
+    },
+    world,
 };
 
 /// The identifier for a table in storage.
@@ -37,19 +42,19 @@ impl Id {
 /// use rusty_macros::Component;
 ///
 /// // Setup Components
-/// let component_registry = component::Registry::new();
+/// let registry = world::TypeRegistry::new();
 /// #[derive(Component)]
 /// struct Comp1 {}
 ///
 /// #[derive(Component)]
 /// struct Comp2 {}
 ///
-/// let pos_id = component_registry.register::<Comp1>();
-/// let vel_id = component_registry.register::<Comp2>();
+/// let pos_id = registry.register_component::<Comp1>();
+/// let vel_id = registry.register_component::<Comp2>();
 ///  
 /// // Construct the table from the component spec
 /// let spec = component::Spec::new(vec![pos_id, vel_id]);
-/// let mut table = Table::new(spec, &component_registry);
+/// let mut table = Table::new(spec, &registry);
 ///
 /// // Create an entity
 /// let mut allocator = entity::Allocator::new();
@@ -59,7 +64,7 @@ impl Id {
 /// table.add_entity(
 ///   entity,
 ///   (Comp1 {}, Comp2 {}),
-///   &component_registry
+///   &registry
 /// );
 ///
 /// ```
@@ -89,7 +94,7 @@ impl Table {
     ///
     /// # Panics
     /// - Panics if any component in the spec is not registered in the provided registry.
-    pub fn new(id: Id, components: component::Spec, registry: &component::Registry) -> Self {
+    pub fn new(id: Id, components: component::Spec, registry: &world::TypeRegistry) -> Self {
         Self {
             id,
             entities: Vec::new(),
@@ -97,13 +102,7 @@ impl Table {
             columns: components
                 .ids()
                 .iter()
-                .map(|id| {
-                    Column::new(
-                        registry
-                            .get_info_by_id(*id)
-                            .expect("component not registered"),
-                    )
-                })
+                .map(|id| Column::new(registry.get_info(*id).expect("component not registered")))
                 .collect(),
             components,
         }
@@ -131,13 +130,13 @@ impl Table {
         &mut self,
         entity: entity::Entity,
         set: S,
-        registry: &component::Registry,
+        registry: &world::TypeRegistry,
     ) -> Row {
         // Verify set matches table spec
         #[cfg(debug_assertions)]
         {
             debug_assert_eq!(
-                registry.spec::<S>(),
+                <S>::into_spec(registry),
                 self.components,
                 "set spec does not match table spec"
             );
@@ -219,7 +218,7 @@ impl Table {
     /// Returns `None` if:
     /// - the row is not in this table
     #[inline]
-    pub fn get_column_by_id(&self, component_id: component::Id) -> Option<&Column> {
+    pub fn get_column_by_id(&self, component_id: world::TypeId) -> Option<&Column> {
         self.columns
             .iter()
             .find(|col| col.info().id() == component_id)
@@ -230,7 +229,7 @@ impl Table {
     /// Returns `None` if:
     /// - the row is not in this table
     #[inline]
-    pub fn get_column_by_id_mut(&mut self, component_id: component::Id) -> Option<&mut Column> {
+    pub fn get_column_by_id_mut(&mut self, component_id: world::TypeId) -> Option<&mut Column> {
         self.columns
             .iter_mut()
             .find(|col| col.info().id() == component_id)
@@ -550,7 +549,7 @@ impl SetTarget for Table {
     /// The caller must ensure that:
     /// - There is a valid column for the given component ID.
     /// - The type `C` matches the column's component type (validated at runtime).
-    fn apply<C: 'static + Component>(&mut self, id: component::Id, value: C) {
+    fn apply<C: 'static + Component>(&mut self, id: world::TypeId, value: C) {
         let column = self
             .get_column_by_id_mut(id)
             .expect("component_id not in table spec");
@@ -565,6 +564,8 @@ impl SetTarget for Table {
 #[cfg(test)]
 mod tests {
     use rusty_macros::Component;
+
+    use crate::ecs::{component::IntoSpec, world};
 
     use super::*;
 
@@ -593,15 +594,15 @@ mod tests {
     #[test]
     fn table_creation_with_default_index() {
         // Given
-        let component_registry = component::Registry::new();
+        let registry = world::TypeRegistry::new();
 
-        let pos_id = component_registry.register::<Position>();
-        let vel_id = component_registry.register::<Velocity>();
+        let pos_id = registry.register_component::<Position>();
+        let vel_id = registry.register_component::<Velocity>();
 
-        let spec = component_registry.spec::<(Position, Velocity)>();
+        let spec = <(Position, Velocity)>::into_spec(&registry);
 
         // When
-        let table = Table::new(Id::new(0), spec, &component_registry);
+        let table = Table::new(Id::new(0), spec, &registry);
 
         // Then
         assert_eq!(table.len(), 0);
@@ -614,19 +615,19 @@ mod tests {
     #[test]
     fn table_entity_management() {
         // Given
-        let component_registry = component::Registry::new();
+        let registry = world::TypeRegistry::new();
 
-        let health_id = component_registry.register::<Health>();
-        let spec = component_registry.spec::<Health>();
-        let mut table = Table::new(Id::new(0), spec, &component_registry);
+        let health_id = registry.register_component::<Health>();
+        let spec = <Health>::into_spec(&registry);
+        let mut table = Table::new(Id::new(0), spec, &registry);
 
         let mut allocator = entity::Allocator::new();
         let entity1 = allocator.alloc();
         let entity2 = allocator.alloc();
 
         // When
-        let row1 = table.add_entity(entity1, Health { value: 100 }, &component_registry);
-        let row2 = table.add_entity(entity2, Health { value: 75 }, &component_registry);
+        let row1 = table.add_entity(entity1, Health { value: 100 }, &registry);
+        let row2 = table.add_entity(entity2, Health { value: 75 }, &registry);
 
         // Then
         assert_eq!(row1.index(), 0);
@@ -648,14 +649,14 @@ mod tests {
     #[test]
     fn table_with_multiple_component_types() {
         // Given
-        let component_registry = component::Registry::new();
-        let pos_id = component_registry.register::<Position>();
-        let vel_id = component_registry.register::<Velocity>();
-        let health_id = component_registry.register::<Health>();
+        let registry = world::TypeRegistry::new();
+        let pos_id = registry.register_component::<Position>();
+        let vel_id = registry.register_component::<Velocity>();
+        let health_id = registry.register_component::<Health>();
 
         // Create a table with three different component types
-        let spec = component_registry.spec::<(Position, Velocity, Health)>();
-        let mut table = Table::new(Id::new(0), spec, &component_registry);
+        let spec = <(Position, Velocity, Health)>::into_spec(&registry);
+        let mut table = Table::new(Id::new(0), spec, &registry);
 
         let mut allocator = entity::Allocator::new();
         let entity1 = allocator.alloc();
@@ -671,7 +672,7 @@ mod tests {
                 Velocity { dx: 0.5, dy: 0.3 },
                 Health { value: 100 },
             ),
-            &component_registry,
+            &registry,
         );
 
         // Add second entity with all components atomically
@@ -682,7 +683,7 @@ mod tests {
                 Velocity { dx: -0.2, dy: 0.8 },
                 Health { value: 75 },
             ),
-            &component_registry,
+            &registry,
         );
 
         // Then
@@ -719,21 +720,17 @@ mod tests {
     #[test]
     fn table_column_iteration() {
         // Given
-        let component_registry = component::Registry::new();
+        let registry = world::TypeRegistry::new();
 
-        let score_id = component_registry.register::<Score>();
-        let spec = component_registry.spec::<Score>();
-        let mut table = Table::new(Id::new(0), spec, &component_registry);
+        let score_id = registry.register_component::<Score>();
+        let spec = <Score>::into_spec(&registry);
+        let mut table = Table::new(Id::new(0), spec, &registry);
 
         let mut allocator = entity::Allocator::new();
 
         // Add multiple entities with the builder
         for i in 0..5 {
-            table.add_entity(
-                allocator.alloc(),
-                Score { points: i * 10 },
-                &component_registry,
-            );
+            table.add_entity(allocator.alloc(), Score { points: i * 10 }, &registry);
         }
 
         // When / Then
@@ -765,35 +762,35 @@ mod tests {
     #[should_panic(expected = "set spec does not match table spec")]
     fn test_table_incomplete_row_panics() {
         // Given
-        let component_registry = component::Registry::new();
+        let registry = world::TypeRegistry::new();
 
-        let spec = component_registry.spec::<(Position, Velocity)>();
-        let mut table = Table::new(Id::new(0), spec, &component_registry);
+        let spec = <(Position, Velocity)>::into_spec(&registry);
+        let mut table = Table::new(Id::new(0), spec, &registry);
 
         let mut allocator = entity::Allocator::new();
         let entity = allocator.alloc();
 
         // When Then - should panic because we don't add velocity
-        table.add_entity(entity, Position { x: 0.0, y: 0.0 }, &component_registry);
+        table.add_entity(entity, Position { x: 0.0, y: 0.0 }, &registry);
     }
 
     #[test]
     fn table_swap_remove_row() {
         // Given
-        let component_registry = component::Registry::new();
+        let registry = world::TypeRegistry::new();
 
-        let value_id = component_registry.register::<Health>();
-        let spec = component_registry.spec::<Health>();
-        let mut table = Table::new(Id::new(0), spec, &component_registry);
+        let value_id = registry.register_component::<Health>();
+        let spec = <Health>::into_spec(&registry);
+        let mut table = Table::new(Id::new(0), spec, &registry);
 
         let mut allocator = entity::Allocator::new();
         let entity1 = allocator.alloc();
         let entity2 = allocator.alloc();
         let entity3 = allocator.alloc();
 
-        table.add_entity(entity1, Health { value: 100 }, &component_registry);
-        table.add_entity(entity2, Health { value: 200 }, &component_registry);
-        table.add_entity(entity3, Health { value: 300 }, &component_registry);
+        table.add_entity(entity1, Health { value: 100 }, &registry);
+        table.add_entity(entity2, Health { value: 200 }, &registry);
+        table.add_entity(entity3, Health { value: 300 }, &registry);
 
         assert_eq!(table.len(), 3);
 
@@ -832,10 +829,10 @@ mod tests {
     #[should_panic(expected = "row index out of bounds")]
     fn table_swap_remove_row_out_of_bounds() {
         // Given
-        let component_registry = component::Registry::new();
+        let registry = world::TypeRegistry::new();
 
-        let spec = component_registry.spec::<Position>();
-        let mut table = Table::new(Id::new(0), spec, &component_registry);
+        let spec = <Position>::into_spec(&registry);
+        let mut table = Table::new(Id::new(0), spec, &registry);
 
         // When - try to remove from empty table
         let result = table.swap_remove_row(Row::new(0));
@@ -845,11 +842,7 @@ mod tests {
 
         // When - add entity and try to remove out of bounds
         let mut allocator = entity::Allocator::new();
-        table.add_entity(
-            allocator.alloc(),
-            Position { x: 0.0, y: 0.0 },
-            &component_registry,
-        );
+        table.add_entity(allocator.alloc(), Position { x: 0.0, y: 0.0 }, &registry);
 
         table.swap_remove_row(Row::new(10));
     }
@@ -857,10 +850,10 @@ mod tests {
     #[test]
     fn table_get_component_by_entity() {
         // Given
-        let component_registry = component::Registry::new();
+        let registry = world::TypeRegistry::new();
 
-        let spec = component_registry.spec::<(Position, Velocity)>();
-        let mut table = Table::new(Id::new(0), spec, &component_registry);
+        let spec = <(Position, Velocity)>::into_spec(&registry);
+        let mut table = Table::new(Id::new(0), spec, &registry);
 
         let mut allocator = entity::Allocator::new();
         let entity1 = allocator.alloc();
@@ -869,12 +862,12 @@ mod tests {
         let row1 = table.add_entity(
             entity1,
             (Position { x: 1.0, y: 2.0 }, Velocity { dx: 0.5, dy: 0.3 }),
-            &component_registry,
+            &registry,
         );
         let row2 = table.add_entity(
             entity2,
             (Position { x: 3.0, y: 4.0 }, Velocity { dx: -0.2, dy: 0.8 }),
-            &component_registry,
+            &registry,
         );
 
         // When/Then - get components for entity1
@@ -905,15 +898,15 @@ mod tests {
     #[test]
     fn table_get_mut_component_by_row() {
         // Given
-        let component_registry = component::Registry::new();
+        let registry = world::TypeRegistry::new();
 
-        let spec = component_registry.spec::<Health>();
-        let mut table = Table::new(Id::new(0), spec, &component_registry);
+        let spec = <Health>::into_spec(&registry);
+        let mut table = Table::new(Id::new(0), spec, &registry);
 
         let mut allocator = entity::Allocator::new();
         let entity = allocator.alloc();
 
-        let row = table.add_entity(entity, Health { value: 100 }, &component_registry);
+        let row = table.add_entity(entity, Health { value: 100 }, &registry);
 
         // When - mutate the health
         unsafe {
@@ -946,30 +939,18 @@ mod tests {
 
         impl component::Component for DropTracker {}
 
-        let component_registry = component::Registry::new();
-        let spec = component_registry.spec::<DropTracker>();
-        let mut table = Table::new(Id::new(0), spec, &component_registry);
+        let registry = world::TypeRegistry::new();
+        let spec = <DropTracker>::into_spec(&registry);
+        let mut table = Table::new(Id::new(0), spec, &registry);
 
         let counter = Arc::new(AtomicUsize::new(0));
 
         let mut allocator = entity::Allocator::new();
 
         // Add 3 entities
-        table.add_entity(
-            allocator.alloc(),
-            DropTracker(counter.clone()),
-            &component_registry,
-        );
-        table.add_entity(
-            allocator.alloc(),
-            DropTracker(counter.clone()),
-            &component_registry,
-        );
-        table.add_entity(
-            allocator.alloc(),
-            DropTracker(counter.clone()),
-            &component_registry,
-        );
+        table.add_entity(allocator.alloc(), DropTracker(counter.clone()), &registry);
+        table.add_entity(allocator.alloc(), DropTracker(counter.clone()), &registry);
+        table.add_entity(allocator.alloc(), DropTracker(counter.clone()), &registry);
 
         assert_eq!(counter.load(Ordering::SeqCst), 0);
 
@@ -990,13 +971,13 @@ mod tests {
     #[test]
     fn table_empty_operations() {
         // Given
-        let component_registry = component::Registry::new();
+        let registry = world::TypeRegistry::new();
 
         #[derive(Component)]
         struct Empty;
 
-        let spec = component_registry.spec::<Empty>();
-        let table = Table::new(Id::new(0), spec, &component_registry);
+        let spec = <Empty>::into_spec(&registry);
+        let table = Table::new(Id::new(0), spec, &registry);
 
         // Then
         assert!(table.is_empty());
@@ -1010,10 +991,10 @@ mod tests {
     #[test]
     fn table_components_accessor() {
         // Given
-        let component_registry = component::Registry::new();
+        let registry = world::TypeRegistry::new();
 
-        let spec = component_registry.spec::<(Position, Velocity)>();
-        let table = Table::new(Id::new(0), spec.clone(), &component_registry);
+        let spec = <(Position, Velocity)>::into_spec(&registry);
+        let table = Table::new(Id::new(0), spec.clone(), &registry);
 
         // When/Then
         assert_eq!(table.components(), &spec);
@@ -1022,15 +1003,15 @@ mod tests {
     #[test]
     fn table_get_column_none_for_invalid_id() {
         // Given
-        let component_registry = component::Registry::new();
+        let registry = world::TypeRegistry::new();
 
-        let spec = component_registry.spec::<Position>();
-        let mut table = Table::new(Id::new(0), spec, &component_registry);
+        let spec = <Position>::into_spec(&registry);
+        let mut table = Table::new(Id::new(0), spec, &registry);
 
         // When - try to get column for component not in table
         #[derive(Component)]
         struct Comp2 {}
-        let comp2_id = component_registry.register::<Comp2>();
+        let comp2_id = registry.register_component::<Comp2>();
 
         // Then
         assert!(table.get_column_by_id(comp2_id).is_none());
@@ -1040,15 +1021,15 @@ mod tests {
     #[test]
     fn table_get_returns_none_for_entity_not_in_table() {
         // Given
-        let component_registry = component::Registry::new();
+        let registry = world::TypeRegistry::new();
 
-        let spec = component_registry.spec::<Health>();
-        let mut table = Table::new(Id::new(0), spec, &component_registry);
+        let spec = <Health>::into_spec(&registry);
+        let mut table = Table::new(Id::new(0), spec, &registry);
 
         let mut allocator = entity::Allocator::new();
         let entity = allocator.alloc();
 
-        table.add_entity(entity, Health { value: 100 }, &component_registry);
+        table.add_entity(entity, Health { value: 100 }, &registry);
 
         // When/Then - entity not in table returns None
         unsafe {
@@ -1059,15 +1040,15 @@ mod tests {
     #[test]
     fn table_view_single_component() {
         // Given
-        let component_registry = component::Registry::new();
+        let registry = world::TypeRegistry::new();
 
-        let spec = component_registry.spec::<Position>();
-        let mut table = Table::new(Id::new(0), spec, &component_registry);
+        let spec = <Position>::into_spec(&registry);
+        let mut table = Table::new(Id::new(0), spec, &registry);
 
         let mut allocator = entity::Allocator::new();
         let entity = allocator.alloc();
 
-        let row = table.add_entity(entity, Position { x: 1.0, y: 2.0 }, &component_registry);
+        let row = table.add_entity(entity, Position { x: 1.0, y: 2.0 }, &registry);
 
         // When
         let pos: Option<&Position> = unsafe { table.view(row) };
@@ -1082,15 +1063,15 @@ mod tests {
     #[test]
     fn table_view_mut_single_component() {
         // Given
-        let component_registry = component::Registry::new();
+        let registry = world::TypeRegistry::new();
 
-        let spec = component_registry.spec::<Health>();
-        let mut table = Table::new(Id::new(0), spec, &component_registry);
+        let spec = <Health>::into_spec(&registry);
+        let mut table = Table::new(Id::new(0), spec, &registry);
 
         let mut allocator = entity::Allocator::new();
         let entity = allocator.alloc();
 
-        let row = table.add_entity(entity, Health { value: 100 }, &component_registry);
+        let row = table.add_entity(entity, Health { value: 100 }, &registry);
 
         // When
         let health: Option<&mut Health> = unsafe { table.view_mut(row) };
@@ -1108,10 +1089,10 @@ mod tests {
     #[test]
     fn table_view_multiple_components() {
         // Given
-        let component_registry = component::Registry::new();
+        let registry = world::TypeRegistry::new();
 
-        let spec = component_registry.spec::<(Position, Velocity)>();
-        let mut table = Table::new(Id::new(0), spec, &component_registry);
+        let spec = <(Position, Velocity)>::into_spec(&registry);
+        let mut table = Table::new(Id::new(0), spec, &registry);
 
         let mut allocator = entity::Allocator::new();
         let entity = allocator.alloc();
@@ -1119,7 +1100,7 @@ mod tests {
         let row = table.add_entity(
             entity,
             (Position { x: 1.0, y: 2.0 }, Velocity { dx: 0.5, dy: 0.3 }),
-            &component_registry,
+            &registry,
         );
 
         // When
@@ -1137,11 +1118,11 @@ mod tests {
     #[test]
     fn table_view_mut_mixed_mutability() {
         // Given
-        let component_registry = component::Registry::new();
+        let registry = world::TypeRegistry::new();
 
-        let spec = component_registry.spec::<(Position, Velocity)>();
+        let spec = <(Position, Velocity)>::into_spec(&registry);
 
-        let mut table = Table::new(Id::new(0), spec, &component_registry);
+        let mut table = Table::new(Id::new(0), spec, &registry);
 
         let mut allocator = entity::Allocator::new();
         let entity = allocator.alloc();
@@ -1149,7 +1130,7 @@ mod tests {
         let row = table.add_entity(
             entity,
             (Position { x: 1.0, y: 2.0 }, Velocity { dx: 0.5, dy: 0.3 }),
-            &component_registry,
+            &registry,
         );
 
         // When - mixed mutability view
@@ -1173,10 +1154,10 @@ mod tests {
     #[test]
     fn table_view_returns_none_for_invalid_row() {
         // Given
-        let component_registry = component::Registry::new();
+        let registry = world::TypeRegistry::new();
 
-        let spec = component_registry.spec::<Position>();
-        let table = Table::new(Id::new(0), spec, &component_registry);
+        let spec = <Position>::into_spec(&registry);
+        let table = Table::new(Id::new(0), spec, &registry);
 
         // When
         let view: Option<&Position> = unsafe { table.view(Row::new(999)) };
@@ -1188,20 +1169,16 @@ mod tests {
     #[test]
     fn table_iter_views_immutable() {
         // Given
-        let component_registry = component::Registry::new();
+        let registry = world::TypeRegistry::new();
 
-        let spec = component_registry.spec::<Health>();
-        let mut table = Table::new(Id::new(0), spec, &component_registry);
+        let spec = <Health>::into_spec(&registry);
+        let mut table = Table::new(Id::new(0), spec, &registry);
 
         let mut allocator = entity::Allocator::new();
 
         // Add entities
         for i in 0..5 {
-            table.add_entity(
-                allocator.alloc(),
-                Health { value: i * 10 },
-                &component_registry,
-            );
+            table.add_entity(allocator.alloc(), Health { value: i * 10 }, &registry);
         }
 
         // When
@@ -1219,20 +1196,20 @@ mod tests {
     #[test]
     fn table_iter_views_mut_modify() {
         // Given
-        let component_registry = component::Registry::new();
+        let registry = world::TypeRegistry::new();
 
         #[derive(Component, Debug, PartialEq)]
         struct Counter {
             value: i32,
         }
 
-        let spec = component_registry.spec::<Counter>();
-        let mut table = Table::new(Id::new(0), spec, &component_registry);
+        let spec = <Counter>::into_spec(&registry);
+        let mut table = Table::new(Id::new(0), spec, &registry);
 
         let mut allocator = entity::Allocator::new();
 
         for i in 0..3 {
-            table.add_entity(allocator.alloc(), Counter { value: i }, &component_registry);
+            table.add_entity(allocator.alloc(), Counter { value: i }, &registry);
         }
 
         // When - increment all counters
@@ -1253,10 +1230,10 @@ mod tests {
     #[test]
     fn table_iter_views_multiple_components() {
         // Given
-        let component_registry = component::Registry::new();
+        let registry = world::TypeRegistry::new();
 
-        let spec = component_registry.spec::<(Position, Velocity)>();
-        let mut table = Table::new(Id::new(0), spec, &component_registry);
+        let spec = <(Position, Velocity)>::into_spec(&registry);
+        let mut table = Table::new(Id::new(0), spec, &registry);
 
         let mut allocator = entity::Allocator::new();
 
@@ -1273,7 +1250,7 @@ mod tests {
                         dy: i as f32 * 0.2,
                     },
                 ),
-                &component_registry,
+                &registry,
             );
         }
 
@@ -1291,10 +1268,10 @@ mod tests {
     #[test]
     fn table_iter_views_empty_table() {
         // Given
-        let component_registry = component::Registry::new();
+        let registry = world::TypeRegistry::new();
 
-        let spec = component_registry.spec::<Position>();
-        let table = Table::new(Id::new(0), spec, &component_registry);
+        let spec = <Position>::into_spec(&registry);
+        let table = Table::new(Id::new(0), spec, &registry);
 
         // When
         let count = unsafe { table.iter_views::<&Position>() }.count();
@@ -1306,14 +1283,14 @@ mod tests {
     #[test]
     fn table_iter_views_exact_size_iterator() {
         // Given
-        let component_registry = component::Registry::new();
+        let registry = world::TypeRegistry::new();
 
-        let spec = component_registry.spec::<Health>();
-        let mut table = Table::new(Id::new(0), spec, &component_registry);
+        let spec = <Health>::into_spec(&registry);
+        let mut table = Table::new(Id::new(0), spec, &registry);
 
         let mut allocator = entity::Allocator::new();
         for i in 0..10 {
-            table.add_entity(allocator.alloc(), Health { value: i }, &component_registry);
+            table.add_entity(allocator.alloc(), Health { value: i }, &registry);
         }
 
         // When
@@ -1330,17 +1307,14 @@ mod tests {
         // This test verifies that Table::apply (via Column::push) validates types
         // in BOTH debug and release builds
 
-        let component_registry = component::Registry::new();
+        let registry = world::TypeRegistry::new();
 
         // Create a table with TypeA
-        let spec = component_registry.spec::<Position>();
-        let mut table = Table::new(Id::new(0), spec, &component_registry);
+        let spec = <Position>::into_spec(&registry);
+        let mut table = Table::new(Id::new(0), spec, &registry);
 
         // When/Then - should panic when applying wrong type to component ID
         // We're using TypeA's ID but passing a TypeB value
-        table.apply(
-            component_registry.get::<Position>().unwrap(),
-            Health { value: 99 },
-        );
+        table.apply(registry.get::<Position>().unwrap(), Health { value: 99 });
     }
 }

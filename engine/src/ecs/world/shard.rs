@@ -1,8 +1,8 @@
 use std::marker::PhantomData;
 
 use crate::ecs::{
-    component, query, storage,
-    world::{World, access::AccessGrant},
+    query, storage, unique,
+    world::{TypeRegistry, World, access::AccessGrant},
 };
 
 /// A shard of an ECS world. Shards are used to partition the world into different sets of
@@ -54,14 +54,14 @@ impl<'w> Shard<'w> {
         &self.grant
     }
 
-    /// Get the component registry.
+    /// Get the resource type registry.
     ///
-    /// This is always safe to access as it's read-only metadata about component types.
-    /// Component registration is immutable after initialization.
+    /// This is always safe to access as it's read-only metadata about resource types.
+    /// Resource registration is immutable after initialization.
     #[inline]
-    pub fn components(&self) -> &component::Registry {
-        // SAFETY: Component registry is read-only metadata, safe to access
-        unsafe { (*self.world).components() }
+    pub fn resources(&self) -> &TypeRegistry {
+        // SAFETY: Resource registry is read-only metadata, safe to access
+        unsafe { (*self.world).resources() }
     }
 
     /// Get immutable access to storage.
@@ -149,7 +149,7 @@ impl<'w> Shard<'w> {
     /// Note: This holds a mutable reference to the shard (and underlying component data) while the query result is active
     /// (use wisely).
     pub fn query<D: query::Data>(&'w mut self) -> query::Result<'w, D> {
-        let query = query::Query::<D>::new(self.components());
+        let query = query::Query::<D>::new(self.resources());
         assert!(
             self.grant.grants(query.required_access()),
             "Shard grant does not permit the requested query access."
@@ -157,6 +157,19 @@ impl<'w> Shard<'w> {
 
         // TODO: Safety - Query creation and grant validation ensures no alias violations occur
         query.invoke(self)
+    }
+
+    /// Get access to a unique resource stored in the world, if it exists.
+    #[inline]
+    pub fn get_unique<U: unique::Unique>(&self) -> Option<&U> {
+        // TODO: Check grant permits resource access
+        self.storage().uniques().get::<U>()
+    }
+
+    /// Get mutable access to a unique resource stored in the world, if it exists.
+    #[inline]
+    pub fn get_unique_mut<U: unique::Unique>(&mut self) -> Option<&mut U> {
+        self.storage_mut().uniques_mut().get_mut::<U>()
     }
 }
 

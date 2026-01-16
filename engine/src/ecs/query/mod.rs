@@ -33,7 +33,7 @@
 //! let mut world = World::new(/* ... */);
 //!
 //! // Create a query for entities with Position and mutable Velocity
-//! let query = Query::<(&Position, &mut Velocity)>::new(world.components());
+//! let query = Query::<(&Position, &mut Velocity)>::new(world.resources());
 //!
 //! // Iterate over matching entities
 //! for (pos, vel) in query.invoke(&mut world) {
@@ -47,7 +47,7 @@
 //! You can query for components that may or may not exist using `Option<T>`:
 //!
 //! ```rust,ignore
-//! let query = Query::<(Entity, &Position, Option<&Velocity>)>::new(world.components());
+//! let query = Query::<(Entity, &Position, Option<&Velocity>)>::new(world.resources());
 //!
 //! for (entity, pos, vel) in query.invoke(&mut world) {
 //!     match vel {
@@ -110,13 +110,13 @@ pub use result::Result;
 ///
 /// ```rust,ignore
 /// // Query for a single component
-/// let query = Query::<&Position>::new(world.components());
+/// let query = Query::<&Position>::new(world.resources());
 /// for pos in query.invoke(&mut world) {
 ///     println!("Position: {:?}", pos);
 /// }
 ///
 /// // Query for multiple components with mixed mutability
-/// let query = Query::<(&Position, &mut Velocity)>::new(world.components());
+/// let query = Query::<(&Position, &mut Velocity)>::new(world.resources());
 /// for (pos, vel) in query.invoke(&mut world) {
 ///     vel.dx += pos.x;
 /// }
@@ -150,7 +150,7 @@ impl<D> Query<D> {
     ///
     /// # Parameters
     ///
-    /// - `components`: The component registry used to register and look up component types
+    /// - `registry`: The resource registry used to register and look up component types
     ///
     /// # Panics
     ///
@@ -160,15 +160,15 @@ impl<D> Query<D> {
     /// # Examples
     ///
     /// ```rust,ignore
-    /// let query = Query::<(&Position, &mut Velocity)>::new(world.components());
+    /// let query = Query::<(&Position, &mut Velocity)>::new(world.resources());
     /// ```
     #[inline]
-    pub fn new(components: &component::Registry) -> Self
+    pub fn new(registry: &world::TypeRegistry) -> Self
     where
         D: Data,
     {
         // Generate the data specification from the Data type.
-        let data_spec = D::spec(components);
+        let data_spec = D::spec(registry);
         // Assert we have not created an invalid query with potential aliasing violations.
         assert!(
             data_spec.is_valid(),
@@ -208,7 +208,7 @@ impl<D> Query<D> {
     /// # Examples
     ///
     /// ```rust,ignore
-    /// let query = Query::<(&Position, &mut Velocity)>::new(world.components());
+    /// let query = Query::<(&Position, &mut Velocity)>::new(world.resources());
     ///
     /// for (pos, vel) in query.invoke(&mut world) {
     ///     // Update velocity based on position
@@ -217,7 +217,7 @@ impl<D> Query<D> {
     /// ```
     ///
     /// ```rust,ignore
-    /// let query = Query::<(&Position, &mut Velocity)>::new(world.components());
+    /// let query = Query::<(&Position, &mut Velocity)>::new(world.resources());
     ///
     /// for (pos, vel) in query.invoke(&mut shard) {
     ///     // Update velocity based on position
@@ -249,7 +249,7 @@ impl<D> Query<D> {
 /// Trait for converting various types into a `Query<D>`.
 pub trait IntoQuery<D> {
     /// Convert into a `Query<D>`.
-    fn into_query(components: &component::Registry) -> Query<D>;
+    fn into_query(registry: &world::TypeRegistry) -> Query<D>;
 }
 
 #[cfg(test)]
@@ -288,7 +288,7 @@ mod tests {
         // Given
         let mut world = make_world();
         // When
-        Query::<(&Comp1, &Comp1)>::new(world.components()).invoke(&mut world);
+        Query::<(&Comp1, &Comp1)>::new(world.resources()).invoke(&mut world);
     }
 
     #[test]
@@ -296,7 +296,7 @@ mod tests {
         // Given
         let mut world = make_world();
         // When
-        let mut result = Query::<()>::new(world.components()).invoke(&mut world);
+        let mut result = Query::<()>::new(world.resources()).invoke(&mut world);
         // Then
         assert!(result.next().is_none());
     }
@@ -307,7 +307,7 @@ mod tests {
         let mut world = make_world();
 
         // When
-        let mut result = Query::<&Comp1>::new(world.components()).invoke(&mut world);
+        let mut result = Query::<&Comp1>::new(world.resources()).invoke(&mut world);
 
         // Then
         assert_eq!(result.len(), 6);
@@ -325,7 +325,7 @@ mod tests {
         // Given
         let mut world = make_world();
         // When
-        let mut result = Query::<(&Comp1, &mut Comp2)>::new(world.components()).invoke(&mut world);
+        let mut result = Query::<(&Comp1, &mut Comp2)>::new(world.resources()).invoke(&mut world);
 
         // Then
         assert_eq!(result.len(), 4);
@@ -340,7 +340,7 @@ mod tests {
     fn invoke_query_with_shard() {
         // Given
         let world = make_world();
-        let query = Query::<(&Comp1, &mut Comp2)>::new(world.components());
+        let query = Query::<(&Comp1, &mut Comp2)>::new(world.resources());
         let access_request = query.required_access();
         let mut shard = world.shard(access_request).unwrap();
 

@@ -94,9 +94,10 @@ impl<'w> RefMut<'w> {
 mod tests {
     use super::*;
     use crate::ecs::{
-        component::{self},
+        component::IntoSpec,
         entity::{self},
         storage::{Table, table},
+        world,
     };
     use rusty_macros::Component;
 
@@ -120,9 +121,9 @@ mod tests {
     #[test]
     fn ref_get_existing_component() {
         // Given
-        let registry = component::Registry::new();
+        let registry = world::TypeRegistry::new();
 
-        let spec = registry.spec::<(Position, Velocity)>();
+        let spec = <(Position, Velocity)>::into_spec(&registry);
         let mut table = Table::new(table::Id::new(0), spec, &registry);
 
         let mut allocator = entity::Allocator::new();
@@ -145,9 +146,9 @@ mod tests {
     #[test]
     fn ref_get_nonexistent_component() {
         // Given
-        let registry = component::Registry::new();
+        let registry = world::TypeRegistry::new();
 
-        let spec = registry.spec::<Position>();
+        let spec = <Position>::into_spec(&registry);
         let mut table = Table::new(table::Id::new(0), spec, &registry);
 
         let mut allocator = entity::Allocator::new();
@@ -167,10 +168,10 @@ mod tests {
     #[test]
     fn ref_get_unregistered_component() {
         // Given
-        let registry = component::Registry::new();
+        let registry = world::TypeRegistry::new();
         // Note: Health is NOT registered
 
-        let spec = registry.spec::<Position>();
+        let spec = <Position>::into_spec(&registry);
         let mut table = Table::new(table::Id::new(0), spec, &registry);
 
         let mut allocator = entity::Allocator::new();
@@ -190,8 +191,8 @@ mod tests {
     #[test]
     fn ref_get_multiple_components() {
         // Given
-        let registry = component::Registry::new();
-        let spec = registry.spec::<(Position, Velocity, Health)>();
+        let registry = world::TypeRegistry::new();
+        let spec = <(Position, Velocity, Health)>::into_spec(&registry);
 
         let mut table = Table::new(table::Id::new(0), spec, &registry);
 
@@ -220,9 +221,9 @@ mod tests {
     #[test]
     fn ref_for_nonexistent_entity() {
         // Given
-        let registry = component::Registry::new();
+        let registry = world::TypeRegistry::new();
 
-        let spec = registry.spec::<Position>();
+        let spec = <Position>::into_spec(&registry);
         let mut table = Table::new(table::Id::new(0), spec, &registry);
 
         let mut allocator = entity::Allocator::new();
@@ -243,9 +244,9 @@ mod tests {
     #[test]
     fn ref_mut_get_existing_component() {
         // Given
-        let registry = component::Registry::new();
+        let registry = world::TypeRegistry::new();
 
-        let spec = registry.spec::<(Position, Velocity)>();
+        let spec = <(Position, Velocity)>::into_spec(&registry);
         let mut table = Table::new(table::Id::new(0), spec, &registry);
 
         let mut allocator = entity::Allocator::new();
@@ -268,9 +269,9 @@ mod tests {
     #[test]
     fn ref_mut_get_nonexistent_component() {
         // Given
-        let registry = component::Registry::new();
+        let registry = world::TypeRegistry::new();
 
-        let spec = registry.spec::<Position>();
+        let spec = <Position>::into_spec(&registry);
         let mut table = Table::new(table::Id::new(0), spec, &registry);
 
         let mut allocator = entity::Allocator::new();
@@ -290,9 +291,9 @@ mod tests {
     #[test]
     fn ref_mut_get_mut_existing_component() {
         // Given
-        let registry = component::Registry::new();
+        let registry = world::TypeRegistry::new();
 
-        let spec = registry.spec::<(Position, Velocity)>();
+        let spec = <(Position, Velocity)>::into_spec(&registry);
         let mut table = Table::new(table::Id::new(0), spec, &registry);
 
         let mut allocator = entity::Allocator::new();

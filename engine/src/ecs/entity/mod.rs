@@ -64,6 +64,8 @@ pub use registry::Registry;
 /// Export the reference module for entity references.
 pub use reference::{Ref, RefMut};
 
+use crate::ecs::storage::{self};
+
 /// The generation of an entity, used to track whether an entity is the active entity in a world.
 /// The generation starts at `FIRST` and is incremented each time an entity with the same `id` spawned.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -88,6 +90,13 @@ impl From<u32> for Id {
     /// Get a row from an id value.
     fn from(value: u32) -> Self {
         Self(value)
+    }
+}
+
+impl storage::index::SparseId for Id {
+    /// Get the index of this entity if it were to live in indexable storage (e.g. Vec)
+    fn index(&self) -> usize {
+        self.0 as usize
     }
 }
 
@@ -156,6 +165,14 @@ impl Ord for Entity {
             std::cmp::Ordering::Equal => self.generation.cmp(&other.generation),
             ord => ord,
         }
+    }
+}
+
+/// Implement SparseId for Entity to get indexable storage index.
+impl storage::index::SparseId for Entity {
+    /// Get the index of this entity if it were to live in indexable storage (e.g. Vec)
+    fn index(&self) -> usize {
+        self.id.index()
     }
 }
 

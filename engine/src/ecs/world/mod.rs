@@ -33,6 +33,7 @@
 //! ```
 mod access;
 mod shard;
+mod type_registry;
 
 use std::cell::RefCell;
 use std::marker::PhantomData;
@@ -43,12 +44,14 @@ use crate::ecs::{
     entity,
     query::{self},
     storage::{self},
+    unique,
     world::access::{ConflictError, GrantTracker},
 };
 
 /// Exported types for world access control.
 pub use access::{AccessGrant, AccessRequest};
 pub use shard::Shard;
+pub use type_registry::{TypeId, TypeInfo, TypeRegistry};
 
 /// A world identifier. This is a unique identifier for a world in the ECS.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -83,8 +86,8 @@ pub struct World {
     /// The stored entities in the world.
     entities: entity::Registry,
 
-    /// The component registry for the world.
-    components: component::Registry,
+    /// The registry of all know resource types in the world.
+    resources: TypeRegistry,
 
     /// The storage for components in the world.
     storage: storage::Storage,
@@ -104,10 +107,10 @@ impl World {
             id,
             entity_allocator: entity::Allocator::default(),
             entities: entity::Registry::default(),
-            components: component::Registry::default(),
+            resources: TypeRegistry::default(),
             storage: storage::Storage::default(),
             archetypes: archetype::Registry::default(),
-            active_grants: RefCell::new(GrantTracker::new()),
+            active_grants: RefCell::new(GrantTracker::default()),
             _not_send: PhantomData,
         }
     }
@@ -118,8 +121,8 @@ impl World {
     }
 
     #[inline]
-    pub fn components(&self) -> &component::Registry {
-        &self.components
+    pub fn resources(&self) -> &TypeRegistry {
+        &self.resources
     }
 
     #[inline]
@@ -144,18 +147,18 @@ impl World {
         let entity = self.entity_allocator.alloc();
 
         // Construct the component specification for this set of components.
-        let spec = self.components.spec::<S>();
+        let spec = <S>::into_spec(&self.resources);
 
         // Get the table for the entity's archetype
         let table = self
             .storage
-            .get_or_create_table(spec.clone(), &self.components);
+            .get_or_create_table(spec.clone(), &self.resources);
 
         // Get the archetype for this set of components.
         let archetype = self.archetypes.get_or_create(spec, table.id());
 
         // Add the entity with all the components
-        let row = table.add_entity(entity, set, &self.components);
+        let row = table.add_entity(entity, set, &self.resources);
 
         // Mark the entity as spawned in the world.
         self.entities.spawn_at(
@@ -237,14 +240,48 @@ impl World {
         Some((self.storage.get_mut(loc.table_id()), loc.row()))
     }
 
+    /// Register a new component type in the world.
+    pub fn register_component<C: component::Component>(&mut self) -> TypeId {
+        self.resources.register_component::<C>()
+    }
+
     /// Perform a world query to access all entities that match the query data `D`.
     ///
     ///
     /// Note: This holds a mutable reference to the entire world while the query result is active
     /// (use wisely).
     pub fn query<'w, D: query::Data>(&'w mut self) -> query::Result<'w, D> {
-        let query = query::Query::<D>::new(&self.components);
+        let query = query::Query::<D>::new(&self.resources);
         query.invoke(self)
+    }
+
+    /// Register a new resource type in the world.
+    pub fn register_unique<U: unique::Unique>(&mut self) -> TypeId {
+        self.resources.register_unique::<U>()
+    }
+
+    /// Add a unique resource to the world.
+    #[inline]
+    pub fn add_unique<U: unique::Unique>(&mut self, resource: U) {
+        self.storage.uniques_mut().insert::<U>(resource);
+    }
+
+    /// Get access to a unique resource stored in the world, if it exists.
+    #[inline]
+    pub fn get_unique<U: unique::Unique>(&self) -> Option<&U> {
+        self.storage.uniques().get::<U>()
+    }
+
+    /// Get mutable access to a unique resource stored in the world, if it exists.
+    #[inline]
+    pub fn get_unique_mut<U: unique::Unique>(&mut self) -> Option<&mut U> {
+        self.storage.uniques_mut().get_mut::<U>()
+    }
+
+    /// Remove a unique resource from the world, returning it if it existed.
+    #[inline]
+    pub fn remove_unique<U: unique::Unique>(&mut self) -> Option<U> {
+        self.storage.uniques_mut().remove::<U>()
     }
 
     /// Create a shard with the requested access.

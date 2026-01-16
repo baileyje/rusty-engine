@@ -551,7 +551,7 @@ all_tuples!(tuple_view);
 mod tests {
     use rusty_macros::Component;
 
-    use crate::ecs::{component, entity, storage::Table};
+    use crate::ecs::{component::IntoSpec, entity, storage::Table, world};
 
     use super::*;
 
@@ -572,10 +572,10 @@ mod tests {
         value: i32,
     }
 
-    fn setup_table() -> (Table, component::Registry, entity::Allocator) {
-        let registry = component::Registry::new();
+    fn setup_table() -> (Table, world::TypeRegistry, entity::Allocator) {
+        let registry = world::TypeRegistry::new();
 
-        let spec = registry.spec::<(Position, Velocity, Health)>();
+        let spec = <(Position, Velocity, Health)>::into_spec(&registry);
         let table = Table::new(super::super::table::Id::new(0), spec, &registry);
         let allocator = entity::Allocator::new();
 
@@ -874,7 +874,7 @@ mod tests {
     #[test]
     fn view_large_tuple() {
         // Given - test with 4 components
-        let registry = component::Registry::new();
+        let registry = world::TypeRegistry::new();
 
         #[derive(Component, Debug, PartialEq)]
         struct Comp1(u32);
@@ -885,7 +885,7 @@ mod tests {
         #[derive(Component, Debug, PartialEq)]
         struct Comp4(u32);
 
-        let spec = registry.spec::<(Comp1, Comp2, Comp3, Comp4)>();
+        let spec = <(Comp1, Comp2, Comp3, Comp4)>::into_spec(&registry);
         let mut table = Table::new(super::super::table::Id::new(0), spec, &registry);
 
         let mut allocator = entity::Allocator::new();
@@ -909,7 +909,7 @@ mod tests {
     #[test]
     fn view_nested_tuple() {
         // Given - test with 4 components
-        let registry = component::Registry::new();
+        let registry = world::TypeRegistry::new();
 
         #[derive(Component, Debug, PartialEq)]
         struct Comp1(u32);
@@ -920,7 +920,7 @@ mod tests {
         #[derive(Component, Debug, PartialEq)]
         struct Comp4(u32);
 
-        let spec = registry.spec::<(Comp1, Comp2, Comp3, Comp4)>();
+        let spec = <(Comp1, Comp2, Comp3, Comp4)>::into_spec(&registry);
         let mut table = Table::new(super::super::table::Id::new(0), spec, &registry);
 
         let mut allocator = entity::Allocator::new();

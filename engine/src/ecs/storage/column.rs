@@ -5,12 +5,13 @@ use std::{
 };
 
 use crate::ecs::{
-    component::{self, Component},
+    component::{self},
     storage::{
         cell::{Cell, CellMut},
         mem::IndexedMemory,
         row::Row,
     },
+    world,
 };
 
 /// A type-erased, contiguous storage for uniform-sized elements.
@@ -29,9 +30,9 @@ use crate::ecs::{
 /// #[derive(Component, Debug, PartialEq)]
 /// struct Position { x: f32, y: f32 }
 ///
-/// let mut registry = rusty_engine::ecs::component::Registry::new();
+/// let mut registry = rusty_engine::ecs::world::TypeRegistry::new();
 ///
-/// registry.register::<Position>();
+/// registry.register_component::<Position>();
 ///
 /// // Create a type-erased column for Position components
 /// let mut column = Column::new(registry.get_info::<Position>().unwrap());
@@ -76,13 +77,13 @@ pub struct Column {
     len: usize,
 
     /// Info about the column item (size, align and drop).
-    info: component::Info,
+    info: world::TypeInfo,
 }
 
 impl Column {
     /// Create a new empty column with the given component Info.
     #[inline]
-    pub fn new(info: component::Info) -> Self {
+    pub fn new(info: world::TypeInfo) -> Self {
         Self {
             data: IndexedMemory::new(info.layout(), super::mem::GrowthStrategy::Multiply(2)),
             len: 0,
@@ -159,7 +160,7 @@ impl Column {
     ///     column.set_len(3);  // Now mark all as initialized
     /// }
     /// ```
-    pub unsafe fn write<C: Component>(&mut self, row: Row, value: C) {
+    pub unsafe fn write<C: component::Component>(&mut self, row: Row, value: C) {
         debug_assert!(row.index() < self.data.capacity(), "index out of bounds");
 
         // Safety - Caller must ensure type is valid for column/cell.
@@ -175,7 +176,7 @@ impl Column {
     /// # Safety
     /// The caller must ensure that:
     /// - value C is the correct type for this column's layout
-    pub unsafe fn push<C: Component>(&mut self, value: C) {
+    pub unsafe fn push<C: component::Component>(&mut self, value: C) {
         // Validate type matches column's component type
         self.ensure_type::<C>();
 
@@ -199,7 +200,7 @@ impl Column {
     ///
     /// # Panics
     /// In debug builds, panics if type `C` doesn't match the column's type.
-    pub unsafe fn get<C: Component>(&self, row: Row) -> Option<&C> {
+    pub unsafe fn get<C: component::Component>(&self, row: Row) -> Option<&C> {
         if !self.is_row_valid(row) {
             return None;
         }
@@ -216,7 +217,7 @@ impl Column {
     ///
     /// # Panics
     /// In debug builds, panics if type `C` doesn't match the column's type.
-    pub unsafe fn get_mut<C: Component>(&mut self, row: Row) -> Option<&mut C> {
+    pub unsafe fn get_mut<C: component::Component>(&mut self, row: Row) -> Option<&mut C> {
         if !self.is_row_valid(row) {
             return None;
         }
@@ -260,7 +261,7 @@ impl Column {
 
     /// Get the column info.
     #[inline]
-    pub fn info(&self) -> &component::Info {
+    pub fn info(&self) -> &world::TypeInfo {
         &self.info
     }
 
@@ -320,7 +321,7 @@ impl Column {
     ///
     /// # Panics
     /// Panics if the generic type `C` doesn't match the column's component type.
-    pub unsafe fn iter<C: Component>(&self) -> ColumnIter<'_, C> {
+    pub unsafe fn iter<C: component::Component>(&self) -> ColumnIter<'_, C> {
         self.ensure_type::<C>();
 
         ColumnIter {
@@ -337,7 +338,7 @@ impl Column {
     ///
     /// # Panics
     /// Panics if the generic type `C` doesn't match the column's component type.
-    pub unsafe fn iter_mut<'a, C: Component>(&'a mut self) -> ColumnIterMut<'a, C> {
+    pub unsafe fn iter_mut<'a, C: component::Component>(&'a mut self) -> ColumnIterMut<'a, C> {
         self.ensure_type::<C>();
         let len = self.len;
 
@@ -359,7 +360,7 @@ impl Column {
     /// - The TypeId of `C` doesn't match the column's stored type
     /// - The Layout of `C` doesn't match the column's layout
     #[inline]
-    pub fn ensure_type<C: Component>(&self) {
+    pub fn ensure_type<C: component::Component>(&self) {
         assert!(
             TypeId::of::<C>() == self.info.type_id(),
             "Type mismatch: attempted to use type {} with column storing {:?}",
@@ -380,13 +381,13 @@ impl Column {
 }
 
 /// Iterator over column elements.
-pub struct ColumnIter<'a, C: Component> {
+pub struct ColumnIter<'a, C: component::Component> {
     column: &'a Column,
     index: usize,
     _marker: std::marker::PhantomData<&'a C>,
 }
 
-impl<'a, C: Component> Iterator for ColumnIter<'a, C> {
+impl<'a, C: component::Component> Iterator for ColumnIter<'a, C> {
     type Item = &'a C;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -406,17 +407,17 @@ impl<'a, C: Component> Iterator for ColumnIter<'a, C> {
     }
 }
 
-impl<'a, C: Component> ExactSizeIterator for ColumnIter<'a, C> {}
+impl<'a, C: component::Component> ExactSizeIterator for ColumnIter<'a, C> {}
 
 /// Mutable iterator over column elements.
-pub struct ColumnIterMut<'a, C: Component> {
+pub struct ColumnIterMut<'a, C: component::Component> {
     column: &'a mut Column,
     len: usize,
     index: usize,
     _marker: std::marker::PhantomData<&'a mut C>,
 }
 
-impl<'a, C: Component> Iterator for ColumnIterMut<'a, C> {
+impl<'a, C: component::Component> Iterator for ColumnIterMut<'a, C> {
     type Item = &'a mut C;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -440,7 +441,7 @@ impl<'a, C: Component> Iterator for ColumnIterMut<'a, C> {
     }
 }
 
-impl<'a, C: Component> ExactSizeIterator for ColumnIterMut<'a, C> {}
+impl<'a, C: component::Component> ExactSizeIterator for ColumnIterMut<'a, C> {}
 
 impl Drop for Column {
     fn drop(&mut self) {
@@ -464,10 +465,10 @@ mod tests {
             y: f32,
         }
 
-        let registry = component::Registry::new();
-        let id = registry.register::<Position>();
+        let registry = world::TypeRegistry::new();
+        let id = registry.register_component::<Position>();
 
-        let mut column = Column::new(registry.get_info_by_id(id).unwrap());
+        let mut column = Column::new(registry.get_info(id).unwrap());
 
         // When
 
@@ -501,10 +502,10 @@ mod tests {
             y: f32,
         }
 
-        let registry = component::Registry::new();
-        let id = registry.register::<Position>();
+        let registry = world::TypeRegistry::new();
+        let id = registry.register_component::<Position>();
 
-        let mut column = Column::new(registry.get_info_by_id(id).unwrap());
+        let mut column = Column::new(registry.get_info(id).unwrap());
 
         // When
         column.reserve(2);
@@ -534,8 +535,8 @@ mod tests {
     #[test]
     fn column_swap_remove_drops() {
         // Given
-        use std::sync::atomic::{AtomicUsize, Ordering};
         use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
 
         #[derive(Debug)]
         struct DropTracker(Arc<AtomicUsize>);
@@ -548,9 +549,9 @@ mod tests {
 
         impl component::Component for DropTracker {}
 
-        let registry = component::Registry::new();
-        let id = registry.register::<DropTracker>();
-        let mut column = Column::new(registry.get_info_by_id(id).unwrap());
+        let registry = world::TypeRegistry::new();
+        let id = registry.register_component::<DropTracker>();
+        let mut column = Column::new(registry.get_info(id).unwrap());
 
         let counter = Arc::new(AtomicUsize::new(0));
 
@@ -610,10 +611,10 @@ mod tests {
         #[derive(Component)]
         struct Comp1 {}
 
-        let registry = component::Registry::new();
-        let id = registry.register::<Comp1>();
+        let registry = world::TypeRegistry::new();
+        let id = registry.register_component::<Comp1>();
 
-        let mut column = Column::new(registry.get_info_by_id(id).unwrap());
+        let mut column = Column::new(registry.get_info(id).unwrap());
 
         // When - Then
         unsafe {
@@ -631,10 +632,10 @@ mod tests {
         #[derive(Component)]
         struct Comp2 {}
 
-        let registry = component::Registry::new();
-        let id = registry.register::<Comp1>();
+        let registry = world::TypeRegistry::new();
+        let id = registry.register_component::<Comp1>();
 
-        let mut column = Column::new(registry.get_info_by_id(id).unwrap());
+        let mut column = Column::new(registry.get_info(id).unwrap());
         column.reserve(1);
 
         // When - Then
@@ -650,10 +651,10 @@ mod tests {
         #[derive(Component, Debug)]
         struct Marker;
 
-        let registry = component::Registry::new();
-        let id = registry.register::<Marker>();
+        let registry = world::TypeRegistry::new();
+        let id = registry.register_component::<Marker>();
 
-        let mut column = Column::new(registry.get_info_by_id(id).unwrap());
+        let mut column = Column::new(registry.get_info(id).unwrap());
 
         // When
 
@@ -690,9 +691,9 @@ mod tests {
             y: f32,
         }
 
-        let registry = component::Registry::new();
-        let id = registry.register::<Position>();
-        let mut column = Column::new(registry.get_info_by_id(id).unwrap());
+        let registry = world::TypeRegistry::new();
+        let id = registry.register_component::<Position>();
+        let mut column = Column::new(registry.get_info(id).unwrap());
 
         unsafe {
             column.push(Position { x: 1.0, y: 2.0 });
@@ -742,9 +743,9 @@ mod tests {
             y: f32,
         }
 
-        let registry = component::Registry::new();
-        let id = registry.register::<Position>();
-        let mut column = Column::new(registry.get_info_by_id(id).unwrap());
+        let registry = world::TypeRegistry::new();
+        let id = registry.register_component::<Position>();
+        let mut column = Column::new(registry.get_info(id).unwrap());
 
         unsafe {
             column.push(Position { x: 1.0, y: 2.0 });
@@ -782,8 +783,8 @@ mod tests {
     #[test]
     fn column_clear() {
         // Given
-        use std::sync::atomic::{AtomicUsize, Ordering};
         use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
 
         #[derive(Debug)]
         struct DropTracker(Arc<AtomicUsize>);
@@ -796,9 +797,9 @@ mod tests {
 
         impl component::Component for DropTracker {}
 
-        let registry = component::Registry::new();
-        let id = registry.register::<DropTracker>();
-        let mut column = Column::new(registry.get_info_by_id(id).unwrap());
+        let registry = world::TypeRegistry::new();
+        let id = registry.register_component::<DropTracker>();
+        let mut column = Column::new(registry.get_info(id).unwrap());
 
         let counter = Arc::new(AtomicUsize::new(0));
 
@@ -832,9 +833,9 @@ mod tests {
             x: f32,
         }
 
-        let registry = component::Registry::new();
-        let id = registry.register::<Position>();
-        let mut column = Column::new(registry.get_info_by_id(id).unwrap());
+        let registry = world::TypeRegistry::new();
+        let id = registry.register_component::<Position>();
+        let mut column = Column::new(registry.get_info(id).unwrap());
 
         assert_eq!(column.capacity(), 0);
 
@@ -877,9 +878,9 @@ mod tests {
         #[derive(Component)]
         struct Data(u32);
 
-        let registry = component::Registry::new();
-        let id = registry.register::<Data>();
-        let mut column = Column::new(registry.get_info_by_id(id).unwrap());
+        let registry = world::TypeRegistry::new();
+        let id = registry.register_component::<Data>();
+        let mut column = Column::new(registry.get_info(id).unwrap());
 
         // When - reserve exact amount
         column.reserve(5);
@@ -910,9 +911,9 @@ mod tests {
         #[derive(Component)]
         struct Empty;
 
-        let registry = component::Registry::new();
-        let id = registry.register::<Empty>();
-        let column = Column::new(registry.get_info_by_id(id).unwrap());
+        let registry = world::TypeRegistry::new();
+        let id = registry.register_component::<Empty>();
+        let column = Column::new(registry.get_info(id).unwrap());
 
         // Then
         assert!(column.is_empty());
@@ -931,9 +932,9 @@ mod tests {
         #[derive(Component, Debug, PartialEq)]
         struct Value(u32);
 
-        let registry = component::Registry::new();
-        let id = registry.register::<Value>();
-        let mut column = Column::new(registry.get_info_by_id(id).unwrap());
+        let registry = world::TypeRegistry::new();
+        let id = registry.register_component::<Value>();
+        let mut column = Column::new(registry.get_info(id).unwrap());
 
         unsafe {
             column.push(Value(0));
@@ -977,9 +978,9 @@ mod tests {
         #[allow(dead_code)]
         struct Value(u32);
 
-        let registry = component::Registry::new();
-        let id = registry.register::<Value>();
-        let mut column = Column::new(registry.get_info_by_id(id).unwrap());
+        let registry = world::TypeRegistry::new();
+        let id = registry.register_component::<Value>();
+        let mut column = Column::new(registry.get_info(id).unwrap());
 
         unsafe {
             for i in 0..10 {
@@ -1022,9 +1023,9 @@ mod tests {
             value: u32,
         }
 
-        let registry = component::Registry::new();
-        let id = registry.register::<TypeA>();
-        let column = Column::new(registry.get_info_by_id(id).unwrap());
+        let registry = world::TypeRegistry::new();
+        let id = registry.register_component::<TypeA>();
+        let column = Column::new(registry.get_info(id).unwrap());
 
         // When/Then - should panic even in release builds
         unsafe {
@@ -1049,9 +1050,9 @@ mod tests {
             value: u32,
         }
 
-        let registry = component::Registry::new();
-        let id = registry.register::<TypeA>();
-        let mut column = Column::new(registry.get_info_by_id(id).unwrap());
+        let registry = world::TypeRegistry::new();
+        let id = registry.register_component::<TypeA>();
+        let mut column = Column::new(registry.get_info(id).unwrap());
 
         // When/Then - should panic even in release builds
         unsafe {
@@ -1076,9 +1077,9 @@ mod tests {
             value: u32,
         }
 
-        let registry = component::Registry::new();
-        let id = registry.register::<TypeA>();
-        let mut column = Column::new(registry.get_info_by_id(id).unwrap());
+        let registry = world::TypeRegistry::new();
+        let id = registry.register_component::<TypeA>();
+        let mut column = Column::new(registry.get_info(id).unwrap());
 
         // Add a valid value first
         unsafe {

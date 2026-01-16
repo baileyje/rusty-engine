@@ -343,12 +343,12 @@ mod tests {
         atomic::{AtomicU32, Ordering},
     };
 
-    use rusty_macros::Component;
+    use rusty_macros::{Component, Unique};
 
     use crate::{
         core::tasks,
         define_phase,
-        ecs::{query, world},
+        ecs::{query, system::param::UniqMut, world},
     };
 
     use super::*;
@@ -575,9 +575,9 @@ mod tests {
             value: i32,
         }
 
-        #[derive(Component)]
+        #[derive(Unique)]
         struct Total {
-            value: i32,
+            num: i32,
         }
 
         // FixedUpdate: Increment items
@@ -588,11 +588,9 @@ mod tests {
         }
 
         // Update: Sum items into total
-        fn sum_items(items: query::Result<&Item>, totals: query::Result<&mut Total>) {
+        fn sum_items(items: query::Result<&Item>, mut total: UniqMut<Total>) {
             let sum: i32 = items.map(|i| i.value).sum();
-            for total in totals {
-                total.value = sum;
-            }
+            total.num = sum;
         }
 
         schedule.add_system(FixedUpdate, increment_items, &mut world);
@@ -601,7 +599,8 @@ mod tests {
         world.spawn(Item { value: 0 });
         world.spawn(Item { value: 0 });
         world.spawn(Item { value: 0 });
-        world.spawn(Total { value: 0 });
+
+        world.add_unique(Total { num: 0 });
 
         // Simulate game loop: fixed update runs twice, then update
         schedule.run(FixedUpdate, &mut world, &executor);
@@ -609,8 +608,8 @@ mod tests {
         schedule.run(Update, &mut world, &executor);
 
         // Each item: 0 + 5 + 5 = 10, three items = 30
-        let total = world.query::<&Total>().next().unwrap();
-        assert_eq!(total.value, 30);
+        let total = world.get_unique::<Total>().unwrap();
+        assert_eq!(total.num, 30);
     }
 
     #[test]

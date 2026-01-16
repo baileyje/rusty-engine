@@ -25,8 +25,7 @@ use std::collections::HashSet;
 use crate::{
     all_tuples,
     ecs::{
-        component::{self},
-        entity,
+        component, entity,
         query::{
             IntoQuery, Query,
             param::{Parameter, ParameterSpec},
@@ -79,12 +78,12 @@ pub trait Data: Sized {
     ///
     /// # Parameters
     ///
-    /// - `components`: The component registry for type registration and lookup
+    /// - `registry`: The resource registry for type registration and lookup
     ///
     /// # Returns
     ///
     /// A [`DataSpec`] containing the list of parameters this query needs.
-    fn spec(components: &component::Registry) -> DataSpec;
+    fn spec(registry: &world::TypeRegistry) -> DataSpec;
 
     /// Fetch query data from an immutable table row.
     ///
@@ -197,7 +196,7 @@ impl DataSpec {
     ///
     /// A [`component::Spec`] containing only the required component IDs.
     pub fn as_component_spec(&self) -> component::Spec {
-        let ids: Vec<component::Id> = self
+        let ids: Vec<world::TypeId> = self
             .params
             .iter()
             .filter_map(|t| match t {
@@ -227,8 +226,8 @@ impl DataSpec {
     /// request. Even though the query doesn't require the component to exist on every
     /// entity, accessing it when present still requires the appropriate permissions.
     pub fn as_access_request(&self) -> world::AccessRequest {
-        let mut immutable_ids: Vec<component::Id> = Vec::new();
-        let mut mutable_ids: Vec<component::Id> = Vec::new();
+        let mut immutable_ids: Vec<world::TypeId> = Vec::new();
+        let mut mutable_ids: Vec<world::TypeId> = Vec::new();
         for param in self.params.iter() {
             if let ParameterSpec::Component(id, is_mut, _optional) = param {
                 if *is_mut {
@@ -238,10 +237,7 @@ impl DataSpec {
                 }
             }
         }
-        world::AccessRequest::to_components(
-            component::Spec::new(immutable_ids),
-            component::Spec::new(mutable_ids),
-        )
+        world::AccessRequest::to_resources(&immutable_ids, &mutable_ids)
     }
 
     /// Check if this query requires mutable access to any components.
@@ -302,8 +298,8 @@ impl<P: Parameter> Data for P {
     type Data<'w> = P::Value<'w>;
 
     /// Return [`DataSpec`] with a single [`ParameterSpec`] derived from parameter `P`.
-    fn spec(components: &component::Registry) -> DataSpec {
-        DataSpec::new(vec![P::spec(components)])
+    fn spec(registry: &world::TypeRegistry) -> DataSpec {
+        DataSpec::new(vec![P::spec(registry)])
     }
 
     unsafe fn fetch<'w>(
@@ -329,7 +325,7 @@ impl<P: Parameter> Data for P {
 /// This is primarily useful as a base case for the type system.
 impl Data for () {
     type Data<'w> = ();
-    fn spec(_components: &component::Registry) -> DataSpec {
+    fn spec(_registry: &world::TypeRegistry) -> DataSpec {
         DataSpec::EMPTY
     }
 
@@ -357,11 +353,11 @@ macro_rules! tuple_query {
 
             type Data<'w> = ($($name::Data<'w>,)*);
 
-            fn spec(components: &component::Registry) -> DataSpec {
+            fn spec(registry: &world::TypeRegistry) -> DataSpec {
                 let mut params = Vec::new();
                 $(
                     params.extend(
-                        <$name>::spec(components).params().iter().cloned()
+                        <$name>::spec(registry).params().iter().cloned()
                     );
                 )*
                 DataSpec::new(params)
@@ -400,8 +396,8 @@ all_tuples!(tuple_query);
 /// Implement [`IntoQuery`] for any type that implements [`Data`].
 impl<D: Data> IntoQuery<D> for D {
     /// Convert this data type into a [`Query`].
-    fn into_query(components: &component::Registry) -> Query<D> {
-        Query::<D>::new(components)
+    fn into_query(registry: &world::TypeRegistry) -> Query<D> {
+        Query::<D>::new(registry)
     }
 }
 
@@ -411,7 +407,8 @@ mod tests {
     use rusty_macros::Component;
 
     use crate::ecs::{
-        component, entity,
+        component::IntoSpec,
+        entity,
         query::{IntoQuery, data::Data, param::ParameterSpec},
         storage, world,
     };
@@ -434,8 +431,8 @@ mod tests {
 
     fn test_setup() -> (world::World, storage::Table) {
         let world = world::World::new(world::Id::new(0));
-        let spec = world.components().spec::<(Comp1, Comp2, Comp3)>();
-        let table = storage::Table::new(storage::table::Id::new(0), spec, world.components());
+        let spec = <(Comp1, Comp2, Comp3)>::into_spec(world.resources());
+        let table = storage::Table::new(storage::table::Id::new(0), spec, world.resources());
         (world, table)
     }
 
@@ -445,7 +442,7 @@ mod tests {
         let (world, _table) = test_setup();
 
         // When
-        let spec = <&Comp1>::spec(world.components());
+        let spec = <&Comp1>::spec(world.resources());
 
         // Then
         let params = spec.params();
@@ -453,14 +450,14 @@ mod tests {
         let param = params[0];
         assert_eq!(
             param,
-            ParameterSpec::Component(world.components().get::<Comp1>().unwrap(), false, false)
+            ParameterSpec::Component(world.resources().get::<Comp1>().unwrap(), false, false)
         );
     }
 
     #[test]
     fn entity_as_query_data() {
         // Given
-        let registry = component::Registry::new();
+        let registry = world::TypeRegistry::new();
 
         // When
         let spec = entity::Entity::spec(&registry);
@@ -475,8 +472,8 @@ mod tests {
     #[test]
     fn entity_and_comp_as_query_data() {
         // Given
-        let registry = component::Registry::new();
-        registry.register::<Comp1>();
+        let registry = world::TypeRegistry::new();
+        registry.register_component::<Comp1>();
 
         // When
         let spec = <(entity::Entity, &mut Comp1)>::spec(&registry);
@@ -497,9 +494,9 @@ mod tests {
     #[test]
     fn entity_and_comps_mixed_as_query_data() {
         // Given
-        let registry = component::Registry::new();
-        registry.register::<Comp1>();
-        registry.register::<Comp2>();
+        let registry = world::TypeRegistry::new();
+        registry.register_component::<Comp1>();
+        registry.register_component::<Comp2>();
 
         // When
         let spec = <(entity::Entity, &mut Comp1, &Comp2)>::spec(&registry);
@@ -525,9 +522,9 @@ mod tests {
     #[test]
     fn entity_and_comps_component_spec() {
         // Given
-        let registry = component::Registry::new();
-        let comp1_id = registry.register::<Comp1>();
-        let comp2_id = registry.register::<Comp2>();
+        let registry = world::TypeRegistry::new();
+        let comp1_id = registry.register_component::<Comp1>();
+        let comp2_id = registry.register_component::<Comp2>();
 
         // When
         let spec = <(entity::Entity, &mut Comp1, &Comp2)>::spec(&registry);
@@ -543,10 +540,10 @@ mod tests {
     #[test]
     fn comps_access() {
         // Given
-        let registry = component::Registry::new();
-        let comp1_id = registry.register::<Comp1>();
-        let comp2_id = registry.register::<Comp2>();
-        let comp3_id = registry.register::<Comp3>();
+        let registry = world::TypeRegistry::new();
+        let comp1_id = registry.register_component::<Comp1>();
+        let comp2_id = registry.register_component::<Comp2>();
+        let comp3_id = registry.register_component::<Comp3>();
 
         // When
         let spec = <(&mut Comp1, &Comp2, &Comp3)>::spec(&registry);
@@ -558,20 +555,17 @@ mod tests {
         let request = spec.as_access_request();
         assert_eq!(
             request,
-            world::AccessRequest::to_components(
-                component::Spec::new(vec![comp2_id, comp3_id]),
-                component::Spec::new(vec![comp1_id]),
-            )
+            world::AccessRequest::to_resources(&[comp2_id, comp3_id], &[comp1_id]),
         );
     }
 
     #[test]
     fn optional_comps_included_in_access() {
         // Given
-        let registry = component::Registry::new();
-        let comp1_id = registry.register::<Comp1>();
-        let comp2_id = registry.register::<Comp2>();
-        let comp3_id = registry.register::<Comp3>();
+        let registry = world::TypeRegistry::new();
+        let comp1_id = registry.register_component::<Comp1>();
+        let comp2_id = registry.register_component::<Comp2>();
+        let comp3_id = registry.register_component::<Comp3>();
 
         // When - query with optional components
         let spec = <(&Comp1, Option<&Comp2>, Option<&mut Comp3>)>::spec(&registry);
@@ -582,29 +576,23 @@ mod tests {
         // Should grant access to all components (including optional ones)
         assert_eq!(
             request,
-            world::AccessRequest::to_components(
-                component::Spec::new(vec![comp1_id, comp2_id]),
-                component::Spec::new(vec![comp3_id]),
-            )
+            world::AccessRequest::to_resources(&[comp1_id, comp2_id], &[comp3_id],)
         );
 
         // Should not grant access to components not in query
         // Use a component ID that's definitely not in our query
-        let fake_id = component::Id::new(99);
+        let fake_id = world::TypeId::new(99);
         assert_ne!(
             request,
-            world::AccessRequest::to_components(
-                component::Spec::new(vec![fake_id]),
-                component::Spec::EMPTY,
-            )
+            world::AccessRequest::to_resources(&[fake_id], &[],)
         );
     }
 
     #[test]
     fn entity_not_in_access_request() {
         // Given
-        let registry = component::Registry::new();
-        let comp1_id = registry.register::<Comp1>();
+        let registry = world::TypeRegistry::new();
+        let comp1_id = registry.register_component::<Comp1>();
 
         // When - query includes Entity
         let spec = <(entity::Entity, &Comp1)>::spec(&registry);
@@ -619,17 +607,14 @@ mod tests {
         // Should grant the component access
         assert_eq!(
             request,
-            world::AccessRequest::to_components(
-                component::Spec::new(vec![comp1_id]),
-                component::Spec::EMPTY,
-            )
+            world::AccessRequest::to_resources(&[comp1_id], &[],)
         );
     }
 
     #[test]
     fn empty_query_access_is_none() {
         // Given
-        let registry = component::Registry::new();
+        let registry = world::TypeRegistry::new();
 
         // When - empty query
         let spec = <()>::spec(&registry);
@@ -642,9 +627,9 @@ mod tests {
     #[test]
     fn access_request_conflicts_correctly() {
         // Given
-        let registry = component::Registry::new();
-        registry.register::<Comp1>();
-        registry.register::<Comp2>();
+        let registry = world::TypeRegistry::new();
+        registry.register_component::<Comp1>();
+        registry.register_component::<Comp2>();
 
         // Query A: reads Comp1, writes Comp2
         let spec_a = <(&Comp1, &mut Comp2)>::spec(&registry);
@@ -676,9 +661,9 @@ mod tests {
     #[test]
     fn optional_comps_component_spec() {
         // Given
-        let registry = component::Registry::new();
-        let comp1_id = registry.register::<Comp1>();
-        registry.register::<Comp2>();
+        let registry = world::TypeRegistry::new();
+        let comp1_id = registry.register_component::<Comp1>();
+        registry.register_component::<Comp2>();
 
         // When
         let spec = <(
@@ -699,9 +684,9 @@ mod tests {
     #[test]
     fn components_not_mutable() {
         // Given
-        let registry = component::Registry::new();
-        registry.register::<Comp1>();
-        registry.register::<Comp2>();
+        let registry = world::TypeRegistry::new();
+        registry.register_component::<Comp1>();
+        registry.register_component::<Comp2>();
 
         // When
         let spec = <(entity::Entity, &Comp1, &Comp2)>::spec(&registry);
@@ -713,9 +698,9 @@ mod tests {
     #[test]
     fn components_mutable() {
         // Given
-        let registry = component::Registry::new();
-        registry.register::<Comp1>();
-        registry.register::<Comp2>();
+        let registry = world::TypeRegistry::new();
+        registry.register_component::<Comp1>();
+        registry.register_component::<Comp2>();
 
         // When
         let spec = <(entity::Entity, &mut Comp1, &Comp2)>::spec(&registry);
@@ -727,9 +712,9 @@ mod tests {
     #[test]
     fn components_valid() {
         // Given
-        let registry = component::Registry::new();
-        registry.register::<Comp1>();
-        registry.register::<Comp2>();
+        let registry = world::TypeRegistry::new();
+        registry.register_component::<Comp1>();
+        registry.register_component::<Comp2>();
 
         // When
         let spec = <(entity::Entity, &mut Comp1, &Comp2)>::spec(&registry);
@@ -741,9 +726,9 @@ mod tests {
     #[test]
     fn components_invalid() {
         // Given
-        let registry = component::Registry::new();
-        registry.register::<Comp1>();
-        registry.register::<Comp2>();
+        let registry = world::TypeRegistry::new();
+        registry.register_component::<Comp1>();
+        registry.register_component::<Comp2>();
 
         // When
         let spec = <(entity::Entity, &mut Comp1, &Comp1)>::spec(&registry);
@@ -755,9 +740,9 @@ mod tests {
     #[test]
     fn components_invalid_nesting() {
         // Given
-        let registry = component::Registry::new();
-        registry.register::<Comp1>();
-        registry.register::<Comp2>();
+        let registry = world::TypeRegistry::new();
+        registry.register_component::<Comp1>();
+        registry.register_component::<Comp2>();
 
         // When
         let spec = <(entity::Entity, &mut Comp1, (&Comp1, &Comp2))>::spec(&registry);
@@ -898,19 +883,16 @@ mod tests {
     fn data_into_query() {
         // Given
         let (world, _table) = test_setup();
-        let comp1_id = world.components().get::<Comp1>().unwrap();
-        let comp2_id = world.components().get::<Comp2>().unwrap();
+        let comp1_id = world.resources().get::<Comp1>().unwrap();
+        let comp2_id = world.resources().get::<Comp2>().unwrap();
 
         // When
-        let query = <(entity::Entity, &Comp1, &mut Comp2)>::into_query(world.components());
+        let query = <(entity::Entity, &Comp1, &mut Comp2)>::into_query(world.resources());
 
         // Then
         assert_eq!(
             *query.required_access(),
-            world::AccessRequest::to_components(
-                component::Spec::new(vec![comp1_id]),
-                component::Spec::new(vec![comp2_id]),
-            )
+            world::AccessRequest::to_resources(&[comp1_id], &[comp2_id])
         );
     }
 }

@@ -36,14 +36,9 @@
 
 use std::hash::Hash;
 
-mod info;
-mod registry;
 mod set;
 mod spec;
 
-pub(crate) use info::Info;
-pub use registry::Registry;
-use rusty_macros::Component;
 pub(crate) use set::{Set, Target as SetTarget};
 pub use spec::{IntoSpec, Spec};
 
@@ -62,6 +57,20 @@ impl Id {
     #[inline]
     pub fn index(&self) -> usize {
         self.0 as usize
+    }
+}
+
+impl From<u32> for Id {
+    #[inline]
+    fn from(value: u32) -> Self {
+        Self::new(value)
+    }
+}
+
+impl From<usize> for Id {
+    #[inline]
+    fn from(value: usize) -> Self {
+        Self::new(value as u32)
     }
 }
 

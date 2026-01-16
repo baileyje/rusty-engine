@@ -1,8 +1,6 @@
-use core::slice;
-
 use crate::{
     all_tuples,
-    ecs::component::{Component, Id, Registry},
+    ecs::{component::Component, world},
 };
 
 /// A specification for the components required for an entity or archetype.
@@ -13,7 +11,7 @@ use crate::{
 /// component attached to it.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Spec {
-    ids: Vec<Id>,
+    ids: Vec<world::TypeId>,
 }
 
 impl Spec {
@@ -22,7 +20,7 @@ impl Spec {
 
     /// Construct a new Spec from the given component IDs.
     #[inline]
-    pub fn new(ids: impl Into<Vec<Id>>) -> Self {
+    pub fn new(ids: impl Into<Vec<world::TypeId>>) -> Self {
         let mut ids = ids.into();
         // Ensure the IDs are sorted.
         ids.sort();
@@ -36,13 +34,13 @@ impl Spec {
 
     /// Get the component IDs in this specification.
     #[inline]
-    pub fn ids(&self) -> &[Id] {
+    pub fn ids(&self) -> &[world::TypeId] {
         &self.ids
     }
 
     /// Determine if this specification contains the given component ID.
     #[inline]
-    pub fn contains(&self, id: Id) -> bool {
+    pub fn contains(&self, id: world::TypeId) -> bool {
         // Binary search since the IDs are sorted.
         self.ids.binary_search(&id).is_ok()
     }
@@ -70,24 +68,31 @@ impl Spec {
     }
 }
 
+impl From<Vec<world::TypeId>> for Spec {
+    #[inline]
+    fn from(value: Vec<world::TypeId>) -> Self {
+        Spec::new(value)
+    }
+}
+
 /// Trait for converting a type into a component specification (`Spec`).
 pub trait IntoSpec<Marker = ()> {
     /// Convert the type into a component specification using the given registry.
-    fn into_spec(registry: &Registry) -> Spec;
+    fn into_spec(registry: &world::TypeRegistry) -> Spec;
 }
 
 /// [`IntoSpec`] implementation for the empty tuple.
 impl IntoSpec for () {
     /// Convert the empty tuple into an empty Spec.
-    fn into_spec(_registry: &Registry) -> Spec {
+    fn into_spec(_registry: &world::TypeRegistry) -> Spec {
         Spec::EMPTY
     }
 }
 
 /// [`IntoSpec`] implementation for single component types.
 impl<C: Component> IntoSpec for C {
-    fn into_spec(registry: &Registry) -> Spec {
-        Spec::new(slice::from_ref(&registry.register::<C>()))
+    fn into_spec(registry: &world::TypeRegistry) -> Spec {
+        Spec::new([registry.register_component::<C>()])
     }
 }
 
@@ -95,11 +100,10 @@ impl<C: Component> IntoSpec for C {
 macro_rules! tuple_spec {
     ($($name: ident),*) => {
         impl<$($name: IntoSpec),*> IntoSpec for ($($name,)*) {
-            fn into_spec(registry: &Registry) -> Spec {
+            fn into_spec(registry: &world::TypeRegistry) -> Spec {
                 let mut ids = Vec::new();
-                // $(ids.extend(registry).ids());.spec::<$name as IntoSpec>()*
                 $(
-                    ids.extend(registry.spec::<$name>().ids());
+                    ids.extend(<$name>::into_spec(registry).ids());
                 )*
                 Spec::new(ids)
             }
@@ -115,7 +119,7 @@ mod tests {
     use rusty_macros::Component;
     use std::hash::{DefaultHasher, Hash, Hasher};
 
-    use crate::ecs::component::{Registry, Spec};
+    use crate::ecs::{component::Spec, world};
 
     // Given
     #[derive(Component)]
@@ -130,11 +134,11 @@ mod tests {
     #[test]
     fn component_id_order() {
         // Given
-        let registry = Registry::new();
+        let registry = world::TypeRegistry::new();
 
-        let id1 = registry.register::<Comp1>();
-        let id2 = registry.register::<Comp2>();
-        let id3 = registry.register::<Comp3>();
+        let id1 = registry.register_component::<Comp1>();
+        let id2 = registry.register_component::<Comp2>();
+        let id3 = registry.register_component::<Comp3>();
 
         // When
         let spec1 = Spec::new(vec![id2, id1, id3]);
@@ -152,10 +156,10 @@ mod tests {
     #[test]
     fn component_id_dedupe() {
         // Given
-        let registry = Registry::new();
-        let id1 = registry.register::<Comp1>();
-        let id2 = registry.register::<Comp2>();
-        let id3 = registry.register::<Comp3>();
+        let registry = world::TypeRegistry::new();
+        let id1 = registry.register_component::<Comp1>();
+        let id2 = registry.register_component::<Comp2>();
+        let id3 = registry.register_component::<Comp3>();
 
         // When
         let spec = Spec::new(vec![id2, id1, id3, id2, id1]);
@@ -167,10 +171,10 @@ mod tests {
     #[test]
     fn contains() {
         // Given
-        let registry = Registry::new();
-        let id1 = registry.register::<Comp1>();
-        let id2 = registry.register::<Comp2>();
-        let id3 = registry.register::<Comp3>();
+        let registry = world::TypeRegistry::new();
+        let id1 = registry.register_component::<Comp1>();
+        let id2 = registry.register_component::<Comp2>();
+        let id3 = registry.register_component::<Comp3>();
 
         let spec = Spec::new(vec![id2, id1]);
 
@@ -183,11 +187,11 @@ mod tests {
     #[test]
     fn contains_all() {
         // Given
-        let registry = Registry::new();
-        let id1 = registry.register::<Comp1>();
-        let id2 = registry.register::<Comp2>();
-        let id3 = registry.register::<Comp3>();
-        let id4 = registry.register::<Comp4>();
+        let registry = world::TypeRegistry::new();
+        let id1 = registry.register_component::<Comp1>();
+        let id2 = registry.register_component::<Comp2>();
+        let id3 = registry.register_component::<Comp3>();
+        let id4 = registry.register_component::<Comp4>();
 
         let spec1 = Spec::new(vec![id1, id2, id3]);
         let spec2 = Spec::new(vec![id1, id2]);

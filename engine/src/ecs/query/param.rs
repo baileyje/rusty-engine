@@ -23,18 +23,18 @@
 //! use rusty_engine::ecs::query::param::Parameter;
 //!
 //! // Single parameter - queries for one component
-//! let query = Query::<&Position>::new(world.components());
+//! let query = Query::<&Position>::new(world.resources());
 //!
 //! // Multiple parameters - queries for multiple components
-//! let query = Query::<(&Position, &mut Velocity)>::new(world.components());
+//! let query = Query::<(&Position, &mut Velocity)>::new(world.resources());
 //!
 //! // Optional parameters - includes entities without the component
-//! let query = Query::<(&Position, Option<&Velocity>)>::new(world.components());
+//! let query = Query::<(&Position, Option<&Velocity>)>::new(world.resources());
 //! ```
 
 use crate::ecs::{
     component::{self},
-    entity, storage,
+    entity, storage, world,
 };
 
 /// A single query parameter that can be fetched from the ECS.
@@ -65,12 +65,12 @@ use crate::ecs::{
 ///
 /// ```rust,ignore
 /// // Single parameter queries
-/// Query::<&Position>::new(world.components())
-/// Query::<Entity>::new(world.components())
+/// Query::<&Position>::new(world.resources())
+/// Query::<Entity>::new(world.resources())
 ///
 /// // Multi-parameter queries (tuples of Parameters)
-/// Query::<(&Position, &mut Velocity)>::new(world.components())
-/// Query::<(Entity, &Health, Option<&Shield>)>::new(world.components())
+/// Query::<(&Position, &mut Velocity)>::new(world.resources())
+/// Query::<(Entity, &Health, Option<&Shield>)>::new(world.resources())
 /// ```
 pub trait Parameter: Sized {
     /// The value type returned when fetching this parameter.
@@ -81,9 +81,9 @@ pub trait Parameter: Sized {
     /// - `Entity` → `Entity` (no lifetime needed)
     type Value<'w>;
 
-    /// Get the query parameter specification for this type. The component registry is provided to allow a
-    /// parameter type to lookup or register component information.
-    fn spec(components: &component::Registry) -> ParameterSpec;
+    /// Get the query parameter specification for this type. The type registry is provided to allow a
+    /// parameter type to lookup or register resource information.
+    fn spec(types: &world::TypeRegistry) -> ParameterSpec;
 
     /// Fetch a value from a specific query parameter. This will be given access to the table, row
     /// and entity combination to fetch for.
@@ -161,7 +161,7 @@ pub enum ParameterSpec {
     /// - The first field is the component ID
     /// - The second field indicates whether the component is mutable
     /// - The third field indicates whether the component is optional
-    Component(component::Id, bool, bool),
+    Component(world::TypeId, bool, bool),
 }
 
 /// Implement the [`Parameter`] trait for an immutable component reference.
@@ -171,8 +171,8 @@ impl<C: component::Component> Parameter for &C {
     ///
     /// # Note
     /// This will register the component `C` type if necessary.
-    fn spec(components: &component::Registry) -> ParameterSpec {
-        ParameterSpec::Component(components.register::<C>(), false, false)
+    fn spec(registry: &world::TypeRegistry) -> ParameterSpec {
+        ParameterSpec::Component(registry.register_component::<C>(), false, false)
     }
 
     unsafe fn fetch<'w>(
@@ -201,8 +201,8 @@ impl<C: component::Component> Parameter for &mut C {
     ///
     /// # Note
     /// This will register the [component::Component] `C` type if necessary.
-    fn spec(components: &component::Registry) -> ParameterSpec {
-        ParameterSpec::Component(components.register::<C>(), true, false)
+    fn spec(registry: &world::TypeRegistry) -> ParameterSpec {
+        ParameterSpec::Component(registry.register_component::<C>(), true, false)
     }
 
     unsafe fn fetch<'w>(
@@ -240,7 +240,7 @@ impl<C: component::Component> Parameter for &mut C {
 ///
 /// ```rust,ignore
 /// // Query entities with Position, optionally with Velocity
-/// let query = Query::<(&Position, Option<&Velocity>)>::new(world.components());
+/// let query = Query::<(&Position, Option<&Velocity>)>::new(world.resources());
 ///
 /// for (pos, vel_opt) in query.invoke(&mut world) {
 ///     match vel_opt {
@@ -255,8 +255,8 @@ impl<C: component::Component> Parameter for Option<&C> {
     ///
     /// # Note
     /// This will register the component `C` type if necessary.
-    fn spec(components: &component::Registry) -> ParameterSpec {
-        ParameterSpec::Component(components.register::<C>(), false, true)
+    fn spec(registry: &world::TypeRegistry) -> ParameterSpec {
+        ParameterSpec::Component(registry.register_component::<C>(), false, true)
     }
 
     /// Fetch an optional component reference from a table row.
@@ -296,7 +296,7 @@ impl<C: component::Component> Parameter for Option<&C> {
 ///
 /// ```rust,ignore
 /// // Query entities with Position, optionally mutating Velocity
-/// let query = Query::<(&Position, Option<&mut Velocity>)>::new(world.components());
+/// let query = Query::<(&Position, Option<&mut Velocity>)>::new(world.resources());
 ///
 /// for (pos, vel_opt) in query.invoke(&mut world) {
 ///     if let Some(vel) = vel_opt {
@@ -311,8 +311,8 @@ impl<C: component::Component> Parameter for Option<&mut C> {
     ///
     /// # Note
     /// This will register the component `C` type if necessary.
-    fn spec(components: &component::Registry) -> ParameterSpec {
-        ParameterSpec::Component(components.register::<C>(), true, true)
+    fn spec(registry: &world::TypeRegistry) -> ParameterSpec {
+        ParameterSpec::Component(registry.register_component::<C>(), true, true)
     }
 
     unsafe fn fetch<'w>(
@@ -346,7 +346,7 @@ impl Parameter for entity::Entity {
     type Value<'w> = entity::Entity;
 
     /// Return [`ParameterSpec::Entity`].
-    fn spec(_components: &component::Registry) -> ParameterSpec {
+    fn spec(_types: &world::TypeRegistry) -> ParameterSpec {
         ParameterSpec::Entity
     }
 
@@ -401,13 +401,13 @@ mod tests {
     }
 
     fn test_setup() -> (world::World, storage::Table) {
-        let world = world::World::new(world::Id::new(0));
+        let mut world = world::World::new(world::Id::new(0));
         let spec = component::Spec::new(vec![
-            world.components().register::<Comp1>(),
-            world.components().register::<Comp2>(),
-            world.components().register::<Comp3>(),
+            world.register_component::<Comp1>(),
+            world.register_component::<Comp2>(),
+            world.register_component::<Comp3>(),
         ]);
-        let mut table = storage::Table::new(storage::table::Id::new(0), spec, world.components());
+        let mut table = storage::Table::new(storage::table::Id::new(0), spec, world.resources());
 
         table.add_entity(
             entity::Entity::new(0.into()),
@@ -416,7 +416,7 @@ mod tests {
                 Comp2 { value: 20 },
                 Comp3 { value: 30 },
             ),
-            world.components(),
+            world.resources(),
         );
         table.add_entity(
             entity::Entity::new(1.into()),
@@ -425,7 +425,7 @@ mod tests {
                 Comp2 { value: 30 },
                 Comp3 { value: 40 },
             ),
-            world.components(),
+            world.resources(),
         );
         table.add_entity(
             entity::Entity::new(2.into()),
@@ -434,7 +434,7 @@ mod tests {
                 Comp2 { value: 40 },
                 Comp3 { value: 50 },
             ),
-            world.components(),
+            world.resources(),
         );
 
         (world, table)
@@ -446,12 +446,12 @@ mod tests {
         let (world, _table) = test_setup();
 
         // When
-        let spec = <&Comp1>::spec(world.components());
+        let spec = <&Comp1>::spec(world.resources());
 
         // Then
         assert_eq!(
             spec,
-            ParameterSpec::Component(world.components().get::<Comp1>().unwrap(), false, false)
+            ParameterSpec::Component(world.resources().get::<Comp1>().unwrap(), false, false)
         );
     }
 
@@ -461,12 +461,12 @@ mod tests {
         let (world, _table) = test_setup();
 
         // When
-        let spec = <&mut Comp1>::spec(world.components());
+        let spec = <&mut Comp1>::spec(world.resources());
 
         // Then
         assert_eq!(
             spec,
-            ParameterSpec::Component(world.components().get::<Comp1>().unwrap(), true, false)
+            ParameterSpec::Component(world.resources().get::<Comp1>().unwrap(), true, false)
         );
     }
 
@@ -476,12 +476,12 @@ mod tests {
         let (world, _table) = test_setup();
 
         // When
-        let spec = <Option<&Comp1>>::spec(world.components());
+        let spec = <Option<&Comp1>>::spec(world.resources());
 
         // Then
         assert_eq!(
             spec,
-            ParameterSpec::Component(world.components().get::<Comp1>().unwrap(), false, true)
+            ParameterSpec::Component(world.resources().get::<Comp1>().unwrap(), false, true)
         );
     }
 
@@ -491,12 +491,12 @@ mod tests {
         let (world, _table) = test_setup();
 
         // When
-        let spec = <Option<&mut Comp1>>::spec(world.components());
+        let spec = <Option<&mut Comp1>>::spec(world.resources());
 
         // Then
         assert_eq!(
             spec,
-            ParameterSpec::Component(world.components().get::<Comp1>().unwrap(), true, true)
+            ParameterSpec::Component(world.resources().get::<Comp1>().unwrap(), true, true)
         );
     }
 
@@ -506,7 +506,7 @@ mod tests {
         let (world, _table) = test_setup();
 
         // When
-        let spec = entity::Entity::spec(world.components());
+        let spec = entity::Entity::spec(world.resources());
 
         // Then
         assert_eq!(spec, ParameterSpec::Entity);

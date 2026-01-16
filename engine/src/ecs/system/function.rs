@@ -42,7 +42,6 @@
 use crate::{
     all_tuples,
     ecs::{
-        component,
         system::{IntoSystem, System, param::Parameter},
         world,
     },
@@ -126,13 +125,13 @@ pub trait WithSystemParams<Params, State>: 'static {
     ///
     /// # Parameters
     ///
-    /// - `components`: Component registry for looking up component IDs
+    /// - `world`: The world to look up component or resource info from
     ///
     /// # Returns
     ///
     /// A [`world::AccessRequest`] describing read/write access to all world resources
     /// needed by the system's parameters.
-    fn required_access(components: &component::Registry) -> world::AccessRequest;
+    fn required_access(world: &world::World) -> world::AccessRequest;
 
     /// Execute the function with parameters extracted from the shard.
     ///
@@ -193,7 +192,7 @@ where
     Func: FnMut() + 'static,
 {
     /// Returns an empty access request since no components are accessed.
-    fn required_access(_components: &component::Registry) -> world::AccessRequest {
+    fn required_access(_world: &world::World) -> world::AccessRequest {
         world::AccessRequest::NONE
     }
 
@@ -250,11 +249,11 @@ macro_rules! system_param_function {
             /// # Panics
             /// If any of the parameters have conflicting access (e.g., two mutable accesses to the
             /// same component type),
-            fn required_access(components: &component::Registry) -> world::AccessRequest {
+            fn required_access(world: &world::World) -> world::AccessRequest {
                 // Merge component specs from all parameters, but always ensure no conflicts
                 let mut access = world::AccessRequest::NONE;
                 $(
-                    let required = $param::required_access(components);
+                    let required = $param::required_access(world);
                     assert!(!access.conflicts_with(&required), "Conflicting access in system parameters");
                     access = access.merge(&required);
                 )*
@@ -344,7 +343,7 @@ where
     State: Send + Sync + 'static,
 {
     fn into_system(mut self, world: &mut world::World) -> System {
-        let access = Func::required_access(world.components());
+        let access = Func::required_access(world);
         let mut state = Func::build_state(world);
         System::parallel(access, move |shard| unsafe {
             self.run(shard, &mut state);
@@ -355,7 +354,7 @@ where
 #[cfg(test)]
 mod tests {
 
-    use crate::ecs::{component, query, system::IntoSystem, world};
+    use crate::ecs::{query, system::IntoSystem, world};
 
     use rusty_macros::Component;
 
@@ -541,10 +540,7 @@ mod tests {
         // Should have Comp1 in the access request
         assert_eq!(
             *access,
-            world::AccessRequest::to_components(
-                world.components().spec::<Comp1>(),
-                component::Spec::EMPTY
-            )
+            world::AccessRequest::to_resources(&[world.resources().get::<Comp1>().unwrap()], &[])
         );
     }
 
@@ -560,9 +556,12 @@ mod tests {
         // Should have both components in the merged spec
         assert_eq!(
             *access,
-            world::AccessRequest::to_components(
-                world.components().spec::<(Comp1, Comp2)>(),
-                component::Spec::EMPTY
+            world::AccessRequest::to_resources(
+                &[
+                    world.resources().get::<Comp1>().unwrap(),
+                    world.resources().get::<Comp2>().unwrap()
+                ],
+                &[]
             )
         )
     }
@@ -579,9 +578,12 @@ mod tests {
         // Should have both components
         assert_eq!(
             *access,
-            world::AccessRequest::to_components(
-                world.components().spec::<(Comp1, Comp2)>(),
-                component::Spec::EMPTY
+            world::AccessRequest::to_resources(
+                &[
+                    world.resources().get::<Comp1>().unwrap(),
+                    world.resources().get::<Comp2>().unwrap()
+                ],
+                &[]
             )
         )
     }

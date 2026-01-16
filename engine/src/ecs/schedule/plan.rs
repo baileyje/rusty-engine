@@ -238,8 +238,8 @@ pub fn prioritize(units: &mut [Unit]) {
         // Component-level access: score by potential conflicts
         // Mutable access conflicts with both reads and writes, so weight it higher
         let mut score = 0;
-        score += unit.required_access.components_len() as u32; // Immutable: 1 point each
-        score += unit.required_access.components_mut_len() as u32 * 2; // Mutable: 2 points each
+        score += unit.required_access.resources_len() as u32; // Immutable: 1 point each
+        score += unit.required_access.resources_mut_len() as u32 * 2; // Mutable: 2 points each
         score
     }
 
@@ -450,54 +450,38 @@ impl Planner for GraphColorPlanner<WelshPowell> {
 #[cfg(test)]
 mod tests {
 
-    use rusty_macros::Component;
-
     use super::*;
-    use crate::ecs::{component, world};
+    use crate::ecs::world;
 
-    #[derive(Component)]
-    struct Comp1;
-    #[derive(Component)]
-    struct Comp2;
-    #[derive(Component)]
-    struct Comp3;
-    #[derive(Component)]
-    struct Comp4;
-    #[derive(Component)]
-    struct Comp5;
-
-    fn create_tasks(registry: &component::Registry) -> Vec<Task> {
+    fn create_tasks() -> Vec<Task> {
         vec![
             Task::new(1, world::AccessRequest::NONE),
             Task::new(2, world::AccessRequest::NONE),
             Task::new(
                 3,
-                world::AccessRequest::to_components(
-                    registry.spec::<(Comp1, Comp2)>(),
-                    component::Spec::EMPTY,
+                world::AccessRequest::to_resources(
+                    &[world::TypeId::new(1), world::TypeId::new(2)],
+                    &[],
                 ),
             ),
             Task::new(
                 4,
-                world::AccessRequest::to_components(
-                    registry.spec::<(Comp1, Comp2)>(),
-                    component::Spec::EMPTY,
+                world::AccessRequest::to_resources(
+                    &[world::TypeId::new(1), world::TypeId::new(2)],
+                    &[],
                 ),
             ),
             Task::new(
                 5,
-                world::AccessRequest::to_components(
-                    component::Spec::EMPTY,
-                    registry.spec::<(Comp1, Comp2)>(),
+                world::AccessRequest::to_resources(
+                    &[],
+                    &[world::TypeId::new(1), world::TypeId::new(2)],
                 ),
             ),
             Task::new(6, world::AccessRequest::to_world(false)),
             Task::new(
                 7,
-                world::AccessRequest::to_components(
-                    component::Spec::EMPTY,
-                    registry.spec::<Comp3>(),
-                ),
+                world::AccessRequest::to_resources(&[], &[world::TypeId::new(3)]),
             ),
         ]
     }
@@ -505,9 +489,8 @@ mod tests {
     #[test]
     fn unitize_simple() {
         // Given
-        let registry = component::Registry::new();
 
-        let tasks = create_tasks(&registry);
+        let tasks = create_tasks();
 
         // When
         let units = unitize(&tasks);
@@ -519,9 +502,9 @@ mod tests {
         assert_eq!(units[1].system_indexes, vec![3, 4]);
         assert_eq!(
             units[1].required_access,
-            world::AccessRequest::to_components(
-                registry.spec::<(Comp1, Comp2)>(),
-                component::Spec::EMPTY,
+            world::AccessRequest::to_resources(
+                &[world::TypeId::new(1), world::TypeId::new(2)],
+                &[],
             ),
         );
 
@@ -534,15 +517,14 @@ mod tests {
         assert_eq!(units[4].system_indexes, vec![7]);
         assert_eq!(
             units[4].required_access,
-            world::AccessRequest::to_components(component::Spec::EMPTY, registry.spec::<Comp3>(),),
+            world::AccessRequest::to_resources(&[], &[world::TypeId::new(3)],),
         );
     }
 
     #[test]
     fn prioritize_simple() {
         // Given
-        let registry = component::Registry::new();
-        let tasks = create_tasks(&registry);
+        let tasks = create_tasks();
         let mut units = unitize(&tasks);
 
         // When
@@ -556,20 +538,20 @@ mod tests {
         );
         assert_eq!(
             units[1].required_access,
-            world::AccessRequest::to_components(
-                component::Spec::EMPTY,
-                registry.spec::<(Comp1, Comp2)>(),
+            world::AccessRequest::to_resources(
+                &[],
+                &[world::TypeId::new(1), world::TypeId::new(2)],
             )
         );
         assert_eq!(
             units[2].required_access,
-            world::AccessRequest::to_components(component::Spec::EMPTY, registry.spec::<Comp3>())
+            world::AccessRequest::to_resources(&[], &[world::TypeId::new(3)])
         );
         assert_eq!(
             units[3].required_access,
-            world::AccessRequest::to_components(
-                registry.spec::<(Comp1, Comp2)>(),
-                component::Spec::EMPTY,
+            world::AccessRequest::to_resources(
+                &[world::TypeId::new(1), world::TypeId::new(2)],
+                &[],
             )
         );
         assert_eq!(units[4].required_access, world::AccessRequest::NONE);
@@ -578,8 +560,7 @@ mod tests {
     #[test]
     fn greedy_graph_color_planner_wp() {
         // Given
-        let registry = component::Registry::new();
-        let tasks = create_tasks(&registry);
+        let tasks = create_tasks();
         let planner = GraphColorPlanner::WELSH_POWELL;
 
         // When
@@ -598,9 +579,9 @@ mod tests {
         );
         assert_eq!(
             group.units[1].required_access,
-            world::AccessRequest::to_components(
-                registry.spec::<(Comp1, Comp2)>(),
-                component::Spec::EMPTY,
+            world::AccessRequest::to_resources(
+                &[world::TypeId::new(1), world::TypeId::new(2)],
+                &[],
             )
         );
         assert_eq!(group.units[2].required_access, world::AccessRequest::NONE);
@@ -610,14 +591,14 @@ mod tests {
         assert_eq!(group.units.len(), 2);
         assert_eq!(
             group.units[0].required_access,
-            world::AccessRequest::to_components(
-                component::Spec::EMPTY,
-                registry.spec::<(Comp1, Comp2)>(),
+            world::AccessRequest::to_resources(
+                &[],
+                &[world::TypeId::new(1), world::TypeId::new(2)],
             )
         );
         assert_eq!(
             group.units[1].required_access,
-            world::AccessRequest::to_components(component::Spec::EMPTY, registry.spec::<Comp3>(),)
+            world::AccessRequest::to_resources(&[], &[world::TypeId::new(3)],)
         );
     }
 
@@ -691,28 +672,18 @@ mod tests {
     #[test]
     fn multiple_readers_same_component_parallel() {
         // Given: Multiple systems reading the same component
-        let registry = component::Registry::new();
         let tasks = vec![
             Task::new(
                 1,
-                world::AccessRequest::to_components(
-                    registry.spec::<Comp1>(),
-                    component::Spec::EMPTY,
-                ),
+                world::AccessRequest::to_resources(&[world::TypeId::new(1)], &[]),
             ),
             Task::new(
                 2,
-                world::AccessRequest::to_components(
-                    registry.spec::<Comp1>(),
-                    component::Spec::EMPTY,
-                ),
+                world::AccessRequest::to_resources(&[world::TypeId::new(1)], &[]),
             ),
             Task::new(
                 3,
-                world::AccessRequest::to_components(
-                    registry.spec::<Comp1>(),
-                    component::Spec::EMPTY,
-                ),
+                world::AccessRequest::to_resources(&[world::TypeId::new(1)], &[]),
             ),
         ];
         let planner = GraphColorPlanner::WELSH_POWELL;
@@ -733,21 +704,14 @@ mod tests {
     #[test]
     fn writer_conflicts_with_readers() {
         // Given: One writer and multiple readers of same component
-        let registry = component::Registry::new();
         let tasks = vec![
             Task::new(
                 1,
-                world::AccessRequest::to_components(
-                    registry.spec::<Comp1>(),
-                    component::Spec::EMPTY,
-                ),
+                world::AccessRequest::to_resources(&[world::TypeId::new(1)], &[]),
             ),
             Task::new(
                 2,
-                world::AccessRequest::to_components(
-                    component::Spec::EMPTY,
-                    registry.spec::<Comp1>(),
-                ),
+                world::AccessRequest::to_resources(&[], &[world::TypeId::new(1)]),
             ),
         ];
         let planner = GraphColorPlanner::WELSH_POWELL;
@@ -762,28 +726,18 @@ mod tests {
     #[test]
     fn multiple_writers_same_component_sequential() {
         // Given: Multiple systems writing the same component
-        let registry = component::Registry::new();
         let tasks = vec![
             Task::new(
                 1,
-                world::AccessRequest::to_components(
-                    component::Spec::EMPTY,
-                    registry.spec::<Comp1>(),
-                ),
+                world::AccessRequest::to_resources(&[], &[world::TypeId::new(1)]),
             ),
             Task::new(
                 2,
-                world::AccessRequest::to_components(
-                    component::Spec::EMPTY,
-                    registry.spec::<Comp1>(),
-                ),
+                world::AccessRequest::to_resources(&[], &[world::TypeId::new(1)]),
             ),
             Task::new(
                 3,
-                world::AccessRequest::to_components(
-                    component::Spec::EMPTY,
-                    registry.spec::<Comp1>(),
-                ),
+                world::AccessRequest::to_resources(&[], &[world::TypeId::new(1)]),
             ),
         ];
         let planner = GraphColorPlanner::WELSH_POWELL;
@@ -804,28 +758,18 @@ mod tests {
     #[test]
     fn disjoint_components_parallel() {
         // Given: Systems accessing completely different components
-        let registry = component::Registry::new();
         let tasks = vec![
             Task::new(
                 1,
-                world::AccessRequest::to_components(
-                    component::Spec::EMPTY,
-                    registry.spec::<Comp1>(),
-                ),
+                world::AccessRequest::to_resources(&[], &[world::TypeId::new(1)]),
             ),
             Task::new(
                 2,
-                world::AccessRequest::to_components(
-                    component::Spec::EMPTY,
-                    registry.spec::<Comp2>(),
-                ),
+                world::AccessRequest::to_resources(&[], &[world::TypeId::new(2)]),
             ),
             Task::new(
                 3,
-                world::AccessRequest::to_components(
-                    component::Spec::EMPTY,
-                    registry.spec::<Comp3>(),
-                ),
+                world::AccessRequest::to_resources(&[], &[world::TypeId::new(3)]),
             ),
         ];
         let planner = GraphColorPlanner::WELSH_POWELL;
@@ -846,35 +790,19 @@ mod tests {
         // 1. Multiple force applications (read position, write velocity)
         // 2. Integration (read velocity, write position)
         // 3. Collision detection (read position)
-        let registry = component::Registry::new();
 
-        let pos_spec = registry.spec::<Comp1>(); // Position
-        let vel_spec = registry.spec::<Comp2>(); // Velocity
+        let pos_spec = &[world::TypeId::new(1)]; // Position
+        let vel_spec = &[world::TypeId::new(2)]; // Velocity
 
         let tasks = vec![
             // Force applications: read pos, write vel (should bundle)
-            Task::new(
-                1,
-                world::AccessRequest::to_components(pos_spec.clone(), vel_spec.clone()),
-            ),
-            Task::new(
-                2,
-                world::AccessRequest::to_components(pos_spec.clone(), vel_spec.clone()),
-            ),
-            Task::new(
-                3,
-                world::AccessRequest::to_components(pos_spec.clone(), vel_spec.clone()),
-            ),
+            Task::new(1, world::AccessRequest::to_resources(pos_spec, vel_spec)),
+            Task::new(2, world::AccessRequest::to_resources(pos_spec, vel_spec)),
+            Task::new(3, world::AccessRequest::to_resources(pos_spec, vel_spec)),
             // Integration: read vel, write pos (conflicts with force apps)
-            Task::new(
-                4,
-                world::AccessRequest::to_components(vel_spec.clone(), pos_spec.clone()),
-            ),
+            Task::new(4, world::AccessRequest::to_resources(vel_spec, pos_spec)),
             // Collision detection: read pos only (can run with force apps, not integration)
-            Task::new(
-                5,
-                world::AccessRequest::to_components(pos_spec.clone(), component::Spec::EMPTY),
-            ),
+            Task::new(5, world::AccessRequest::to_resources(pos_spec, &[])),
         ];
         let planner = GraphColorPlanner::WELSH_POWELL;
 
@@ -901,42 +829,32 @@ mod tests {
         // 2. LOD selection (read position, read camera)
         // 3. Animation update (write transform)
         // 4. Render preparation (read transform, read material)
-        let registry = component::Registry::new();
 
-        let pos_spec = registry.spec::<Comp1>(); // Position
-        let camera_spec = registry.spec::<Comp2>(); // Camera
-        let transform_spec = registry.spec::<Comp3>(); // Transform
-        let material_spec = registry.spec::<Comp4>(); // Material
+        let pos_spec = world::TypeId::new(1); // Position
+        let camera_spec = world::TypeId::new(2); // Camera
+        let transform_spec = world::TypeId::new(3); // Transform
+        let material_spec = world::TypeId::new(4); // Material
 
         let tasks = vec![
             // Culling: read position + camera (should bundle with LOD)
             Task::new(
                 1,
-                world::AccessRequest::to_components(
-                    pos_spec.clone().merge(&camera_spec),
-                    component::Spec::EMPTY,
-                ),
+                world::AccessRequest::to_resources(&[camera_spec, pos_spec], &[]),
             ),
             // LOD: read position + camera (should bundle with culling)
             Task::new(
                 2,
-                world::AccessRequest::to_components(
-                    pos_spec.clone().merge(&camera_spec),
-                    component::Spec::EMPTY,
-                ),
+                world::AccessRequest::to_resources(&[camera_spec, pos_spec], &[]),
             ),
             // Animation: write transform (different components = parallel)
             Task::new(
                 3,
-                world::AccessRequest::to_components(component::Spec::EMPTY, transform_spec.clone()),
+                world::AccessRequest::to_resources(&[], &[transform_spec]),
             ),
             // Render prep: read transform + material (conflicts with animation write)
             Task::new(
                 4,
-                world::AccessRequest::to_components(
-                    transform_spec.clone().merge(&material_spec),
-                    component::Spec::EMPTY,
-                ),
+                world::AccessRequest::to_resources(&[transform_spec, material_spec], &[]),
             ),
         ];
         let planner = GraphColorPlanner::WELSH_POWELL;
@@ -957,27 +875,17 @@ mod tests {
     #[test]
     fn mixed_read_write_dependency_chain() {
         // Tests a dependency chain: A writes X, B reads X writes Y, C reads Y
-        let registry = component::Registry::new();
 
-        let comp1 = registry.spec::<Comp1>();
-        let comp2 = registry.spec::<Comp2>();
+        let comp1 = &[world::TypeId::new(1)];
+        let comp2 = &[world::TypeId::new(2)];
 
         let tasks = vec![
             // System A: writes Comp1
-            Task::new(
-                1,
-                world::AccessRequest::to_components(component::Spec::EMPTY, comp1.clone()),
-            ),
+            Task::new(1, world::AccessRequest::to_resources(&[], comp1)),
             // System B: reads Comp1, writes Comp2
-            Task::new(
-                2,
-                world::AccessRequest::to_components(comp1.clone(), comp2.clone()),
-            ),
+            Task::new(2, world::AccessRequest::to_resources(comp1, comp2)),
             // System C: reads Comp2
-            Task::new(
-                3,
-                world::AccessRequest::to_components(comp2.clone(), component::Spec::EMPTY),
-            ),
+            Task::new(3, world::AccessRequest::to_resources(comp2, &[])),
         ];
         let planner = GraphColorPlanner::WELSH_POWELL;
 
@@ -1007,43 +915,27 @@ mod tests {
     #[test]
     fn high_parallelism_workload() {
         // Tests a workload with many independent systems
-        let registry = component::Registry::new();
 
         let tasks = vec![
             Task::new(
                 1,
-                world::AccessRequest::to_components(
-                    component::Spec::EMPTY,
-                    registry.spec::<Comp1>(),
-                ),
+                world::AccessRequest::to_resources(&[], &[world::TypeId::new(1)]),
             ),
             Task::new(
                 2,
-                world::AccessRequest::to_components(
-                    component::Spec::EMPTY,
-                    registry.spec::<Comp2>(),
-                ),
+                world::AccessRequest::to_resources(&[], &[world::TypeId::new(2)]),
             ),
             Task::new(
                 3,
-                world::AccessRequest::to_components(
-                    component::Spec::EMPTY,
-                    registry.spec::<Comp3>(),
-                ),
+                world::AccessRequest::to_resources(&[], &[world::TypeId::new(3)]),
             ),
             Task::new(
                 4,
-                world::AccessRequest::to_components(
-                    component::Spec::EMPTY,
-                    registry.spec::<Comp4>(),
-                ),
+                world::AccessRequest::to_resources(&[], &[world::TypeId::new(4)]),
             ),
             Task::new(
                 5,
-                world::AccessRequest::to_components(
-                    component::Spec::EMPTY,
-                    registry.spec::<Comp5>(),
-                ),
+                world::AccessRequest::to_resources(&[], &[world::TypeId::new(5)]),
             ),
         ];
         let planner = GraphColorPlanner::WELSH_POWELL;
@@ -1067,9 +959,8 @@ mod tests {
     #[test]
     fn bundling_efficiency_test() {
         // Tests that bundling actually groups many systems with identical access
-        let registry = component::Registry::new();
         let access =
-            world::AccessRequest::to_components(registry.spec::<Comp1>(), registry.spec::<Comp2>());
+            world::AccessRequest::to_resources(&[world::TypeId::new(1)], &[world::TypeId::new(2)]);
 
         // Create 20 systems with identical access
         let tasks: Vec<Task> = (1..=20).map(|i| Task::new(i, access.clone())).collect();
@@ -1092,22 +983,15 @@ mod tests {
     #[test]
     fn sequential_planner_preserves_priority_order() {
         // Given
-        let registry = component::Registry::new();
         let tasks = vec![
             Task::new(
                 1,
-                world::AccessRequest::to_components(
-                    registry.spec::<Comp1>(),
-                    component::Spec::EMPTY,
-                ),
+                world::AccessRequest::to_resources(&[world::TypeId::new(1)], &[]),
             ),
             Task::new(2, world::AccessRequest::to_world(false)),
             Task::new(
                 3,
-                world::AccessRequest::to_components(
-                    component::Spec::EMPTY,
-                    registry.spec::<Comp2>(),
-                ),
+                world::AccessRequest::to_resources(&[], &[world::TypeId::new(2)]),
             ),
         ];
         let planner = SequentialPlanner;

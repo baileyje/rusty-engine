@@ -103,7 +103,11 @@ mod tests {
     use rusty_macros::Component;
     use std::hash::{DefaultHasher, Hash, Hasher};
 
-    use crate::ecs::{archetype::Registry, component, storage};
+    use crate::ecs::{
+        archetype::Registry,
+        component::{self, IntoSpec},
+        storage, world,
+    };
 
     #[test]
     fn test_component_ids() {
@@ -115,11 +119,11 @@ mod tests {
         pub struct Comp3 {}
         impl component::Component for Comp3 {}
 
-        let registry = component::Registry::new();
+        let registry = world::TypeRegistry::new();
 
         // When
-        let ids1 = registry.spec::<(Comp2, Comp1, Comp3)>();
-        let ids2 = registry.spec::<(Comp1, Comp2, Comp3)>();
+        let ids1 = <(Comp2, Comp1, Comp3)>::into_spec(&registry);
+        let ids2 = <(Comp1, Comp2, Comp3)>::into_spec(&registry);
 
         // Then
         assert_eq!(ids1, ids2);
@@ -133,7 +137,7 @@ mod tests {
     #[test]
     fn arch_registry_get_or_create_reuse() {
         // Given
-        let component_registry = component::Registry::new();
+        let component_registry = world::TypeRegistry::new();
         let mut registry = Registry::new();
 
         #[derive(Component)]
@@ -146,19 +150,19 @@ mod tests {
         // When
         let arch1 = registry
             .get_or_create(
-                component_registry.spec::<(Comp1, Comp2)>(),
+                <(Comp1, Comp2)>::into_spec(&component_registry),
                 storage::table::Id::new(0),
             )
             .id();
         let arch2 = registry
             .get_or_create(
-                component_registry.spec::<(Comp1, Comp3)>(),
+                <(Comp1, Comp3)>::into_spec(&component_registry),
                 storage::table::Id::new(1),
             )
             .id();
         let arch3 = registry
             .get_or_create(
-                component_registry.spec::<(Comp1, Comp2, Comp3)>(),
+                <(Comp1, Comp2, Comp3)>::into_spec(&component_registry),
                 storage::table::Id::new(2),
             )
             .id();
@@ -171,7 +175,7 @@ mod tests {
         // And When
         let arch4 = registry
             .get_or_create(
-                component_registry.spec::<(Comp1, Comp3)>(),
+                <(Comp1, Comp3)>::into_spec(&component_registry),
                 storage::table::Id::new(1),
             )
             .id();

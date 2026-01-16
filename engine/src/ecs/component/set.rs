@@ -1,11 +1,14 @@
 use crate::{
     all_tuples,
-    ecs::component::{Component, Id, IntoSpec, Registry},
+    ecs::{
+        component::{Component, IntoSpec},
+        world,
+    },
 };
 
 /// Trait describing a target that can have component values applied to it from a `Set`.
 pub trait Target {
-    fn apply<C: Component>(&mut self, id: Id, value: C);
+    fn apply<C: Component>(&mut self, id: world::TypeId, value: C);
 }
 
 /// A trait describing a set of component values owned by an entity.
@@ -16,18 +19,18 @@ pub trait Target {
 /// hand created.
 pub trait Set: IntoSpec + Sized + 'static {
     /// Apply the component values in this set to the given target. This takes ownership of self.
-    fn apply<T: Target>(self, registry: &Registry, target: &mut T);
+    fn apply<T: Target>(self, registry: &world::TypeRegistry, target: &mut T);
 }
 
 /// Implement Set for single component types.
 impl<C: Component> Set for C {
-    fn apply<T: Target>(self, registry: &Registry, target: &mut T) {
-        target.apply::<C>(registry.register::<C>(), self);
+    fn apply<T: Target>(self, registry: &world::TypeRegistry, target: &mut T) {
+        target.apply::<C>(registry.register_component::<C>(), self);
     }
 }
 
 impl Set for () {
-    fn apply<T: Target>(self, _registry: &Registry, _target: &mut T) {
+    fn apply<T: Target>(self, _registry: &world::TypeRegistry, _target: &mut T) {
         // No components to apply.
     }
 }
@@ -38,7 +41,7 @@ macro_rules! tuple_set {
         impl<$($name: Set),*> Set for ($($name,)*) {
 
             /// Apply each component in the tuple to the target.
-            fn apply<CT: Target>(self, registry: &Registry, target: &mut CT) {
+            fn apply<CT: Target>(self, registry: &world::TypeRegistry, target: &mut CT) {
                  #[allow(non_snake_case)]
                 let ( $($name,)* ) = self;
                  #[allow(non_snake_case)]
@@ -57,24 +60,27 @@ mod tests {
     use std::any::Any;
 
     #[cfg(test)]
-    use crate::ecs::component::Id;
     use crate::ecs::component::Spec;
+    use rusty_macros::Component;
 
     use super::*;
 
     struct MockTarget {
-        ids: Vec<Id>,
+        ids: Vec<world::TypeId>,
         vals: Vec<Box<dyn Any>>,
     }
 
     impl Target for MockTarget {
-        fn apply<C: Component>(&mut self, id: Id, value: C) {
+        fn apply<C: Component>(&mut self, id: world::TypeId, value: C) {
             self.ids.push(id);
             self.vals.push(Box::new(value));
         }
     }
 
-    fn test_set<S: Set>(set: S, registry: &mut Registry) -> (Spec, Vec<Id>, Vec<Box<dyn Any>>) {
+    fn test_set<S: Set>(
+        set: S,
+        registry: &mut world::TypeRegistry,
+    ) -> (Spec, Vec<world::TypeId>, Vec<Box<dyn Any>>) {
         let mut target = MockTarget {
             ids: Vec::new(),
             vals: Vec::new(),
@@ -82,18 +88,18 @@ mod tests {
 
         set.apply(registry, &mut target);
 
-        (registry.spec::<S>(), target.ids, target.vals)
+        (<S>::into_spec(registry), target.ids, target.vals)
     }
 
     #[test]
     fn test_single_component_set() {
         // Given
-        #[derive(Component, Debug, PartialEq)]
+        #[derive(rusty_macros::Component, Debug, PartialEq)]
         struct TestComponent {
             value: u32,
         }
 
-        let mut registry = Registry::new();
+        let mut registry = world::TypeRegistry::new();
 
         let comp = TestComponent { value: 42 };
 
@@ -101,10 +107,10 @@ mod tests {
         let (spec, ids, vals) = test_set(comp, &mut registry);
 
         // Then
-        assert_eq!(spec.ids(), &[Id(0)]);
+        assert_eq!(spec.ids(), &[world::TypeId::new(0)]);
 
         assert_eq!(ids.len(), 1);
-        assert_eq!(ids[0], Id(0));
+        assert_eq!(ids[0], world::TypeId::new(0));
 
         assert_eq!(vals.len(), 1);
         assert_eq!(
@@ -131,7 +137,7 @@ mod tests {
             value: u32,
         }
 
-        let mut registry = Registry::new();
+        let mut registry = world::TypeRegistry::new();
 
         let comp1 = Component1 { value: 42 };
         let comp2 = Component2 { value: 67 };
@@ -141,12 +147,19 @@ mod tests {
         let (spec, ids, vals) = test_set((comp1, comp2, comp3), &mut registry);
 
         // Then
-        assert_eq!(spec.ids(), &[Id(0), Id(1), Id(2)]);
+        assert_eq!(
+            spec.ids(),
+            &[
+                world::TypeId::new(0),
+                world::TypeId::new(1),
+                world::TypeId::new(2)
+            ]
+        );
 
         assert_eq!(ids.len(), 3);
-        assert_eq!(ids[0], Id(0));
-        assert_eq!(ids[1], Id(1));
-        assert_eq!(ids[2], Id(2));
+        assert_eq!(ids[0], world::TypeId::new(0));
+        assert_eq!(ids[1], world::TypeId::new(1));
+        assert_eq!(ids[2], world::TypeId::new(2));
 
         assert_eq!(vals.len(), 3);
         assert_eq!(
@@ -181,7 +194,7 @@ mod tests {
             value: u32,
         }
 
-        let mut registry = Registry::new();
+        let mut registry = world::TypeRegistry::new();
 
         let comp1 = Component1 { value: 42 };
         let comp2 = Component2 { value: 67 };
@@ -191,12 +204,19 @@ mod tests {
         let (spec, ids, vals) = test_set((comp1, (comp2, comp3)), &mut registry);
 
         // Then
-        assert_eq!(spec.ids(), &[Id(0), Id(1), Id(2)]);
+        assert_eq!(
+            spec.ids(),
+            &[
+                world::TypeId::new(0),
+                world::TypeId::new(1),
+                world::TypeId::new(2)
+            ]
+        );
 
         assert_eq!(ids.len(), 3);
-        assert_eq!(ids[0], Id(0));
-        assert_eq!(ids[1], Id(1));
-        assert_eq!(ids[2], Id(2));
+        assert_eq!(ids[0], world::TypeId::new(0));
+        assert_eq!(ids[1], world::TypeId::new(1));
+        assert_eq!(ids[2], world::TypeId::new(2));
 
         assert_eq!(vals.len(), 3);
         assert_eq!(

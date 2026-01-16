@@ -1,11 +1,14 @@
 use std::collections::HashMap;
 
-use crate::ecs::{entity, storage::row::Row};
+use crate::ecs::storage::row::Row;
 
-/// Trait for defining a sparse index mapping from sparse entity IDs to dense rows.
+pub trait SparseId {
+    fn index(&self) -> usize;
+}
+
+/// Trait for defining a sparse index mapping from sparse IDs to dense rows.
 ///
 /// This trait enables efficient lookup of dense storage locations for sparsely distributed identifiers.
-/// The primary use case is mapping entity IDs (which may have large gaps) to contiguous table row indices.
 ///
 /// # Example
 ///
@@ -24,25 +27,25 @@ use crate::ecs::{entity, storage::row::Row};
 /// ```
 #[allow(dead_code)]
 pub trait Index {
-    /// Insert a row for the given entity.
+    /// Insert a row for the given sparse ID.
     ///
-    /// If the sparse index already exists, the old value is replaced.
-    fn insert(&mut self, entity: entity::Entity, row: Row);
+    /// If the sparse ID already exists, the old value is replaced.
+    fn insert(&mut self, id: &dyn SparseId, row: Row);
 
-    /// Get the row for the given entity if it exists.
+    /// Get the row for the given sparse ID if it exists.
     ///
-    /// Returns `None` if the entity is not present.
-    fn get(&self, entity: entity::Entity) -> Option<Row>;
+    /// Returns `None` if the ID is not present.
+    fn get(&self, id: &dyn SparseId) -> Option<Row>;
 
-    /// Remove the row for the given entity.
+    /// Remove the row for the given Sparse ID.
     ///
     /// Returns the old row if it existed, or `None` if not present.
-    fn remove(&mut self, entity: entity::Entity) -> Option<Row>;
+    fn remove(&mut self, id: &dyn SparseId) -> Option<Row>;
 
-    /// Check if the index contains a mapping for the given sparse index.
+    /// Check if the index contains a mapping for the given sparse ID.
     #[inline]
-    fn contains(&self, entity: entity::Entity) -> bool {
-        self.get(entity).is_some()
+    fn contains(&self, id: &dyn SparseId) -> bool {
+        self.get(id).is_some()
     }
 }
 
@@ -160,8 +163,8 @@ impl DynamicIndex {
 
     /// Calculate block and within-block indices for a sparse index.
     #[inline]
-    fn indices(&self, entity: entity::Entity) -> (usize, usize) {
-        let entity_index = entity.index();
+    fn indices(&self, id: &dyn SparseId) -> (usize, usize) {
+        let entity_index = id.index();
         let block_index = entity_index / self.block_size;
         let within_block_index = entity_index % self.block_size;
         (block_index, within_block_index)
@@ -207,8 +210,8 @@ impl Default for DynamicIndex {
 }
 
 impl Index for DynamicIndex {
-    fn insert(&mut self, entity: entity::Entity, row: Row) {
-        let (block_index, within_block_index) = self.indices(entity);
+    fn insert(&mut self, id: &dyn SparseId, row: Row) {
+        let (block_index, within_block_index) = self.indices(id);
 
         // Ensure the maps vector has enough blocks
         if block_index >= self.maps.len() {
@@ -226,16 +229,16 @@ impl Index for DynamicIndex {
         }
     }
 
-    fn get(&self, entity: entity::Entity) -> Option<Row> {
-        let (block_index, within_block_index) = self.indices(entity);
+    fn get(&self, id: &dyn SparseId) -> Option<Row> {
+        let (block_index, within_block_index) = self.indices(id);
 
         // Check if the block exists and retrieve value
         let block = self.maps.get(block_index)?.as_ref()?;
         block[within_block_index]
     }
 
-    fn remove(&mut self, entity: entity::Entity) -> Option<Row> {
-        let (block_index, within_block_index) = self.indices(entity);
+    fn remove(&mut self, id: &dyn SparseId) -> Option<Row> {
+        let (block_index, within_block_index) = self.indices(id);
 
         // Check if the block exists and get mutable reference
         let block = self.maps.get_mut(block_index)?.as_mut()?;
@@ -276,7 +279,7 @@ impl Index for DynamicIndex {
 /// ```
 #[derive(Debug, Default)]
 pub struct HashIndex {
-    map: HashMap<entity::Entity, Row>,
+    map: HashMap<usize, Row>,
 }
 
 #[allow(dead_code)]
@@ -319,16 +322,16 @@ impl HashIndex {
 }
 
 impl Index for HashIndex {
-    fn insert(&mut self, entity: entity::Entity, row: Row) {
-        self.map.insert(entity, row);
+    fn insert(&mut self, id: &dyn SparseId, row: Row) {
+        self.map.insert(id.index(), row);
     }
 
-    fn get(&self, entity: entity::Entity) -> Option<Row> {
-        self.map.get(&entity).copied()
+    fn get(&self, id: &dyn SparseId) -> Option<Row> {
+        self.map.get(&id.index()).copied()
     }
 
-    fn remove(&mut self, entity: entity::Entity) -> Option<Row> {
-        self.map.remove(&entity)
+    fn remove(&mut self, id: &dyn SparseId) -> Option<Row> {
+        self.map.remove(&id.index())
     }
 }
 
@@ -358,17 +361,17 @@ mod tests {
         let entity9 = entity(9);
 
         // When
-        index.insert(entity0, 10.into());
-        index.insert(entity5, 40.into());
-        index.insert(entity9, 80.into());
+        index.insert(&entity0, 10.into());
+        index.insert(&entity5, 40.into());
+        index.insert(&entity9, 80.into());
 
         // Then
         assert_eq!(index.block_count(), 1);
-        assert_eq!(index.get(entity0), row(10));
-        assert_eq!(index.get(entity1), None);
-        assert_eq!(index.get(entity5), row(40));
-        assert_eq!(index.get(entity6), None);
-        assert_eq!(index.get(entity9), row(80));
+        assert_eq!(index.get(&entity0), row(10));
+        assert_eq!(index.get(&entity1), None);
+        assert_eq!(index.get(&entity5), row(40));
+        assert_eq!(index.get(&entity6), None);
+        assert_eq!(index.get(&entity9), row(80));
     }
 
     #[test]
@@ -380,9 +383,9 @@ mod tests {
         let entity9 = entity(9);
 
         // When
-        index.insert(entity0, 10.into());
-        index.insert(entity5, 30.into());
-        index.insert(entity9, 80.into());
+        index.insert(&entity0, 10.into());
+        index.insert(&entity5, 30.into());
+        index.insert(&entity9, 80.into());
 
         // Then - should grow to 3 blocks
         assert_eq!(index.block_count(), 3);
@@ -397,8 +400,8 @@ mod tests {
         let entity9 = entity(9);
 
         // When
-        index.insert(entity0, 10.into());
-        index.insert(entity9, 80.into());
+        index.insert(&entity0, 10.into());
+        index.insert(&entity9, 80.into());
 
         // Then - should grow to 3 blocks with the middle block being None
         assert_eq!(index.block_count(), 3);
@@ -414,21 +417,21 @@ mod tests {
         let entity1 = entity(1);
         let entity2 = entity(2);
         let entity3 = entity(3);
-        index.insert(entity0, 100.into());
-        index.insert(entity1, 200.into());
-        index.insert(entity2, 300.into());
+        index.insert(&entity0, 100.into());
+        index.insert(&entity1, 200.into());
+        index.insert(&entity2, 300.into());
 
         // When - remove existing
-        let removed = index.remove(entity1);
+        let removed = index.remove(&entity1);
 
         // Then
         assert_eq!(removed, row(200));
-        assert_eq!(index.get(entity1), None);
-        assert_eq!(index.get(entity0), row(100)); // Others unaffected
-        assert_eq!(index.get(entity2), row(300));
+        assert_eq!(index.get(&entity1), None);
+        assert_eq!(index.get(&entity0), row(100)); // Others unaffected
+        assert_eq!(index.get(&entity2), row(300));
 
         // When - remove non-existent
-        let removed = index.remove(entity3);
+        let removed = index.remove(&entity3);
 
         // Then
         assert_eq!(removed, None);
@@ -439,13 +442,13 @@ mod tests {
         // Given
         let mut index = DynamicIndex::new();
         let entity = entity(5);
-        index.insert(entity, 100.into());
+        index.insert(&entity, 100.into());
 
         // When - overwrite existing value
-        index.insert(entity, 200.into());
+        index.insert(&entity, 200.into());
 
         // Then
-        assert_eq!(index.get(entity), row(200));
+        assert_eq!(index.get(&entity), row(200));
     }
 
     #[test]
@@ -453,12 +456,12 @@ mod tests {
         // Given
         let mut index = DynamicIndex::new();
         let ent = entity(10);
-        index.insert(ent, 100.into());
+        index.insert(&ent, 100.into());
 
         // When/Then
-        assert!(index.contains(ent));
-        assert!(!index.contains(entity(11)));
-        assert!(!index.contains(entity(0)));
+        assert!(index.contains(&ent));
+        assert!(!index.contains(&entity(11)));
+        assert!(!index.contains(&entity(0)));
     }
 
     #[test]
@@ -467,17 +470,17 @@ mod tests {
         let mut index = DynamicIndex::new_with_block_size(256);
 
         // When - insert very sparse indices
-        index.insert(entity(0), 0.into());
-        index.insert(entity(1000), 1.into());
-        index.insert(entity(10000), 2.into());
-        index.insert(entity(100000), 3.into());
+        index.insert(&entity(0), 0.into());
+        index.insert(&entity(1000), 1.into());
+        index.insert(&entity(10000), 2.into());
+        index.insert(&entity(100000), 3.into());
 
         // Then
-        assert_eq!(index.get(entity(0)), row(0));
-        assert_eq!(index.get(entity(1000)), row(1));
-        assert_eq!(index.get(entity(10000)), row(2));
-        assert_eq!(index.get(entity(100000)), row(3));
-        assert_eq!(index.get(entity(500)), None);
+        assert_eq!(index.get(&entity(0)), row(0));
+        assert_eq!(index.get(&entity(1000)), row(1));
+        assert_eq!(index.get(&entity(10000)), row(2));
+        assert_eq!(index.get(&entity(100000)), row(3));
+        assert_eq!(index.get(&entity(500)), None);
 
         // Check memory allocation
         assert_eq!(index.block_count(), 391); // 100000 / 256 + 1
@@ -491,12 +494,12 @@ mod tests {
 
         // When - add 1000 sequential entities
         for i in 0..1000 {
-            index.insert(entity(i), Row::new(i as usize));
+            index.insert(&entity(i), Row::new(i as usize));
         }
 
         // Then - all retrievable
         for i in 0..1000 {
-            assert_eq!(index.get(entity(i)), row(i as usize));
+            assert_eq!(index.get(&entity(i)), row(i as usize));
         }
 
         // Should use minimal blocks (1000 / 256 = 4 blocks)
@@ -512,7 +515,7 @@ mod tests {
         for chunk in 0..5 {
             let base = chunk * 1000;
             for i in 0..100 {
-                index.insert(entity(base + i), Row::new((chunk * 100 + i) as usize));
+                index.insert(&entity(base + i), Row::new((chunk * 100 + i) as usize));
             }
         }
 
@@ -520,13 +523,16 @@ mod tests {
         for chunk in 0..5 {
             let base = chunk * 1000;
             for i in 0..100 {
-                assert_eq!(index.get(entity(base + i)), row((chunk * 100 + i) as usize));
+                assert_eq!(
+                    index.get(&entity(base + i)),
+                    row((chunk * 100 + i) as usize)
+                );
             }
         }
 
         // Verify gaps return None
-        assert_eq!(index.get(entity(500)), None);
-        assert_eq!(index.get(entity(1500)), None);
+        assert_eq!(index.get(&entity(500)), None);
+        assert_eq!(index.get(&entity(1500)), None);
     }
 
     #[test]
@@ -541,14 +547,14 @@ mod tests {
         assert_eq!(empty_usage, 0);
 
         // When - add one entry
-        index.insert(entity(0), 0.into());
+        index.insert(&entity(0), 0.into());
         let one_block_usage = index.memory_usage();
 
         // Then - should allocate one block
         assert!(one_block_usage > 0);
 
         // When - add sparse entry
-        index.insert(entity(10000), 1.into());
+        index.insert(&entity(10000), 1.into());
         let sparse_usage = index.memory_usage();
 
         // Then - should be larger but not proportional to gap
@@ -564,15 +570,15 @@ mod tests {
         let mut index = HashIndex::new();
 
         // When
-        index.insert(entity(0), 100.into());
-        index.insert(entity(1), 200.into());
-        index.insert(entity(1000), 300.into());
+        index.insert(&entity(0), 100.into());
+        index.insert(&entity(1), 200.into());
+        index.insert(&entity(1000), 300.into());
 
         // Then
-        assert_eq!(index.get(entity(0)), row(100));
-        assert_eq!(index.get(entity(1)), row(200));
-        assert_eq!(index.get(entity(1000)), row(300));
-        assert_eq!(index.get(entity(500)), None);
+        assert_eq!(index.get(&entity(0)), row(100));
+        assert_eq!(index.get(&entity(1)), row(200));
+        assert_eq!(index.get(&entity(1000)), row(300));
+        assert_eq!(index.get(&entity(500)), None);
         assert_eq!(index.len(), 3);
         assert!(!index.is_empty());
     }
@@ -581,16 +587,16 @@ mod tests {
     fn hash_index_remove() {
         // Given
         let mut index = HashIndex::new();
-        index.insert(entity(5), 500.into());
-        index.insert(entity(10), 1000.into());
+        index.insert(&entity(5), 500.into());
+        index.insert(&entity(10), 1000.into());
 
         // When
-        let removed = index.remove(entity(5));
+        let removed = index.remove(&entity(5));
 
         // Then
         assert_eq!(removed, row(500));
-        assert_eq!(index.get(entity(5)), None);
-        assert_eq!(index.get(entity(10)), row(1000));
+        assert_eq!(index.get(&entity(5)), None);
+        assert_eq!(index.get(&entity(10)), row(1000));
         assert_eq!(index.len(), 1);
     }
 
@@ -598,13 +604,13 @@ mod tests {
     fn hash_index_overwrite() {
         // Given
         let mut index = HashIndex::new();
-        index.insert(entity(42), 100.into());
+        index.insert(&entity(42), 100.into());
 
         // When
-        index.insert(entity(42), 200.into());
+        index.insert(&entity(42), 200.into());
 
         // Then
-        assert_eq!(index.get(entity(42)), row(200));
+        assert_eq!(index.get(&entity(42)), row(200));
         assert_eq!(index.len(), 1); // Still only one entry
     }
 
@@ -623,11 +629,11 @@ mod tests {
     fn hash_index_contains() {
         // Given
         let mut index = HashIndex::new();
-        index.insert(entity(7), 77.into());
+        index.insert(&entity(7), 77.into());
 
         // When/Then
-        assert!(index.contains(entity(7)));
-        assert!(!index.contains(entity(8)));
+        assert!(index.contains(&entity(7)));
+        assert!(!index.contains(&entity(8)));
     }
 
     #[test]
@@ -636,14 +642,14 @@ mod tests {
         let mut index = HashIndex::new();
 
         // When - extremely sparse indices
-        index.insert(entity(0), 0.into());
-        index.insert(entity(1000000), 1.into());
-        index.insert(entity(2000000), 2.into());
+        index.insert(&entity(0), 0.into());
+        index.insert(&entity(1000000), 1.into());
+        index.insert(&entity(2000000), 2.into());
 
         // Then - all work without wasted memory between
-        assert_eq!(index.get(entity(0)), row(0));
-        assert_eq!(index.get(entity(1000000)), row(1));
-        assert_eq!(index.get(entity(2000000)), row(2));
+        assert_eq!(index.get(&entity(0)), row(0));
+        assert_eq!(index.get(&entity(1000000)), row(1));
+        assert_eq!(index.get(&entity(2000000)), row(2));
         assert_eq!(index.len(), 3);
     }
 
@@ -656,14 +662,14 @@ mod tests {
         let mut hash: Box<dyn Index> = Box::new(HashIndex::new());
 
         // When
-        dynamic.insert(entity(10), 100.into());
-        hash.insert(entity(10), 100.into());
+        dynamic.insert(&entity(10), 100.into());
+        hash.insert(&entity(10), 100.into());
 
         // Then - both work through trait
-        assert_eq!(dynamic.get(entity(10)), row(100));
-        assert_eq!(hash.get(entity(10)), row(100));
-        assert!(dynamic.contains(entity(10)));
-        assert!(hash.contains(entity(10)));
+        assert_eq!(dynamic.get(&entity(10)), row(100));
+        assert_eq!(hash.get(&entity(10)), row(100));
+        assert!(dynamic.contains(&entity(10)));
+        assert!(hash.contains(&entity(10)));
     }
 
     #[test]
