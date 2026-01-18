@@ -29,7 +29,7 @@ impl DataSource for world::World {
     /// Gets the table IDs for the given component specification.
     #[inline]
     fn table_ids_for(&self, components: &component::Spec) -> Vec<storage::table::Id> {
-        self.storage().supporting(components)
+        self.archetypes().table_ids_for(components)
     }
 
     #[inline]
@@ -50,7 +50,7 @@ impl DataSource for world::Shard<'_> {
     /// Gets the table IDs for the given component specification.
     #[inline]
     fn table_ids_for(&self, components: &component::Spec) -> Vec<storage::table::Id> {
-        self.storage().supporting(components)
+        self.archetypes().table_ids_for(components)
     }
 
     #[inline]

@@ -432,7 +432,10 @@ mod tests {
     fn test_setup() -> (world::World, storage::Table) {
         let world = world::World::new(world::Id::new(0));
         let spec = <(Comp1, Comp2, Comp3)>::into_spec(world.resources());
-        let table = storage::Table::new(storage::table::Id::new(0), spec, world.resources());
+        let table = storage::Table::new(
+            storage::table::Id::new(0),
+            &world.resources().info_for_spec(&spec),
+        );
         (world, table)
     }
 

@@ -264,8 +264,6 @@
 //! - `table` - Multi-column table implementation
 //!
 
-use std::collections::HashMap;
-
 pub use location::Location;
 pub use row::Row;
 pub use table::Table;
@@ -273,7 +271,6 @@ pub use table::Table;
 use crate::ecs::{
     component,
     storage::{table::Id, unique::Uniques},
-    world,
 };
 
 pub(crate) mod cell;
@@ -291,9 +288,6 @@ pub struct Storage {
     /// The vec of know tables.
     tables: Vec<Table>,
 
-    /// A map from archetype to table.
-    table_map: HashMap<component::Spec, table::Id>,
-
     /// The unique resource storage for the world.
     uniques: Uniques,
 }
@@ -304,40 +298,18 @@ impl Storage {
     pub fn new() -> Self {
         Self {
             tables: Vec::new(),
-            table_map: HashMap::new(),
             uniques: Uniques::new(),
         }
     }
 
-    pub fn create(
-        &mut self,
-        components: component::Spec,
-        registry: &world::TypeRegistry,
-    ) -> &mut Table {
+    pub fn create_table(&mut self, components: &[component::Info]) -> &mut Table {
         // Grab the index the table will be stored at.
         let id = table::Id::new(self.tables.len() as u32);
-        // Add the table to the map (requires one clone for HashMap key)
-        self.table_map.insert(components.clone(), id);
+        let table = Table::new(id, components);
         // Create a new table from this archetype's components (moves components)
-        self.tables.push(Table::new(id, components, registry));
+        self.tables.push(table);
         // Return a mutable reference
         self.get_mut(id)
-    }
-
-    /// Get an existing table for the given component spec, or create a new one if it doesn't
-    /// exist.
-    ///
-    /// # Panics
-    ///  - if any component in the spec is not registered in the provided registry.
-    pub fn get_or_create_table(
-        &mut self,
-        components: component::Spec,
-        registry: &world::TypeRegistry,
-    ) -> &mut Table {
-        if let Some(id) = self.table_map.get(&components) {
-            return self.get_mut(*id);
-        }
-        self.create(components, registry)
     }
 
     /// Get an existing table by id, if it exists, otherwise panic.
@@ -362,20 +334,6 @@ impl Storage {
             "table id out of bounds"
         );
         &mut self.tables[table_id.index()]
-    }
-
-    /// Returns a list of table IDs that support all the provided components.
-    pub fn supporting(&self, components: &component::Spec) -> Vec<table::Id> {
-        self.tables
-            .iter()
-            .filter_map(|table| {
-                if table.components().contains_all(components) {
-                    Some(table.id())
-                } else {
-                    None
-                }
-            })
-            .collect()
     }
 
     /// Get access to the resources.
@@ -429,18 +387,16 @@ mod tests {
     fn storage_new_is_empty() {
         let storage = Storage::new();
         assert_eq!(storage.tables.len(), 0);
-        assert_eq!(storage.table_map.len(), 0);
     }
 
     #[test]
     fn storage_default_is_empty() {
         let storage = Storage::new();
         assert_eq!(storage.tables.len(), 0);
-        assert_eq!(storage.table_map.len(), 0);
     }
 
     #[test]
-    fn get_or_create_table_creates_new_table() {
+    fn create_table_creates_new_table() {
         // Given
         let mut storage = Storage::new();
         let registry = world::TypeRegistry::new();
@@ -448,56 +404,31 @@ mod tests {
         let spec = <Position>::into_spec(&registry);
 
         // When
-        let table = storage.get_or_create_table(spec.clone(), &registry);
+        let table = storage.create_table(&registry.info_for_spec(&spec));
         let table_len = table.len();
 
         // Then
         assert_eq!(storage.tables.len(), 1);
-        assert_eq!(storage.table_map.len(), 1);
-        assert!(storage.table_map.contains_key(&spec));
         assert_eq!(table_len, 0);
     }
 
     #[test]
-    fn get_or_create_table_returns_existing_table() {
-        // Given
-        let mut storage = Storage::new();
-        let registry = world::TypeRegistry::new();
-
-        let spec = <Position>::into_spec(&registry);
-
-        // Create the table once
-        let _ = storage.get_or_create_table(spec.clone(), &registry);
-
-        // When - get it again
-        let table = storage.get_or_create_table(spec, &registry);
-        let table_len = table.len();
-
-        // Then - should not create a new table
-        assert_eq!(storage.tables.len(), 1);
-        assert_eq!(storage.table_map.len(), 1);
-        assert_eq!(table_len, 0);
-    }
-
-    #[test]
-    fn get_or_create_table_creates_multiple_tables() {
+    fn create_table_creates_multiple_tables() {
         // Given
 
         let mut storage = Storage::new();
         let registry = world::TypeRegistry::new();
 
         let spec1 = <Position>::into_spec(&registry);
+
         let spec2 = <(Position, Velocity)>::into_spec(&registry);
 
         // When
-        let _ = storage.get_or_create_table(spec1.clone(), &registry);
-        let _ = storage.get_or_create_table(spec2.clone(), &registry);
+        let _ = storage.create_table(&registry.info_for_spec(&spec1));
+        let _ = storage.create_table(&registry.info_for_spec(&spec2));
 
         // Then
         assert_eq!(storage.tables.len(), 2);
-        assert_eq!(storage.table_map.len(), 2);
-        assert!(storage.table_map.contains_key(&spec1));
-        assert!(storage.table_map.contains_key(&spec2));
     }
 
     #[test]
@@ -517,7 +448,7 @@ mod tests {
         let mut storage = Storage::new();
         let registry = world::TypeRegistry::new();
         let spec = <Position>::into_spec(&registry);
-        let table_id = storage.get_or_create_table(spec, &registry).id();
+        let table_id = storage.create_table(&registry.info_for_spec(&spec)).id();
 
         // When
         let table = storage.get(table_id);
@@ -542,86 +473,12 @@ mod tests {
         let mut storage = Storage::new();
         let registry = world::TypeRegistry::new();
         let spec = <Position>::into_spec(&registry);
-        let table_id = storage.get_or_create_table(spec, &registry).id();
+        let table_id = storage.create_table(&registry.info_for_spec(&spec)).id();
 
         // When
         let table = storage.get_mut(table_id);
 
         // Then
         assert_eq!(table.len(), 0);
-    }
-
-    // #[test]
-    // fn storage_handles_different_archetypes_independently() {
-    //     // Given
-    //
-    //     let mut storage = Storage::new();
-    //     let registry = world::TypeRegistry::new();
-    //
-    //     let pos_id = registry.register::<Position>();
-    //     let vel_id = registry.register::<Velocity>();
-    //     let health_id = registry.register::<Health>();
-    //
-    //     // Create three different archetypes
-    //     let spec1 = component::Spec::new(vec![pos_id]);
-    //     let spec2 = component::Spec::new(vec![pos_id, vel_id]);
-    //     let spec3 = component::Spec::new(vec![pos_id, vel_id, health_id]);
-    //
-    //     let archetype1 = archetype(0, &spec1);
-    //     let archetype2 = archetype(1, &spec2);
-    //     let archetype3 = archetype(2, &spec3);
-    //
-    //     // When
-    //     let _ = storage
-    //         .get_or_create_table(&archetype1, &registry)
-    //         .id();
-    //     let _ = storage
-    //         .get_or_create_table(&archetype2, &registry)
-    //         .id();
-    //     let _ = storage
-    //         .get_or_create_table(&archetype3, &registry)
-    //         .id();
-    //
-    //     // Then - all three tables should exist independently
-    //     assert_eq!(storage.tables.len(), 3);
-    //     assert_eq!(storage.table_map.len(), 3);
-    //
-    //     assert!(storage.for_archetype(archetype1.id()).is_some());
-    //     assert!(storage.for_archetype(archetype2.id()).is_some());
-    //     assert!(storage.for_archetype(archetype3.id()).is_some());
-    // }
-    //
-    // #[test]
-    // fn for_archetype_mut_returns_none_for_nonexistent_archetype() {
-    //     // Given
-    //     let mut storage = Storage::new();
-    //     let registry = world::TypeRegistry::new();
-    //
-    //     let pos_id = registry.register::<Position>();
-    //
-    //     // Create three different archetypes
-    //     let spec = component::Spec::new(vec![pos_id]);
-    //
-    //     let archetype = archetype(0, &spec);
-    //
-    //     // Then
-    //     assert!(storage.for_archetype_mut(archetype.id()).is_none());
-    // }
-
-    #[test]
-    fn get_or_create_table_idempotent() {
-        // Given
-        let mut storage = Storage::new();
-        let registry = world::TypeRegistry::new();
-        let spec = <Position>::into_spec(&registry);
-
-        // When - call multiple times
-        let _ = storage.get_or_create_table(spec.clone(), &registry);
-        let _ = storage.get_or_create_table(spec.clone(), &registry);
-        let _ = storage.get_or_create_table(spec.clone(), &registry);
-
-        // Then - should still only have one table
-        assert_eq!(storage.tables.len(), 1);
-        assert_eq!(storage.table_map.len(), 1);
     }
 }

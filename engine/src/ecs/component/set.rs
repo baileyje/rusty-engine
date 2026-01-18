@@ -1,14 +1,11 @@
 use crate::{
     all_tuples,
-    ecs::{
-        component::{Component, IntoSpec},
-        world,
-    },
+    ecs::component::{Component, IntoSpec},
 };
 
 /// Trait describing a target that can have component values applied to it from a `Set`.
 pub trait Target {
-    fn apply<C: Component>(&mut self, id: world::TypeId, value: C);
+    fn apply<C: Component>(&mut self, value: C);
 }
 
 /// A trait describing a set of component values owned by an entity.
@@ -19,18 +16,18 @@ pub trait Target {
 /// hand created.
 pub trait Set: IntoSpec + Sized + 'static {
     /// Apply the component values in this set to the given target. This takes ownership of self.
-    fn apply<T: Target>(self, registry: &world::TypeRegistry, target: &mut T);
+    fn apply<T: Target>(self, target: &mut T);
 }
 
 /// Implement Set for single component types.
 impl<C: Component> Set for C {
-    fn apply<T: Target>(self, registry: &world::TypeRegistry, target: &mut T) {
-        target.apply::<C>(registry.register_component::<C>(), self);
+    fn apply<T: Target>(self, target: &mut T) {
+        target.apply::<C>(self);
     }
 }
 
 impl Set for () {
-    fn apply<T: Target>(self, _registry: &world::TypeRegistry, _target: &mut T) {
+    fn apply<T: Target>(self, _target: &mut T) {
         // No components to apply.
     }
 }
@@ -41,11 +38,11 @@ macro_rules! tuple_set {
         impl<$($name: Set),*> Set for ($($name,)*) {
 
             /// Apply each component in the tuple to the target.
-            fn apply<CT: Target>(self, registry: &world::TypeRegistry, target: &mut CT) {
+            fn apply<CT: Target>(self,  target: &mut CT) {
                  #[allow(non_snake_case)]
                 let ( $($name,)* ) = self;
                  #[allow(non_snake_case)]
-                $(<$name as Set>::apply($name, registry, target);)*
+                $(<$name as Set>::apply($name, target);)*
             }
         }
     }
@@ -57,22 +54,38 @@ all_tuples!(tuple_set);
 #[cfg(test)]
 mod tests {
 
-    use std::any::Any;
+    use std::any::{Any, TypeId};
 
     #[cfg(test)]
     use crate::ecs::component::Spec;
+    use crate::ecs::world;
     use rusty_macros::Component;
 
     use super::*;
 
+    #[derive(Component, Debug, PartialEq)]
+    struct Component1 {
+        value: u32,
+    }
+
+    #[derive(Component, Debug, PartialEq)]
+    struct Component2 {
+        value: u32,
+    }
+
+    #[derive(Component, Debug, PartialEq)]
+    struct Component3 {
+        value: u32,
+    }
+
     struct MockTarget {
-        ids: Vec<world::TypeId>,
+        ids: Vec<TypeId>,
         vals: Vec<Box<dyn Any>>,
     }
 
     impl Target for MockTarget {
-        fn apply<C: Component>(&mut self, id: world::TypeId, value: C) {
-            self.ids.push(id);
+        fn apply<C: Component>(&mut self, value: C) {
+            self.ids.push(TypeId::of::<C>());
             self.vals.push(Box::new(value));
         }
     }
@@ -80,13 +93,13 @@ mod tests {
     fn test_set<S: Set>(
         set: S,
         registry: &mut world::TypeRegistry,
-    ) -> (Spec, Vec<world::TypeId>, Vec<Box<dyn Any>>) {
+    ) -> (Spec, Vec<TypeId>, Vec<Box<dyn Any>>) {
         let mut target = MockTarget {
             ids: Vec::new(),
             vals: Vec::new(),
         };
 
-        set.apply(registry, &mut target);
+        set.apply(&mut target);
 
         (<S>::into_spec(registry), target.ids, target.vals)
     }
@@ -94,14 +107,9 @@ mod tests {
     #[test]
     fn test_single_component_set() {
         // Given
-        #[derive(rusty_macros::Component, Debug, PartialEq)]
-        struct TestComponent {
-            value: u32,
-        }
-
         let mut registry = world::TypeRegistry::new();
 
-        let comp = TestComponent { value: 42 };
+        let comp = Component1 { value: 42 };
 
         // When
         let (spec, ids, vals) = test_set(comp, &mut registry);
@@ -110,33 +118,18 @@ mod tests {
         assert_eq!(spec.ids(), &[world::TypeId::new(0)]);
 
         assert_eq!(ids.len(), 1);
-        assert_eq!(ids[0], world::TypeId::new(0));
+        assert_eq!(ids[0], TypeId::of::<Component1>());
 
         assert_eq!(vals.len(), 1);
         assert_eq!(
-            vals[0].downcast_ref::<TestComponent>(),
-            Some(&TestComponent { value: 42 })
+            vals[0].downcast_ref::<Component1>(),
+            Some(&Component1 { value: 42 })
         );
     }
 
     #[test]
     fn test_tuple_component_set() {
         // Given
-        #[derive(Component, Debug, PartialEq)]
-        struct Component1 {
-            value: u32,
-        }
-
-        #[derive(Component, Debug, PartialEq)]
-        struct Component2 {
-            value: u32,
-        }
-
-        #[derive(Component, Debug, PartialEq)]
-        struct Component3 {
-            value: u32,
-        }
-
         let mut registry = world::TypeRegistry::new();
 
         let comp1 = Component1 { value: 42 };
@@ -157,9 +150,9 @@ mod tests {
         );
 
         assert_eq!(ids.len(), 3);
-        assert_eq!(ids[0], world::TypeId::new(0));
-        assert_eq!(ids[1], world::TypeId::new(1));
-        assert_eq!(ids[2], world::TypeId::new(2));
+        assert_eq!(ids[0], TypeId::of::<Component1>());
+        assert_eq!(ids[1], TypeId::of::<Component2>());
+        assert_eq!(ids[2], TypeId::of::<Component3>());
 
         assert_eq!(vals.len(), 3);
         assert_eq!(
@@ -179,20 +172,6 @@ mod tests {
     #[test]
     fn test_nested_tuple_component_set() {
         // Given
-        #[derive(Component, Debug, PartialEq)]
-        struct Component1 {
-            value: u32,
-        }
-
-        #[derive(Component, Debug, PartialEq)]
-        struct Component2 {
-            value: u32,
-        }
-
-        #[derive(Component, Debug, PartialEq)]
-        struct Component3 {
-            value: u32,
-        }
 
         let mut registry = world::TypeRegistry::new();
 
@@ -214,9 +193,9 @@ mod tests {
         );
 
         assert_eq!(ids.len(), 3);
-        assert_eq!(ids[0], world::TypeId::new(0));
-        assert_eq!(ids[1], world::TypeId::new(1));
-        assert_eq!(ids[2], world::TypeId::new(2));
+        assert_eq!(ids[0], TypeId::of::<Component1>());
+        assert_eq!(ids[1], TypeId::of::<Component2>());
+        assert_eq!(ids[2], TypeId::of::<Component3>());
 
         assert_eq!(vals.len(), 3);
         assert_eq!(

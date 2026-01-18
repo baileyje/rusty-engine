@@ -11,7 +11,6 @@ use crate::ecs::{
         mem::IndexedMemory,
         row::Row,
     },
-    world,
 };
 
 /// A type-erased, contiguous storage for uniform-sized elements.
@@ -77,13 +76,13 @@ pub struct Column {
     len: usize,
 
     /// Info about the column item (size, align and drop).
-    info: world::TypeInfo,
+    info: component::Info,
 }
 
 impl Column {
     /// Create a new empty column with the given component Info.
     #[inline]
-    pub fn new(info: world::TypeInfo) -> Self {
+    pub fn new(info: component::Info) -> Self {
         Self {
             data: IndexedMemory::new(info.layout(), super::mem::GrowthStrategy::Multiply(2)),
             len: 0,
@@ -261,7 +260,7 @@ impl Column {
 
     /// Get the column info.
     #[inline]
-    pub fn info(&self) -> &world::TypeInfo {
+    pub fn info(&self) -> &component::Info {
         &self.info
     }
 
@@ -453,6 +452,8 @@ impl Drop for Column {
 #[cfg(test)]
 mod tests {
     use rusty_macros::Component;
+
+    use crate::ecs::world;
 
     use super::*;
 

@@ -1,8 +1,4 @@
-use crate::ecs::{
-    component::{self, Component},
-    entity::Entity,
-    storage,
-};
+use crate::ecs::{component, entity::Entity, storage};
 
 /// A reference to an entity with read-only access to its components.
 /// The lifetime `'w` ensures that the reference does not outlive the storage and archetype it
@@ -25,7 +21,7 @@ impl<'w> Ref<'w> {
 
     /// Get a reference to a component on this entity.
     /// Returns `None` if the component is not registered or not present on the entity.
-    pub fn get<C: Component>(&self) -> Option<&C> {
+    pub fn get<C: component::Component>(&self) -> Option<&C> {
         unsafe { self.table.get(self.row) }
     }
 
@@ -33,12 +29,6 @@ impl<'w> Ref<'w> {
     #[inline]
     pub fn entity(&self) -> Entity {
         self.entity
-    }
-
-    /// Get the component specification for the referenced entity.
-    #[inline]
-    pub fn components(&self) -> &component::Spec {
-        self.table.components()
     }
 }
 
@@ -67,13 +57,13 @@ impl<'w> RefMut<'w> {
 
     /// Get a reference to a component on this entity.
     /// Returns `None` if the component is not registered or not present on the entity.
-    pub fn get<C: Component>(&self) -> Option<&C> {
+    pub fn get<C: component::Component>(&self) -> Option<&C> {
         unsafe { self.table.get(self.row) }
     }
 
     /// Get a mutable reference to a component on this entity.
     /// Returns `None` if the component is not registered or not present on the entity.
-    pub fn get_mut<C: Component>(&mut self) -> Option<&mut C> {
+    pub fn get_mut<C: component::Component>(&mut self) -> Option<&mut C> {
         unsafe { self.table.get_mut(self.row) }
     }
 
@@ -81,12 +71,6 @@ impl<'w> RefMut<'w> {
     #[inline]
     pub fn entity(&self) -> Entity {
         self.entity
-    }
-
-    /// Get the component specification for the referenced entity.
-    #[inline]
-    pub fn components(&self) -> &component::Spec {
-        self.table.components()
     }
 }
 
@@ -124,7 +108,7 @@ mod tests {
         let registry = world::TypeRegistry::new();
 
         let spec = <(Position, Velocity)>::into_spec(&registry);
-        let mut table = Table::new(table::Id::new(0), spec, &registry);
+        let mut table = Table::new(table::Id::new(0), &registry.info_for_spec(&spec));
 
         let mut allocator = entity::Allocator::new();
         let entity = allocator.alloc();
@@ -149,7 +133,7 @@ mod tests {
         let registry = world::TypeRegistry::new();
 
         let spec = <Position>::into_spec(&registry);
-        let mut table = Table::new(table::Id::new(0), spec, &registry);
+        let mut table = Table::new(table::Id::new(0), &registry.info_for_spec(&spec));
 
         let mut allocator = entity::Allocator::new();
         let entity = allocator.alloc();
@@ -172,7 +156,7 @@ mod tests {
         // Note: Health is NOT registered
 
         let spec = <Position>::into_spec(&registry);
-        let mut table = Table::new(table::Id::new(0), spec, &registry);
+        let mut table = Table::new(table::Id::new(0), &registry.info_for_spec(&spec));
 
         let mut allocator = entity::Allocator::new();
         let entity = allocator.alloc();
@@ -194,7 +178,7 @@ mod tests {
         let registry = world::TypeRegistry::new();
         let spec = <(Position, Velocity, Health)>::into_spec(&registry);
 
-        let mut table = Table::new(table::Id::new(0), spec, &registry);
+        let mut table = Table::new(table::Id::new(0), &registry.info_for_spec(&spec));
 
         let mut allocator = entity::Allocator::new();
         let entity = allocator.alloc();
@@ -224,7 +208,7 @@ mod tests {
         let registry = world::TypeRegistry::new();
 
         let spec = <Position>::into_spec(&registry);
-        let mut table = Table::new(table::Id::new(0), spec, &registry);
+        let mut table = Table::new(table::Id::new(0), &registry.info_for_spec(&spec));
 
         let mut allocator = entity::Allocator::new();
         let entity1 = allocator.alloc();
@@ -247,7 +231,7 @@ mod tests {
         let registry = world::TypeRegistry::new();
 
         let spec = <(Position, Velocity)>::into_spec(&registry);
-        let mut table = Table::new(table::Id::new(0), spec, &registry);
+        let mut table = Table::new(table::Id::new(0), &registry.info_for_spec(&spec));
 
         let mut allocator = entity::Allocator::new();
         let entity = allocator.alloc();
@@ -272,7 +256,7 @@ mod tests {
         let registry = world::TypeRegistry::new();
 
         let spec = <Position>::into_spec(&registry);
-        let mut table = Table::new(table::Id::new(0), spec, &registry);
+        let mut table = Table::new(table::Id::new(0), &registry.info_for_spec(&spec));
 
         let mut allocator = entity::Allocator::new();
         let entity = allocator.alloc();
@@ -294,7 +278,7 @@ mod tests {
         let registry = world::TypeRegistry::new();
 
         let spec = <(Position, Velocity)>::into_spec(&registry);
-        let mut table = Table::new(table::Id::new(0), spec, &registry);
+        let mut table = Table::new(table::Id::new(0), &registry.info_for_spec(&spec));
 
         let mut allocator = entity::Allocator::new();
         let entity = allocator.alloc();

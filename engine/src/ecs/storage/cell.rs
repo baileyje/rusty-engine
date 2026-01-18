@@ -5,8 +5,6 @@ use std::{
 };
 
 use crate::ecs::component::{self};
-#[cfg(debug_assertions)]
-use crate::ecs::world;
 
 /// A cell holds a component value for a specific table row/column intersection.
 /// This is the primary access pattern for reading component data from tables.
@@ -35,7 +33,7 @@ pub struct Cell<'a> {
 
     // The info about the expected component type for this cell.
     #[cfg(debug_assertions)]
-    info: &'a world::TypeInfo,
+    info: &'a component::Info,
 
     // Ensure 'a is used even when debug_assertions is off
     #[cfg(not(debug_assertions))]
@@ -44,7 +42,7 @@ pub struct Cell<'a> {
 
 impl<'a> Cell<'a> {
     /// Construct a new cell from an existing NonNull pointer.
-    pub fn new(inner: NonNull<u8>, #[allow(unused_variables)] info: &'a world::TypeInfo) -> Self {
+    pub fn new(inner: NonNull<u8>, #[allow(unused_variables)] info: &'a component::Info) -> Self {
         Self {
             ptr: inner,
             #[cfg(debug_assertions)]
@@ -125,7 +123,7 @@ pub struct CellMut<'a> {
 
     // The info about the expected component type for this cell.
     #[cfg(debug_assertions)]
-    info: &'a world::TypeInfo,
+    info: &'a component::Info,
 
     // Ensure 'a is used even when debug_assertions is off
     #[cfg(not(debug_assertions))]
@@ -134,7 +132,7 @@ pub struct CellMut<'a> {
 
 impl<'a> CellMut<'a> {
     /// Construct a new cell from an existing NonNull pointer.
-    pub fn new(inner: NonNull<u8>, #[allow(unused_variables)] info: &'a world::TypeInfo) -> Self {
+    pub fn new(inner: NonNull<u8>, #[allow(unused_variables)] info: &'a component::Info) -> Self {
         Self {
             ptr: inner,
             #[cfg(debug_assertions)]
@@ -224,7 +222,7 @@ impl<'a> CellMut<'a> {
 
 /// Ensure the type `C` is valid for this column.
 #[cfg(debug_assertions)]
-pub fn ensure_type<C: component::Component>(info: &world::TypeInfo) {
+pub fn ensure_type<C: component::Component>(info: &component::Info) {
     debug_assert!(
         TypeId::of::<C>() == info.type_id(),
         "Type mismatch: attempted to use type {} with column storing components {:?}",

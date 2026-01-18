@@ -45,6 +45,8 @@ impl Spec {
         self.ids.binary_search(&id).is_ok()
     }
 
+    // TODO: Use set operations for better performance? How big are specs typically?
+
     /// Determine if this specification contains all component IDs in the other specification.
     #[inline]
     pub fn contains_all(&self, other: &Spec) -> bool {
@@ -166,6 +168,27 @@ mod tests {
 
         // Then
         assert_eq!(spec.ids(), &[id1, id2, id3]);
+    }
+
+    #[test]
+    fn test_component_hash() {
+        // Given
+        let registry = world::TypeRegistry::new();
+        let id1 = registry.register_component::<Comp1>();
+        let id2 = registry.register_component::<Comp2>();
+        let id3 = registry.register_component::<Comp3>();
+
+        // When
+        let spec1 = Spec::new(vec![id2, id1, id3]);
+        let spec2 = Spec::new(vec![id1, id2, id3]);
+
+        // Then
+        assert_eq!(spec1, spec2);
+        let mut hasher1 = DefaultHasher::new();
+        spec1.hash(&mut hasher1);
+        let mut hasher2 = DefaultHasher::new();
+        spec2.hash(&mut hasher2);
+        assert_eq!(hasher1.finish(), hasher2.finish());
     }
 
     #[test]

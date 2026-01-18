@@ -43,7 +43,7 @@ use std::{
 
 use dashmap::DashMap;
 
-use crate::ecs::storage::index::SparseId;
+use crate::ecs::{component, unique};
 
 /// The kind of type registration.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -95,12 +95,6 @@ impl From<usize> for TypeId {
     #[inline]
     fn from(value: usize) -> Self {
         Self::new(value as u32)
-    }
-}
-
-impl SparseId for TypeId {
-    fn index(&self) -> usize {
-        self.0 as usize
     }
 }
 
@@ -236,8 +230,8 @@ impl TypeRegistry {
     /// If the type is already registered as a component, returns the existing ID.
     ///
     /// Panics if the type is already registered as a unique.
-    pub fn register_component<T: 'static>(&self) -> TypeId {
-        self.register::<T>(TypeKind::Component)
+    pub fn register_component<C: component::Component>(&self) -> TypeId {
+        self.register::<C>(TypeKind::Component)
     }
 
     /// Register a type as a unique.
@@ -247,8 +241,8 @@ impl TypeRegistry {
     /// If the type is already registered as a unique, returns the existing ID.
     ///
     /// Panics if the type is already registered as a component.
-    pub fn register_unique<T: 'static>(&self) -> TypeId {
-        self.register::<T>(TypeKind::Unique)
+    pub fn register_unique<U: unique::Unique>(&self) -> TypeId {
+        self.register::<U>(TypeKind::Unique)
     }
 
     /// Internal registration logic.
@@ -330,16 +324,16 @@ impl TypeRegistry {
     ///
     /// Returns `None` if not registered or registered as a unique.
     #[inline]
-    pub fn get_component<T: 'static>(&self) -> Option<TypeId> {
-        self.get_if_kind::<T>(TypeKind::Component)
+    pub fn get_component<C: component::Component>(&self) -> Option<TypeId> {
+        self.get_if_kind::<C>(TypeKind::Component)
     }
 
     /// Get the ID for a type if registered as a unique.
     ///
     /// Returns `None` if not registered or registered as a component.
     #[inline]
-    pub fn get_unique<T: 'static>(&self) -> Option<TypeId> {
-        self.get_if_kind::<T>(TypeKind::Unique)
+    pub fn get_unique<U: unique::Unique>(&self) -> Option<TypeId> {
+        self.get_if_kind::<U>(TypeKind::Unique)
     }
 
     /// Get the ID for a type if it matches the specified kind.
@@ -384,14 +378,26 @@ impl TypeRegistry {
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
+
+    /// Get the type info for all types in the given component specification.
+    #[inline]
+    pub fn info_for_spec(&self, spec: &component::Spec) -> Vec<TypeInfo> {
+        spec.ids()
+            .iter()
+            .filter_map(|id| self.get_info(*id))
+            .collect()
+    }
 }
 
 #[cfg(test)]
 mod tests {
+    use rusty_macros::{Component, Unique};
+
     use super::*;
     use std::sync::Arc;
     use std::thread;
 
+    #[derive(Component, Unique)] // for testing dual-use prevention
     struct Position {
         #[allow(dead_code)]
         x: f32,
@@ -399,6 +405,7 @@ mod tests {
         y: f32,
     }
 
+    #[derive(Component)]
     struct Velocity {
         #[allow(dead_code)]
         dx: f32,
@@ -406,6 +413,7 @@ mod tests {
         dy: f32,
     }
 
+    #[derive(Unique, Component)] // For testing dual-use prevention
     struct GameTime {
         #[allow(dead_code)]
         elapsed: f32,
@@ -629,6 +637,7 @@ mod tests {
 
         static DROP_CALLED: AtomicBool = AtomicBool::new(false);
 
+        #[derive(Component)]
         struct DropTracker;
 
         impl Drop for DropTracker {

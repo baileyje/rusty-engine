@@ -551,7 +551,7 @@ all_tuples!(tuple_view);
 mod tests {
     use rusty_macros::Component;
 
-    use crate::ecs::{component::IntoSpec, entity, storage::Table, world};
+    use crate::ecs::{entity, storage::Table, world};
 
     use super::*;
 
@@ -574,9 +574,18 @@ mod tests {
 
     fn setup_table() -> (Table, world::TypeRegistry, entity::Allocator) {
         let registry = world::TypeRegistry::new();
+        registry.register_component::<Position>();
+        registry.register_component::<Velocity>();
+        registry.register_component::<Health>();
 
-        let spec = <(Position, Velocity, Health)>::into_spec(&registry);
-        let table = Table::new(super::super::table::Id::new(0), spec, &registry);
+        let table = Table::new(
+            super::super::table::Id::new(0),
+            &[
+                registry.get_info_of::<Position>().unwrap(),
+                registry.get_info_of::<Velocity>().unwrap(),
+                registry.get_info_of::<Health>().unwrap(),
+            ],
+        );
         let allocator = entity::Allocator::new();
 
         (table, registry, allocator)
@@ -885,8 +894,20 @@ mod tests {
         #[derive(Component, Debug, PartialEq)]
         struct Comp4(u32);
 
-        let spec = <(Comp1, Comp2, Comp3, Comp4)>::into_spec(&registry);
-        let mut table = Table::new(super::super::table::Id::new(0), spec, &registry);
+        registry.register_component::<Comp1>();
+        registry.register_component::<Comp2>();
+        registry.register_component::<Comp3>();
+        registry.register_component::<Comp4>();
+
+        let mut table = Table::new(
+            super::super::table::Id::new(0),
+            &[
+                registry.get_info_of::<Comp1>().unwrap(),
+                registry.get_info_of::<Comp2>().unwrap(),
+                registry.get_info_of::<Comp3>().unwrap(),
+                registry.get_info_of::<Comp4>().unwrap(),
+            ],
+        );
 
         let mut allocator = entity::Allocator::new();
         let entity = allocator.alloc();
@@ -920,8 +941,20 @@ mod tests {
         #[derive(Component, Debug, PartialEq)]
         struct Comp4(u32);
 
-        let spec = <(Comp1, Comp2, Comp3, Comp4)>::into_spec(&registry);
-        let mut table = Table::new(super::super::table::Id::new(0), spec, &registry);
+        registry.register_component::<Comp1>();
+        registry.register_component::<Comp2>();
+        registry.register_component::<Comp3>();
+        registry.register_component::<Comp4>();
+
+        let mut table = Table::new(
+            super::super::table::Id::new(0),
+            &[
+                registry.get_info_of::<Comp1>().unwrap(),
+                registry.get_info_of::<Comp2>().unwrap(),
+                registry.get_info_of::<Comp3>().unwrap(),
+                registry.get_info_of::<Comp4>().unwrap(),
+            ],
+        );
 
         let mut allocator = entity::Allocator::new();
         let entity = allocator.alloc();

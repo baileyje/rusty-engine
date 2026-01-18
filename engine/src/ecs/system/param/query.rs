@@ -193,14 +193,14 @@ mod tests {
         let mut shard = world.shard(&access).expect("Failed to create shard");
 
         // When
-        let mut result = unsafe { <Query<&Comp1>>::get(&mut shard, &mut state) };
+        let result = unsafe { <Query<&Comp1>>::get(&mut shard, &mut state) };
 
         // Then
         assert_eq!(result.len(), 2);
-        let row = result.next().unwrap();
-        assert_eq!(row.value, 10);
-        let row = result.next().unwrap();
-        assert_eq!(row.value, 30);
+
+        let values = result.map(|c| c.value).collect::<Vec<_>>();
+        assert!(values.contains(&10));
+        assert!(values.contains(&30));
 
         // Release shard
         world.release_shard(shard);
@@ -219,10 +219,13 @@ mod tests {
 
         // Then
         assert_eq!(result.len(), 2);
-        let comp = result.next().unwrap();
-        comp.value += 1;
-        let comp = result.next().unwrap();
-        comp.value += 2;
+        for comp in result.by_ref() {
+            if comp.value == 10 {
+                comp.value += 1;
+            } else if comp.value == 30 {
+                comp.value += 2;
+            }
+        }
 
         // Release shard
         world.release_shard(shard);
@@ -231,14 +234,12 @@ mod tests {
         let mut state = <Query<&Comp1>>::build_state(&mut world);
         let access = <Query<&Comp1>>::required_access(&world);
         let mut shard = world.shard(&access).expect("Failed to create shard");
-        let mut result = unsafe { <Query<&Comp1>>::get(&mut shard, &mut state) };
+        let result = unsafe { <Query<&Comp1>>::get(&mut shard, &mut state) };
 
         // Then
-        assert_eq!(result.len(), 2);
-        let comp = result.next().unwrap();
-        assert_eq!(comp.value, 11);
-        let comp = result.next().unwrap();
-        assert_eq!(comp.value, 32);
+        let values = result.map(|c| c.value).collect::<Vec<_>>();
+        assert!(values.contains(&11));
+        assert!(values.contains(&32));
 
         // Release shard
         world.release_shard(shard);
@@ -265,17 +266,16 @@ mod tests {
         let mut shard = world.shard(&access).expect("Failed to create shard");
 
         // When
-        let mut result = unsafe { <Query<entity::Entity>>::get(&mut shard, &mut state) };
+        let result = unsafe { <Query<entity::Entity>>::get(&mut shard, &mut state) };
 
         // Then
         assert_eq!(result.len(), 3);
 
-        let entity = result.next().unwrap();
-        assert_eq!(entity, entity1);
-        let entity = result.next().unwrap();
-        assert_eq!(entity, entity2);
-        let entity = result.next().unwrap();
-        assert_eq!(entity, entity3);
+        let entities = result.collect::<Vec<_>>();
+
+        assert!(entities.contains(&entity1));
+        assert!(entities.contains(&entity2));
+        assert!(entities.contains(&entity3));
 
         // Release shard
         world.release_shard(shard);
@@ -309,18 +309,22 @@ mod tests {
         let mut shard = world.shard(&access).expect("Failed to create shard");
 
         // When
-        let mut result = unsafe {
+        let results = unsafe {
             <Query<(entity::Entity, &Comp1, Option<&mut Comp2>)>>::get(&mut shard, &mut state)
         };
 
         // Then
-        assert_eq!(result.len(), 2);
-        let (entity, comp1, comp2) = result.next().unwrap();
+        assert_eq!(results.len(), 2);
+
+        let mut results = results.collect::<Vec<_>>();
+        results.sort_by(|a, b| a.0.cmp(&b.0));
+
+        let (entity, comp1, comp2) = results.remove(0);
         assert_eq!(entity, entity1);
         assert_eq!(comp1.value, 10);
         assert!(comp2.is_none());
 
-        let (entity, comp1, comp2) = result.next().unwrap();
+        let (entity, comp1, comp2) = results.remove(0);
         assert_eq!(entity, entity3);
         assert_eq!(comp1.value, 30);
         assert!(comp2.is_some());

@@ -42,6 +42,8 @@ mod spec;
 pub(crate) use set::{Set, Target as SetTarget};
 pub use spec::{IntoSpec, Spec};
 
+use crate::ecs::world;
+
 /// A component identifier. This is a non-zero unique identifier for a component type in the ECS.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Id(u32);
@@ -80,3 +82,6 @@ impl From<usize> for Id {
 ///
 /// Eventually this may be expanded to include common functionality for components.
 pub trait Component: 'static + Sized + Send + Sync {}
+
+/// Export convenience type for component type information.
+pub type Info = world::TypeInfo;

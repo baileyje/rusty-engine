@@ -32,8 +32,8 @@
 //! world.despawn(entity);
 //! ```
 mod access;
+mod registry;
 mod shard;
-mod type_registry;
 
 use std::cell::RefCell;
 use std::marker::PhantomData;
@@ -50,8 +50,8 @@ use crate::ecs::{
 
 /// Exported types for world access control.
 pub use access::{AccessGrant, AccessRequest};
+pub use registry::{TypeId, TypeInfo, TypeRegistry};
 pub use shard::Shard;
-pub use type_registry::{TypeId, TypeInfo, TypeRegistry};
 
 /// A world identifier. This is a unique identifier for a world in the ECS.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -101,6 +101,7 @@ pub struct World {
     /// Marker to make World !Send. World must stay on the main thread.
     _not_send: PhantomData<*mut ()>,
 }
+
 impl World {
     pub fn new(id: Id) -> Self {
         Self {
@@ -147,15 +148,23 @@ impl World {
         let entity = self.entity_allocator.alloc();
 
         // Construct the component specification for this set of components.
+        // This will register any components not yet registered.
         let spec = <S>::into_spec(&self.resources);
 
-        // Get the table for the entity's archetype
-        let table = self
-            .storage
-            .get_or_create_table(spec.clone(), &self.resources);
-
-        // Get the archetype for this set of components.
-        let archetype = self.archetypes.get_or_create(spec, table.id());
+        // Get the archetype and type for this component spec, creating them if they don't exist.
+        let (archetype_id, table) = match self.archetypes.get_by_spec(&spec) {
+            Some(archetype) => {
+                let table = self.storage.get_mut(archetype.table_id());
+                (archetype.id(), table)
+            }
+            None => {
+                let table = self
+                    .storage
+                    .create_table(&self.resources.info_for_spec(&spec));
+                let archetype_id = self.archetypes.create(spec.clone(), table.id());
+                (archetype_id, table)
+            }
+        };
 
         // Add the entity with all the components
         let row = table.add_entity(entity, set, &self.resources);
@@ -163,7 +172,7 @@ impl World {
         // Mark the entity as spawned in the world.
         self.entities.spawn_at(
             entity,
-            storage::Location::new(archetype.id(), table.id(), row),
+            storage::Location::new(archetype_id, table.id(), row),
         );
 
         entity

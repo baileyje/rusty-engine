@@ -407,7 +407,10 @@ mod tests {
             world.register_component::<Comp2>(),
             world.register_component::<Comp3>(),
         ]);
-        let mut table = storage::Table::new(storage::table::Id::new(0), spec, world.resources());
+        let mut table = storage::Table::new(
+            storage::table::Id::new(0),
+            &world.resources().info_for_spec(&spec),
+        );
 
         table.add_entity(
             entity::Entity::new(0.into()),
