@@ -7,8 +7,8 @@
 //!
 //! # Architecture Overview
 //!
-//! The storage system is built on a layered architecture where each layer provides progressively
-//! safer abstractions:
+//! The storage system is the central authority for entity and component data management.
+//! It coordinates archetypes, tables, and entity locations in a layered architecture:
 //!
 //! ```text
 //! ┌─────────────────────────────────────────────────────────────────┐
@@ -17,23 +17,30 @@
 //! └────────────────────────────┬────────────────────────────────────┘
 //!                              │
 //! ┌────────────────────────────▼────────────────────────────────────┐
-//! │  Tables (this module)                                           │
-//! │  - High-level: Multi-column entity storage (archetype pattern)  │
-//! │  - Type-safe API with runtime validation                        │
-//! │  - Entity → Row index mapping                                   │
-//! └──────────────┬───────────────────────────┬──────────────────────┘
-//!                │                           │
-//!       ┌────────▼─────────┐        ┌────────▼─────────┐
-//!       │  Column          │        │  Index           │
-//!       │  - Type-erased   │        │  - Entity → Row  │
-//!       │  - Debug checks  │        │  - O(1) lookup   │
-//!       └────────┬─────────┘        └──────────────────┘
-//!                │
-//!       ┌────────▼─────────┐
-//!       │  IndexedMemory   │
-//!       │  - Raw unsafe    │
-//!       │  - Zero-cost     │
-//!       └──────────────────┘
+//! │  Storage (this module)                                          │
+//! │  - Owns Tables, Archetypes, and Entity registry                 │
+//! │  - Handles spawn/despawn and component migration                │
+//! │  - Coordinates archetype → table mapping                        │
+//! └────────┬───────────────────┬───────────────────┬────────────────┘
+//!          │                   │                   │
+//! ┌────────▼────────┐ ┌────────▼────────┐ ┌───────▼────────┐
+//! │  Archetypes     │ │  Entities       │ │  Tables        │
+//! │  - Spec → Table │ │  - Entity →     │ │  - Columnar    │
+//! │  - Component    │ │    Location     │ │    storage     │
+//! │    combinations │ │  - Generation   │ │  - Per-arch    │
+//! └─────────────────┘ └─────────────────┘ └───────┬────────┘
+//!                                                 │
+//!                                        ┌────────▼─────────┐
+//!                                        │  Column          │
+//!                                        │  - Type-erased   │
+//!                                        │  - Debug checks  │
+//!                                        └────────┬─────────┘
+//!                                                 │
+//!                                        ┌────────▼─────────┐
+//!                                        │  IndexedMemory   │
+//!                                        │  - Raw unsafe    │
+//!                                        │  - Zero-cost     │
+//!                                        └──────────────────┘
 //! ```
 //!
 //! # Core Concepts
@@ -118,24 +125,24 @@
 //!
 //! ## Public Types
 //!
+//! - [`Storage`] - Central container owning tables, archetypes, and entity registry
 //! - [`Table`] - Multi-column storage for entities with the same component set
-//! - [`Tables`] - Collection of tables (archetype manager)
+//! - [`Location`] - Entity storage location (archetype, table, row)
+//! - [`Row`] - Type-safe row index within a table
 //!
 //! ## Internal Types
 //!
+//! - `Archetypes` - Registry mapping component specs to tables
+//! - `Entities` - Tracks spawned entities and their locations
 //! - `Column` - Single-type columnar storage (type-erased)
 //! - `IndexedMemory` - Low-level memory allocation (unsafe)
 //! - `Cell` / `CellMut` - Type-safe component access
-//! - `Row` - Type-safe row index
-//! - `Index` - Entity → Row mapping trait
-//! - `DynamicIndex` - Block-based entity index (default)
-//! - `HashIndex` - HashMap-based entity index (fallback)
 //!
 //! # Usage Example
 //!
 //! ```rust,ignore
-//! use rusty_engine::ecs::storage::{Table, Tables};
-//! use rusty_engine::ecs::{component, entity};
+//! use rusty_engine::ecs::storage::Storage;
+//! use rusty_engine::ecs::{entity, world};
 //! use rusty_macros::Component;
 //!
 //! // Define components
@@ -146,43 +153,47 @@
 //! struct Velocity { dx: f32, dy: f32 }
 //!
 //! // Setup
-//! let mut registry = world::TypeRegistry::new();
-//! let pos_id = registry.register::<Position>();
-//! let vel_id = registry.register::<Velocity>();
-//!
-//! // Create table for [Position, Velocity] archetype
-//! let spec = component::Spec::new(vec![pos_id, vel_id]);
-//! let mut table = Table::new(Id::new(0), spec, &mut registry);
-//!
-//! // Add entity with both components atomically
+//! let mut storage = Storage::new();
+//! let registry = world::TypeRegistry::new();
 //! let mut allocator = entity::Allocator::new();
-//! let entity = allocator.alloc();
 //!
-//! table.add_entity(
+//! // Spawn an entity with components
+//! let entity = allocator.alloc();
+//! storage.spawn_entity(
 //!     entity,
 //!     (Position { x: 1.0, y: 2.0 }, Velocity { dx: 0.5, dy: 0.3 }),
-//!     &mut registry
+//!     &registry
 //! );
 //!
-//! // Access components via column iteration (cache-friendly!)
-//! let pos_column = table.get_column(pos_id).unwrap();
-//! unsafe {
-//!     for pos in pos_column.iter::<Position>() {
-//!         println!("Entity at ({}, {})", pos.x, pos.y);
-//!     }
+//! // Access entity location
+//! let location = storage.location_for(entity).unwrap();
+//! let table = storage.get_table(location.table_id());
+//!
+//! // Iterate components via views (cache-friendly!)
+//! for (entity, (pos, vel)) in unsafe { table.iter_views::<(&Position, &Velocity)>() } {
+//!     println!("Entity {:?} at ({}, {})", entity, pos.x, pos.y);
 //! }
 //!
-//! // Or access specific entity components
-//! unsafe {
-//!     if let Some(pos) = table.get::<Position>(entity, pos_id) {
-//!         println!("Entity {} at ({}, {})", entity.index(), pos.x, pos.y);
-//!     }
-//! }
+//! // Add a component (migrates to new archetype)
+//! #[derive(Component)]
+//! struct Health { hp: i32 }
+//! storage.add_component(entity, Health { hp: 100 }, &registry);
+//!
+//! // Remove a component (migrates to new archetype)
+//! storage.remove_component::<Velocity>(entity, &registry);
+//!
+//! // Despawn entity
+//! storage.despawn_entity(entity);
 //! ```
 //!
 //! # Safety Guarantees
 //!
 //! The storage layer maintains several critical invariants:
+//!
+//! ## Storage Invariants
+//! - **Location consistency**: Entity locations always point to valid (table, row) pairs
+//! - **Archetype uniqueness**: Each component spec maps to exactly one archetype/table
+//! - **Migration atomicity**: Component add/remove fully completes or doesn't happen
 //!
 //! ## Table Invariants
 //! - **Synchronization**: `entities.len() == columns[i].len()` for all columns
@@ -201,6 +212,13 @@
 //! - **No double-free**: Each allocation freed exactly once
 //! - **No leaks**: All elements dropped before deallocation
 //! - **Layout consistency**: Matches component type layout
+//!
+//! ## Migration Safety
+//! When an entity migrates between archetypes (via `add_component`/`remove_component`):
+//! - **Shared data transfer**: Components common to both archetypes are byte-copied (no drop)
+//! - **Removed data cleanup**: Components only in source archetype are properly dropped
+//! - **Swap-remove handling**: When source table uses swap-remove, the moved entity's
+//!   location is updated to maintain consistency
 //!
 //! # Performance Characteristics
 //!
@@ -258,31 +276,30 @@
 //! # Related Documentation
 //!
 //! For implementation details, see the source code of internal modules:
-//! - `mem` - Low-level memory allocation details
-//! - `column` - Type-erased column implementation  
-//! - `index` - Entity-to-row index implementations
+//! - `archetype` - Archetype registry mapping specs to tables
+//! - `entity` - Entity location tracking and generation validation
 //! - `table` - Multi-column table implementation
+//! - `column` - Type-erased column implementation
+//! - `mem` - Low-level memory allocation details
+//! - `view` - Component view trait and iterators
 //!
 
 pub use location::Location;
 pub use row::Row;
+pub use table::Id as TableId;
 pub use table::Table;
 
+use crate::ecs::entity::Entity;
 use crate::ecs::{
-    component,
-    entity,
-    storage::{
-        change::{Change, ChangeResult},
-        table::Id,
-        unique::Uniques,
-    },
+    component::{self},
+    storage::unique::Uniques,
     world,
 };
 
-pub mod change;
+pub(crate) mod archetype;
 pub(crate) mod cell;
 pub(crate) mod column;
-pub(crate) mod index;
+pub(crate) mod entity;
 pub(crate) mod location;
 pub(crate) mod mem;
 pub(crate) mod row;
@@ -290,13 +307,52 @@ pub(crate) mod table;
 pub(crate) mod unique;
 pub mod view;
 
-/// A collection of tables, each storing entities with a specific component layout.
+/// Central storage container for the ECS, managing all entity and component data.
+///
+/// `Storage` is the authoritative source for:
+/// - **Tables**: Columnar storage for each archetype's component data
+/// - **Archetypes**: Registry mapping component specifications to tables
+/// - **Entities**: Tracks which entities are spawned and their storage locations
+/// - **Uniques**: Singleton resources accessible across systems
+///
+/// # Responsibilities
+///
+/// Storage handles the core data operations:
+/// - Spawning entities with initial components
+/// - Despawning entities and cleaning up their data
+/// - Component migration (add/remove) between archetypes
+/// - Location tracking for O(1) entity lookups
+///
+/// # Example
+///
+/// ```rust,ignore
+/// let mut storage = Storage::new();
+/// let registry = world::TypeRegistry::new();
+/// let mut allocator = entity::Allocator::new();
+///
+/// // Spawn entity
+/// let entity = allocator.alloc();
+/// storage.spawn_entity(entity, (Position { x: 0.0, y: 0.0 },), &registry);
+///
+/// // Add component (triggers migration)
+/// storage.add_component(entity, Velocity { dx: 1.0, dy: 0.0 }, &registry);
+///
+/// // Query location
+/// let loc = storage.location_for(entity).unwrap();
+/// let table = storage.get_table(loc.table_id());
+/// ```
 pub struct Storage {
-    /// The vec of know tables.
+    /// Collection of tables, each storing entities with a specific component layout.
     tables: Vec<Table>,
 
-    /// The unique resource storage for the world.
+    /// Unique (singleton) resources for the world.
     uniques: Uniques,
+
+    /// Registry of archetypes mapping component specs to tables.
+    archetypes: archetype::Archetypes,
+
+    /// Tracks spawned entities and their storage locations.
+    entities: entity::Entities,
 }
 
 impl Storage {
@@ -306,24 +362,34 @@ impl Storage {
         Self {
             tables: Vec::new(),
             uniques: Uniques::new(),
+            archetypes: archetype::Archetypes::new(),
+            entities: entity::Entities::new(),
         }
     }
 
-    pub fn create_table(&mut self, components: &[component::Info]) -> &mut Table {
+    #[inline]
+    pub fn entities(&self) -> &entity::Entities {
+        &self.entities
+    }
+
+    #[inline]
+    pub fn archetypes(&self) -> &archetype::Archetypes {
+        &self.archetypes
+    }
+
+    pub fn create_table(&mut self, components: &[component::Info]) -> TableId {
         // Grab the index the table will be stored at.
         let id = table::Id::new(self.tables.len() as u32);
-        let table = Table::new(id, components);
-        // Create a new table from this archetype's components (moves components)
-        self.tables.push(table);
-        // Return a mutable reference
-        self.get_mut(id)
+        // Create table
+        self.tables.push(Table::new(id, components));
+        id
     }
 
     /// Get an existing table by id, if it exists, otherwise panic.
     ///     
     /// # Panics
     /// - if the id is out of bounds
-    pub fn get(&self, table_id: Id) -> &Table {
+    pub fn get_table(&self, table_id: TableId) -> &Table {
         assert!(
             table_id.index() < self.tables.len(),
             "table id out of bounds"
@@ -335,7 +401,7 @@ impl Storage {
     ///
     /// # Panics
     /// - if the id is out of bounds
-    pub fn get_mut(&mut self, table_id: Id) -> &mut Table {
+    pub fn get_table_mut(&mut self, table_id: TableId) -> &mut Table {
         assert!(
             table_id.index() < self.tables.len(),
             "table id out of bounds"
@@ -355,196 +421,234 @@ impl Storage {
         &mut self.uniques
     }
 
-    /// Execute a batch of storage changes, returning results for registry updates.
+    pub fn spawn_entity<S: component::Set>(
+        &mut self,
+        entity: Entity,
+        set: S,
+        types: &world::TypeRegistry,
+    ) {
+        // Construct the component specification for this set of components.
+        // This will register any components not yet registered.
+        let spec = <S>::into_spec(types);
+
+        // Get the archetype and type for this component spec, creating them if they don't exist.
+        let (archetype_id, table_id) = self.get_storage_target(&spec, types);
+
+        let table = self.get_table_mut(table_id);
+
+        // Add the entity to the table.
+        let row = table.add_entity(entity, set, types);
+
+        // Mark the entity as spawned in the world.
+        self.entities
+            .spawn_at(entity, Location::new(archetype_id, table_id, row));
+    }
+
+    pub fn despawn_entity(&mut self, entity: Entity) {
+        if let Some(location) = self.entities.location(entity) {
+            let table = self.get_table_mut(location.table_id());
+
+            // Remove the row from the table, swapping in the last row.
+            let moved = table.swap_remove_row(location.row());
+
+            // If another entity was moved, update its location.
+            if let Some(moved) = moved {
+                self.entities.set_location(moved, location);
+            }
+            // Despawn the entity.
+            self.entities.despawn(entity);
+        }
+    }
+
+    /// Add component(s) to an existing entity.
     ///
-    /// This is the primary interface for modifying storage. Changes are executed
-    /// in order, and results contain information needed to update entity registries.
-    ///
-    /// # Panics
-    /// Panics if any table ID is invalid. The caller (World) must provide valid inputs.
-    ///
-    /// # Arguments
-    /// * `changes` - Mutable slice of changes to execute (components are taken from changes)
-    /// * `registry` - Type registry for component metadata
+    /// This migrates the entity to a new archetype that includes the new component.
+    /// If the entity already has any these component type, this method does nothing.
     ///
     /// # Returns
-    /// A vector of results, one per change, in the same order as the input changes.
-    pub fn execute(
+    /// - `true` if the component was added
+    /// - `false` if the entity doesn't exist or already has this component
+    pub fn add_components<S: component::Set>(
         &mut self,
-        changes: &mut [Change<'_>],
-        registry: &world::TypeRegistry,
-    ) -> Vec<ChangeResult> {
-        changes
-            .iter_mut()
-            .map(|change| self.execute_change(change, registry))
-            .collect()
-    }
+        entity: Entity,
+        components: S,
+        types: &world::TypeRegistry,
+    ) -> bool {
+        // Check if entity is spawned
+        let source = match self.entities.location(entity) {
+            Some(loc) => loc,
+            None => return false,
+        };
 
-    /// Execute a single storage change (convenience wrapper).
-    ///
-    /// # Panics
-    /// Panics if the table ID is invalid.
-    pub fn execute_one(
-        &mut self,
-        mut change: Change<'_>,
-        registry: &world::TypeRegistry,
-    ) -> ChangeResult {
-        self.execute_change(&mut change, registry)
-    }
+        // Get the specification for columns to add
+        let add_spec = S::into_spec(types);
 
-    /// Internal method to execute a single change.
-    fn execute_change(
-        &mut self,
-        change: &mut Change<'_>,
-        registry: &world::TypeRegistry,
-    ) -> ChangeResult {
-        match change {
-            Change::Spawn {
-                entity,
-                table,
-                components,
-            } => {
-                let table = self.get_mut(*table);
-                let applicator = components
-                    .take()
-                    .expect("Spawn change components already consumed");
-                let row = table.add_entity_dynamic(*entity, applicator, registry);
-                ChangeResult::Spawned { row }
-            }
-
-            Change::Despawn { table, row, .. } => {
-                let table = self.get_mut(*table);
-                let moved = table.swap_remove_row(*row);
-                ChangeResult::Despawned {
-                    moved_entity: moved,
-                }
-            }
-
-            Change::Migrate {
-                entity,
-                source,
-                target,
-                additions,
-            } => self.execute_migration(*entity, source, *target, additions.take(), registry),
+        // No reason to process an empty add
+        if add_spec.is_empty() {
+            return false;
         }
+
+        // Get the current archetype's spec
+        let source_archetype = self
+            .archetypes()
+            .get(source.archetype_id())
+            .expect("entity location references valid archetype");
+
+        // Check if entity already has these components
+        if source_archetype.components().contains_any(&add_spec) {
+            return false;
+        }
+
+        // Execute the row migration between the two tables.
+        self.execute_migration(
+            entity,
+            source,
+            source_archetype.components().union(&add_spec),
+            components,
+            types,
+        );
+
+        true
     }
 
-    /// Execute a migration change - move an entity from one table to another.
+    /// Remove component(s) from an existing entity.
     ///
-    /// This handles component add/remove operations by:
-    /// 1. Copying shared component data from source to target
-    /// 2. Applying any new components (additions) to target
-    /// 3. Removing the entity from source (with proper drop handling)
-    /// 4. Adding the entity to target
-    fn execute_migration(
+    /// This migrates the entity to a new archetype that excludes the component.
+    /// If the entity doesn't have these component types, this method does nothing.
+    ///
+    /// # Returns
+    /// - `true` if the component was removed
+    /// - `false` if the entity doesn't exist or doesn't have this component
+    pub fn remove_components<S: component::IntoSpec>(
         &mut self,
-        entity: entity::Entity,
-        source: &change::MigrationSource,
-        target_id: table::Id,
-        additions: Option<Box<dyn change::ApplyOnce + '_>>,
-        registry: &world::TypeRegistry,
-    ) -> ChangeResult {
-        // Collect source component IDs
-        let source_component_ids: Vec<world::TypeId> =
-            self.get(source.table).component_ids().collect();
+        entity: Entity,
+        types: &world::TypeRegistry,
+    ) -> bool {
+        // Check if entity is spawned
+        let source = match self.entities.location(entity) {
+            Some(loc) => loc,
+            None => return false,
+        };
 
-        // Collect target component IDs
-        let target_component_ids: Vec<world::TypeId> =
-            self.get(target_id).component_ids().collect();
+        // Get the specification for columns to remove.
+        let remove_spec = S::into_spec(types);
+
+        // No reason to process an empty remove
+        if remove_spec.is_empty() {
+            return false;
+        }
+
+        // Get the current archetype's spec
+        let source_archetype = self
+            .archetypes()
+            .get(source.archetype_id())
+            .expect("entity location references valid archetype");
+
+        // Check if entity has this component
+        if !source_archetype.components().contains_all(&remove_spec) {
+            return false;
+        }
+
+        // Execute the row migration between the two tables.
+        self.execute_migration(
+            entity,
+            source,
+            source_archetype.components().difference(&remove_spec),
+            (),
+            types,
+        );
+
+        true
+    }
+
+    /// Execute a migration - move an entity from one archetype/table to another.
+    ///
+    /// This is the core operation for `add_component` and `remove_component`. It safely
+    /// transfers an entity between tables while preserving shared component data.
+    ///
+    /// # Process
+    /// 1. Get or create the target archetype/table for the new component spec
+    /// 2. Identify shared components (exist in both source and target)
+    /// 3. Extract shared component data from source (byte-copy, no drop)
+    /// 4. Remove entity from source table via swap-remove
+    /// 5. Update the swapped entity's location if one was moved
+    /// 6. Add entity to target table with extracted data + new components
+    /// 7. Update the migrated entity's location
+    ///
+    /// # Safety
+    /// - Shared components are byte-copied and not dropped in source
+    /// - Removed components (in source but not target) are properly dropped
+    /// - Swap-remove in source table may move another entity; its location is updated
+    /// - The migrated entity's location is updated to point to target table
+    fn execute_migration<S: component::Set>(
+        &mut self,
+        entity: Entity,
+        source: Location,
+        target: component::Spec,
+        additions: S,
+        types: &world::TypeRegistry,
+    ) {
+        // Get or create the target archetype/table
+        let (target_archetype_id, target_table_id) = self.get_storage_target(&target, types);
+
+        // Get the component specs for source archetypes
+        let source_spec = self
+            .archetypes
+            .get(source.archetype_id())
+            .expect("valid source archetype")
+            .components();
 
         // Find shared components (exist in both tables)
-        let shared_ids: Vec<world::TypeId> = source_component_ids
-            .iter()
-            .copied()
-            .filter(|id| target_component_ids.contains(id))
-            .collect();
+        let shared_spec = source_spec.intersection(&target);
 
-        // Find removed components (in source but not target) - these need to be dropped
-        let removed_ids: Vec<world::TypeId> = source_component_ids
-            .iter()
-            .copied()
-            .filter(|id| !target_component_ids.contains(id))
-            .collect();
-
-        // Step 1: Read bytes for shared components from source
+        // Extract shared component data from source and remove the entity
         // Store as (component_id, bytes) pairs
-        let mut shared_data: Vec<(world::TypeId, Vec<u8>)> = Vec::with_capacity(shared_ids.len());
-        {
-            let source_table = self.get(source.table);
-            for &id in &shared_ids {
-                if let Some(column) = source_table.get_column_by_id(id) {
-                    let bytes = unsafe { column.read_bytes(source.row) };
-                    shared_data.push((id, bytes.to_vec()));
-                }
-            }
+        let (extract, moved) = self
+            .get_table_mut(source.table_id())
+            .extract_and_swap_row(source.row(), &shared_spec);
+
+        // Update the moved entity's location in source, if one was moved.
+        if let Some(moved) = moved {
+            self.entities.set_location(moved, source);
         }
 
-        // Step 2: Remove from source table
-        // - Use swap_remove_no_drop for shared components (data is being moved)
-        // - Use swap_remove (with drop) for removed components
-        let source_moved: Option<entity::Entity>;
-        {
-            let source_table = self.get_mut(source.table);
-            let row_index = source.row.index();
-            let last_index = source_table.len() - 1;
+        // Step 2: Add to target table
+        let new_row = self
+            .get_table_mut(target_table_id)
+            .add_entity_from_extract(entity, extract, additions);
 
-            // Handle each column based on whether component is shared or removed
-            for &id in &shared_ids {
-                if let Some(column) = source_table.get_column_by_id_mut(id) {
-                    // Shared component - don't drop (data was copied)
-                    unsafe {
-                        column.swap_remove_no_drop(source.row);
-                    }
-                }
+        // Update the migrated entity's location
+        self.entities.set_location(
+            entity,
+            Location::new(target_archetype_id, target_table_id, new_row),
+        );
+    }
+
+    /// Get the storage location for the given entity, if it's spawned.
+    pub fn location_for(&self, entity: Entity) -> Option<Location> {
+        self.entities.location(entity)
+    }
+
+    /// Get or create the archetype and table for a given component specification.
+    ///
+    /// This is the core lookup/creation method for finding where entities with a
+    /// particular set of components should be stored. If an archetype already exists
+    /// for the spec, returns its IDs. Otherwise, creates a new archetype and table.
+    ///
+    /// # Returns
+    /// A tuple of `(archetype::Id, TableId)` for the matching or newly created storage.
+    pub fn get_storage_target(
+        &mut self,
+        spec: &component::Spec,
+        resources: &world::TypeRegistry,
+    ) -> (archetype::Id, TableId) {
+        match self.archetypes.get_by_spec(spec) {
+            Some(archetype) => (archetype.id(), archetype.table_id()),
+            None => {
+                let table_id = self.create_table(&resources.info_for_spec(spec));
+                let archetype_id = self.archetypes.create(spec.clone(), table_id);
+                (archetype_id, table_id)
             }
-
-            for &id in &removed_ids {
-                if let Some(column) = source_table.get_column_by_id_mut(id) {
-                    // Removed component - drop it
-                    unsafe {
-                        column.swap_remove(source.row);
-                    }
-                }
-            }
-
-            // Swap-remove the entity
-            source_table.entities_mut().swap_remove(row_index);
-
-            // Determine if an entity was moved
-            source_moved = if row_index != last_index {
-                Some(source_table.entities()[row_index])
-            } else {
-                None
-            };
-        }
-
-        // Step 3: Add to target table
-        let new_row: Row;
-        {
-            let target_table = self.get_mut(target_id);
-            new_row = Row::new(target_table.len());
-
-            // Push shared component bytes to target columns
-            for (id, bytes) in shared_data {
-                if let Some(column) = target_table.get_column_by_id_mut(id) {
-                    unsafe {
-                        column.push_bytes(&bytes);
-                    }
-                }
-            }
-
-            // Apply additions (new components) if any
-            if let Some(applicator) = additions {
-                applicator.apply_once(target_table, registry);
-            }
-
-            // Add the entity to target
-            target_table.entities_mut().push(entity);
-        }
-
-        ChangeResult::Migrated {
-            new_row,
-            source_moved,
         }
     }
 }
@@ -604,7 +708,8 @@ mod tests {
         let spec = <Position>::into_spec(&registry);
 
         // When
-        let table = storage.create_table(&registry.info_for_spec(&spec));
+        let table_id = storage.create_table(&registry.info_for_spec(&spec));
+        let table = storage.get_table(table_id);
         let table_len = table.len();
 
         // Then
@@ -636,10 +741,10 @@ mod tests {
     fn get_returns_none_for_nonexistent_table_id() {
         // Given
         let storage = Storage::new();
-        let table_id = Id::new(999);
+        let table_id = TableId::new(999);
 
         // When
-        storage.get(table_id);
+        storage.get_table(table_id);
     }
 
     #[test]
@@ -648,10 +753,10 @@ mod tests {
         let mut storage = Storage::new();
         let registry = world::TypeRegistry::new();
         let spec = <Position>::into_spec(&registry);
-        let table_id = storage.create_table(&registry.info_for_spec(&spec)).id();
+        let table_id = storage.create_table(&registry.info_for_spec(&spec));
 
         // When
-        let table = storage.get(table_id);
+        let table = storage.get_table(table_id);
 
         // Then
         assert_eq!(table.len(), 0);
@@ -664,7 +769,7 @@ mod tests {
         let mut storage = Storage::new();
 
         // When
-        storage.get_mut(Id::new(999));
+        storage.get_table_mut(TableId::new(999));
     }
 
     #[test]
@@ -673,426 +778,390 @@ mod tests {
         let mut storage = Storage::new();
         let registry = world::TypeRegistry::new();
         let spec = <Position>::into_spec(&registry);
-        let table_id = storage.create_table(&registry.info_for_spec(&spec)).id();
+        let table_id = storage.create_table(&registry.info_for_spec(&spec));
 
         // When
-        let table = storage.get_mut(table_id);
+        let table = storage.get_table_mut(table_id);
 
         // Then
         assert_eq!(table.len(), 0);
     }
 
-    #[test]
-    fn execute_spawn_adds_entity_to_table() {
-        // Given
-        use crate::ecs::{entity, storage::change::Change};
+    // ==================== Spawn/Despawn Tests ====================
 
+    #[test]
+    fn spawn_entity_creates_archetype_and_table() {
+        // Given
         let mut storage = Storage::new();
         let registry = world::TypeRegistry::new();
-        let spec = <(Position, Velocity)>::into_spec(&registry);
-        let table_id = storage.create_table(&registry.info_for_spec(&spec)).id();
-
-        let entity = entity::Entity::new(1.into());
-        let components = (Position { x: 1.0, y: 2.0 }, Velocity { dx: 0.5, dy: 0.3 });
-
-        let mut changes = [Change::spawn(entity, table_id, components)];
+        let mut allocator = crate::ecs::entity::Allocator::new();
+        let entity = allocator.alloc();
 
         // When
-        let results = storage.execute(&mut changes, &registry);
+        storage.spawn_entity(entity, Position { x: 1.0, y: 2.0 }, &registry);
 
         // Then
-        assert_eq!(results.len(), 1);
-        match &results[0] {
-            super::change::ChangeResult::Spawned { row } => {
-                assert_eq!(row.index(), 0);
-            }
-            _ => panic!("Expected Spawned result"),
-        }
-
-        let table = storage.get(table_id);
-        assert_eq!(table.len(), 1);
-        assert_eq!(table.entity(0.into()), Some(entity));
-    }
-
-    #[test]
-    fn execute_despawn_removes_entity_from_table() {
-        // Given
-        use crate::ecs::{entity, storage::change::Change};
-
-        let mut storage = Storage::new();
-        let registry = world::TypeRegistry::new();
-        let spec = <Position>::into_spec(&registry);
-        let table_id = storage.create_table(&registry.info_for_spec(&spec)).id();
-
-        // Add two entities manually
-        let entity1 = entity::Entity::new(1.into());
-        let entity2 = entity::Entity::new(2.into());
-
-        let table = storage.get_mut(table_id);
-        table.add_entity(entity1, Position { x: 1.0, y: 2.0 }, &registry);
-        table.add_entity(entity2, Position { x: 3.0, y: 4.0 }, &registry);
-
-        assert_eq!(storage.get(table_id).len(), 2);
-
-        // When - despawn entity1 at row 0
-        let mut changes = [Change::despawn(entity1, table_id, 0.into())];
-        let results = storage.execute(&mut changes, &registry);
-
-        // Then
-        assert_eq!(results.len(), 1);
-        match &results[0] {
-            super::change::ChangeResult::Despawned { moved_entity } => {
-                // entity2 should have been moved from row 1 to row 0
-                assert_eq!(*moved_entity, Some(entity2));
-            }
-            _ => panic!("Expected Despawned result"),
-        }
-
-        let table = storage.get(table_id);
-        assert_eq!(table.len(), 1);
-        // entity2 should now be at row 0
-        assert_eq!(table.entity(0.into()), Some(entity2));
-    }
-
-    #[test]
-    fn execute_despawn_last_entity_returns_none() {
-        // Given
-        use crate::ecs::{entity, storage::change::Change};
-
-        let mut storage = Storage::new();
-        let registry = world::TypeRegistry::new();
-        let spec = <Position>::into_spec(&registry);
-        let table_id = storage.create_table(&registry.info_for_spec(&spec)).id();
-
-        let entity1 = entity::Entity::new(1.into());
-        let table = storage.get_mut(table_id);
-        table.add_entity(entity1, Position { x: 1.0, y: 2.0 }, &registry);
-
-        // When - despawn the only entity
-        let mut changes = [Change::despawn(entity1, table_id, 0.into())];
-        let results = storage.execute(&mut changes, &registry);
-
-        // Then
-        match &results[0] {
-            super::change::ChangeResult::Despawned { moved_entity } => {
-                // No entity moved since we removed the last one
-                assert_eq!(*moved_entity, None);
-            }
-            _ => panic!("Expected Despawned result"),
-        }
-
-        assert_eq!(storage.get(table_id).len(), 0);
-    }
-
-    #[test]
-    fn execute_one_works() {
-        // Given
-        use crate::ecs::{entity, storage::change::Change};
-
-        let mut storage = Storage::new();
-        let registry = world::TypeRegistry::new();
-        let spec = <Position>::into_spec(&registry);
-        let table_id = storage.create_table(&registry.info_for_spec(&spec)).id();
-
-        let entity = entity::Entity::new(1.into());
-        let change = Change::spawn(entity, table_id, Position { x: 5.0, y: 6.0 });
-
-        // When
-        let result = storage.execute_one(change, &registry);
-
-        // Then
-        match result {
-            super::change::ChangeResult::Spawned { row } => {
-                assert_eq!(row.index(), 0);
-            }
-            _ => panic!("Expected Spawned result"),
-        }
-        assert_eq!(storage.get(table_id).len(), 1);
-    }
-
-    #[test]
-    fn execute_batch_multiple_changes() {
-        // Given
-        use crate::ecs::{entity, storage::change::Change};
-
-        let mut storage = Storage::new();
-        let registry = world::TypeRegistry::new();
-        let spec = <Position>::into_spec(&registry);
-        let table_id = storage.create_table(&registry.info_for_spec(&spec)).id();
-
-        let entity1 = entity::Entity::new(1.into());
-        let entity2 = entity::Entity::new(2.into());
-        let entity3 = entity::Entity::new(3.into());
-
-        let mut changes = [
-            Change::spawn(entity1, table_id, Position { x: 1.0, y: 1.0 }),
-            Change::spawn(entity2, table_id, Position { x: 2.0, y: 2.0 }),
-            Change::spawn(entity3, table_id, Position { x: 3.0, y: 3.0 }),
-        ];
-
-        // When
-        let results = storage.execute(&mut changes, &registry);
-
-        // Then
-        assert_eq!(results.len(), 3);
-        assert_eq!(storage.get(table_id).len(), 3);
-
-        // Verify rows are assigned sequentially
-        for (i, result) in results.iter().enumerate() {
-            match result {
-                super::change::ChangeResult::Spawned { row } => {
-                    assert_eq!(row.index(), i);
-                }
-                _ => panic!("Expected Spawned result"),
-            }
-        }
-    }
-
-    #[test]
-    fn migrate_add_component() {
-        // Given - entity with Position, add Velocity
-        use crate::ecs::{
-            entity,
-            storage::change::{Change, MigrationSource},
-        };
-
-        let mut storage = Storage::new();
-        let registry = world::TypeRegistry::new();
-
-        // Create source table with Position only
-        let source_spec = <Position>::into_spec(&registry);
-        let source_table_id = storage
-            .create_table(&registry.info_for_spec(&source_spec))
-            .id();
-
-        // Create target table with Position + Velocity
-        let target_spec = <(Position, Velocity)>::into_spec(&registry);
-        let target_table_id = storage
-            .create_table(&registry.info_for_spec(&target_spec))
-            .id();
-
-        // Add entity to source table
-        let entity1 = entity::Entity::new(1.into());
-        storage
-            .get_mut(source_table_id)
-            .add_entity(entity1, Position { x: 1.0, y: 2.0 }, &registry);
-
-        assert_eq!(storage.get(source_table_id).len(), 1);
-        assert_eq!(storage.get(target_table_id).len(), 0);
-
-        // When - migrate entity, adding Velocity
-        let source = MigrationSource::new(source_table_id, 0.into());
-        let change = Change::migrate_with(
-            entity1,
-            source,
-            target_table_id,
-            Velocity { dx: 0.5, dy: 0.3 },
+        assert!(storage.entities().is_spawned(entity));
+        assert_eq!(storage.tables.len(), 1);
+        assert_eq!(
+            storage
+                .archetypes()
+                .table_ids_for(&<Position>::into_spec(&registry))
+                .len(),
+            1
         );
-        let result = storage.execute_one(change, &registry);
+    }
+
+    #[test]
+    fn spawn_multiple_entities_same_archetype() {
+        // Given
+        let mut storage = Storage::new();
+        let registry = world::TypeRegistry::new();
+        let mut allocator = crate::ecs::entity::Allocator::new();
+
+        // When
+        let e1 = allocator.alloc();
+        let e2 = allocator.alloc();
+        let e3 = allocator.alloc();
+        storage.spawn_entity(e1, Position { x: 1.0, y: 1.0 }, &registry);
+        storage.spawn_entity(e2, Position { x: 2.0, y: 2.0 }, &registry);
+        storage.spawn_entity(e3, Position { x: 3.0, y: 3.0 }, &registry);
+
+        // Then - all in same table
+        assert_eq!(storage.tables.len(), 1);
+        assert_eq!(storage.get_table(TableId::new(0)).len(), 3);
+
+        // Verify locations
+        assert_eq!(storage.location_for(e1).unwrap().row(), 0.into());
+        assert_eq!(storage.location_for(e2).unwrap().row(), 1.into());
+        assert_eq!(storage.location_for(e3).unwrap().row(), 2.into());
+    }
+
+    #[test]
+    fn despawn_entity_removes_from_storage() {
+        // Given
+        let mut storage = Storage::new();
+        let registry = world::TypeRegistry::new();
+        let mut allocator = crate::ecs::entity::Allocator::new();
+        let entity = allocator.alloc();
+        storage.spawn_entity(entity, Position { x: 1.0, y: 2.0 }, &registry);
+
+        // When
+        storage.despawn_entity(entity);
 
         // Then
-        assert_eq!(storage.get(source_table_id).len(), 0);
-        assert_eq!(storage.get(target_table_id).len(), 1);
+        assert!(!storage.entities().is_spawned(entity));
+        assert_eq!(storage.get_table(TableId::new(0)).len(), 0);
+    }
 
-        match result {
-            super::change::ChangeResult::Migrated {
-                new_row,
-                source_moved,
-            } => {
-                assert_eq!(new_row.index(), 0);
-                assert!(source_moved.is_none()); // Only entity in source
-            }
-            _ => panic!("Expected Migrated result"),
-        }
+    #[test]
+    fn despawn_entity_updates_swapped_entity_location() {
+        // Given
+        let mut storage = Storage::new();
+        let registry = world::TypeRegistry::new();
+        let mut allocator = crate::ecs::entity::Allocator::new();
 
-        // Verify component data was preserved
-        let target_table = storage.get(target_table_id);
+        let e1 = allocator.alloc();
+        let e2 = allocator.alloc();
+        let e3 = allocator.alloc();
+        storage.spawn_entity(e1, Position { x: 1.0, y: 1.0 }, &registry);
+        storage.spawn_entity(e2, Position { x: 2.0, y: 2.0 }, &registry);
+        storage.spawn_entity(e3, Position { x: 3.0, y: 3.0 }, &registry);
+
+        // e1 at row 0, e2 at row 1, e3 at row 2
+        assert_eq!(storage.location_for(e1).unwrap().row(), 0.into());
+        assert_eq!(storage.location_for(e3).unwrap().row(), 2.into());
+
+        // When - despawn e1 (e3 should swap into row 0)
+        storage.despawn_entity(e1);
+
+        // Then
+        assert!(!storage.entities().is_spawned(e1));
+        assert_eq!(storage.location_for(e2).unwrap().row(), 1.into()); // unchanged
+        assert_eq!(storage.location_for(e3).unwrap().row(), 0.into()); // moved from 2 to 0
+    }
+
+    #[test]
+    fn despawn_nonexistent_entity_is_noop() {
+        // Given
+        let mut storage = Storage::new();
+        let mut allocator = crate::ecs::entity::Allocator::new();
+        let entity = allocator.alloc();
+
+        // When - despawn entity that was never spawned
+        storage.despawn_entity(entity);
+
+        // Then - no panic, no effect
+        assert!(!storage.entities().is_spawned(entity));
+    }
+
+    // ==================== Component Migration Tests ====================
+
+    #[test]
+    fn add_component_migrates_entity() {
+        // Given
+        let mut storage = Storage::new();
+        let registry = world::TypeRegistry::new();
+        let mut allocator = crate::ecs::entity::Allocator::new();
+        let entity = allocator.alloc();
+        storage.spawn_entity(entity, Position { x: 1.0, y: 2.0 }, &registry);
+
+        // When
+        let added = storage.add_components(entity, Velocity { dx: 0.5, dy: 0.3 }, &registry);
+
+        // Then
+        assert!(added);
+        assert_eq!(storage.tables.len(), 2); // new archetype created
+
+        // Verify component data preserved
+        let loc = storage.location_for(entity).unwrap();
+        let table = storage.get_table(loc.table_id());
         unsafe {
-            let pos = target_table.get::<Position>(0.into()).unwrap();
+            let pos = table.get::<Position>(loc.row()).unwrap();
+            let vel = table.get::<Velocity>(loc.row()).unwrap();
             assert_eq!(pos.x, 1.0);
             assert_eq!(pos.y, 2.0);
-
-            let vel = target_table.get::<Velocity>(0.into()).unwrap();
             assert_eq!(vel.dx, 0.5);
             assert_eq!(vel.dy, 0.3);
         }
     }
 
     #[test]
-    fn migrate_remove_component() {
-        // Given - entity with Position + Velocity, remove Velocity
-        use crate::ecs::{
-            entity,
-            storage::change::{Change, MigrationSource},
-        };
-
+    fn add_component_returns_false_if_already_exists() {
+        // Given
         let mut storage = Storage::new();
         let registry = world::TypeRegistry::new();
+        let mut allocator = crate::ecs::entity::Allocator::new();
+        let entity = allocator.alloc();
+        storage.spawn_entity(entity, Position { x: 1.0, y: 2.0 }, &registry);
 
-        // Create source table with Position + Velocity
-        let source_spec = <(Position, Velocity)>::into_spec(&registry);
-        let source_table_id = storage
-            .create_table(&registry.info_for_spec(&source_spec))
-            .id();
-
-        // Create target table with Position only
-        let target_spec = <Position>::into_spec(&registry);
-        let target_table_id = storage
-            .create_table(&registry.info_for_spec(&target_spec))
-            .id();
-
-        // Add entity to source table
-        let entity1 = entity::Entity::new(1.into());
-        storage.get_mut(source_table_id).add_entity(
-            entity1,
-            (Position { x: 3.0, y: 4.0 }, Velocity { dx: 1.0, dy: 2.0 }),
-            &registry,
-        );
-
-        // When - migrate entity, removing Velocity (no additions)
-        let source = MigrationSource::new(source_table_id, 0.into());
-        let change = Change::migrate(entity1, source, target_table_id);
-        let result = storage.execute_one(change, &registry);
+        // When - try to add Position again
+        let added = storage.add_components(entity, Position { x: 5.0, y: 6.0 }, &registry);
 
         // Then
-        assert_eq!(storage.get(source_table_id).len(), 0);
-        assert_eq!(storage.get(target_table_id).len(), 1);
-
-        match result {
-            super::change::ChangeResult::Migrated { new_row, .. } => {
-                assert_eq!(new_row.index(), 0);
-            }
-            _ => panic!("Expected Migrated result"),
-        }
-
-        // Verify Position was preserved
-        let target_table = storage.get(target_table_id);
+        assert!(!added);
+        // Original data unchanged
+        let loc = storage.location_for(entity).unwrap();
+        let table = storage.get_table(loc.table_id());
         unsafe {
-            let pos = target_table.get::<Position>(0.into()).unwrap();
-            assert_eq!(pos.x, 3.0);
-            assert_eq!(pos.y, 4.0);
+            let pos = table.get::<Position>(loc.row()).unwrap();
+            assert_eq!(pos.x, 1.0);
         }
     }
 
     #[test]
-    fn migrate_with_entity_swap() {
-        // Given - two entities in source, migrate first one
-        use crate::ecs::{
-            entity,
-            storage::change::{Change, MigrationSource},
-        };
-
+    fn add_component_returns_false_for_nonexistent_entity() {
+        // Given
         let mut storage = Storage::new();
         let registry = world::TypeRegistry::new();
+        let mut allocator = crate::ecs::entity::Allocator::new();
+        let entity = allocator.alloc();
 
-        // Create source table with Position
-        let source_spec = <Position>::into_spec(&registry);
-        let source_table_id = storage
-            .create_table(&registry.info_for_spec(&source_spec))
-            .id();
-
-        // Create target table with Position + Velocity
-        let target_spec = <(Position, Velocity)>::into_spec(&registry);
-        let target_table_id = storage
-            .create_table(&registry.info_for_spec(&target_spec))
-            .id();
-
-        // Add two entities to source table
-        let entity1 = entity::Entity::new(1.into());
-        let entity2 = entity::Entity::new(2.into());
-        storage
-            .get_mut(source_table_id)
-            .add_entity(entity1, Position { x: 1.0, y: 1.0 }, &registry);
-        storage
-            .get_mut(source_table_id)
-            .add_entity(entity2, Position { x: 2.0, y: 2.0 }, &registry);
-
-        assert_eq!(storage.get(source_table_id).len(), 2);
-
-        // When - migrate entity1 (at row 0)
-        let source = MigrationSource::new(source_table_id, 0.into());
-        let change = Change::migrate_with(
-            entity1,
-            source,
-            target_table_id,
-            Velocity { dx: 0.0, dy: 0.0 },
-        );
-        let result = storage.execute_one(change, &registry);
+        // When
+        let added = storage.add_components(entity, Position { x: 1.0, y: 2.0 }, &registry);
 
         // Then
-        assert_eq!(storage.get(source_table_id).len(), 1);
-        assert_eq!(storage.get(target_table_id).len(), 1);
-
-        match result {
-            super::change::ChangeResult::Migrated {
-                new_row,
-                source_moved,
-            } => {
-                assert_eq!(new_row.index(), 0);
-                // entity2 should have been moved to row 0 in source
-                assert_eq!(source_moved, Some(entity2));
-            }
-            _ => panic!("Expected Migrated result"),
-        }
-
-        // Verify entity2 is now at row 0 in source
-        assert_eq!(
-            storage.get(source_table_id).entity(0.into()),
-            Some(entity2)
-        );
+        assert!(!added);
     }
 
     #[test]
-    fn migrate_preserves_multiple_shared_components() {
-        // Given - entity with A, B, C - migrate to table with A, B, D
-        use crate::ecs::{
-            entity,
-            storage::change::{Change, MigrationSource},
-        };
-
-        #[derive(Component, Debug, PartialEq)]
-        struct CompA(u32);
-        #[derive(Component, Debug, PartialEq)]
-        struct CompB(u64);
-        #[derive(Component, Debug, PartialEq)]
-        struct CompC(f32);
-        #[derive(Component, Debug, PartialEq)]
-        struct CompD(f64);
-
+    fn remove_component_migrates_entity() {
+        // Given
         let mut storage = Storage::new();
         let registry = world::TypeRegistry::new();
-
-        // Source: A, B, C
-        let source_spec = <(CompA, CompB, CompC)>::into_spec(&registry);
-        let source_table_id = storage
-            .create_table(&registry.info_for_spec(&source_spec))
-            .id();
-
-        // Target: A, B, D
-        let target_spec = <(CompA, CompB, CompD)>::into_spec(&registry);
-        let target_table_id = storage
-            .create_table(&registry.info_for_spec(&target_spec))
-            .id();
-
-        // Add entity with A=1, B=2, C=3.0
-        let entity1 = entity::Entity::new(1.into());
-        storage.get_mut(source_table_id).add_entity(
-            entity1,
-            (CompA(1), CompB(2), CompC(3.0)),
+        let mut allocator = crate::ecs::entity::Allocator::new();
+        let entity = allocator.alloc();
+        storage.spawn_entity(
+            entity,
+            (Position { x: 1.0, y: 2.0 }, Velocity { dx: 0.5, dy: 0.3 }),
             &registry,
         );
 
-        // When - migrate, adding D=4.0 (C gets removed)
-        let source = MigrationSource::new(source_table_id, 0.into());
-        let change = Change::migrate_with(entity1, source, target_table_id, CompD(4.0));
-        storage.execute_one(change, &registry);
+        // When
+        let removed = storage.remove_components::<Velocity>(entity, &registry);
 
-        // Then - verify A and B preserved, D added
-        let target_table = storage.get(target_table_id);
+        // Then
+        assert!(removed);
+        assert_eq!(storage.tables.len(), 2); // new archetype created
+
+        // Verify Position preserved, Velocity gone
+        let loc = storage.location_for(entity).unwrap();
+        let table = storage.get_table(loc.table_id());
         unsafe {
-            assert_eq!(target_table.get::<CompA>(0.into()), Some(&CompA(1)));
-            assert_eq!(target_table.get::<CompB>(0.into()), Some(&CompB(2)));
-            assert_eq!(target_table.get::<CompD>(0.into()), Some(&CompD(4.0)));
+            let pos = table.get::<Position>(loc.row()).unwrap();
+            assert_eq!(pos.x, 1.0);
+            assert_eq!(pos.y, 2.0);
+            assert!(table.get::<Velocity>(loc.row()).is_none());
         }
+    }
+
+    #[test]
+    fn remove_component_returns_false_if_not_present() {
+        // Given
+        let mut storage = Storage::new();
+        let registry = world::TypeRegistry::new();
+        let mut allocator = crate::ecs::entity::Allocator::new();
+        let entity = allocator.alloc();
+        storage.spawn_entity(entity, Position { x: 1.0, y: 2.0 }, &registry);
+
+        // When
+        let removed = storage.remove_components::<Velocity>(entity, &registry);
+
+        // Then
+        assert!(!removed);
+    }
+
+    #[test]
+    fn migration_updates_swapped_entity_location() {
+        // Given
+        let mut storage = Storage::new();
+        let registry = world::TypeRegistry::new();
+        let mut allocator = crate::ecs::entity::Allocator::new();
+
+        // Spawn two entities with same archetype
+        let e1 = allocator.alloc();
+        let e2 = allocator.alloc();
+        storage.spawn_entity(e1, Position { x: 1.0, y: 1.0 }, &registry);
+        storage.spawn_entity(e2, Position { x: 2.0, y: 2.0 }, &registry);
+
+        // e1 at row 0, e2 at row 1
+        assert_eq!(storage.location_for(e1).unwrap().row(), 0.into());
+        assert_eq!(storage.location_for(e2).unwrap().row(), 1.into());
+
+        // When - migrate e1 (e2 should swap into row 0)
+        storage.add_components(e1, Velocity { dx: 0.5, dy: 0.3 }, &registry);
+
+        // Then - e2's location should be updated
+        assert_eq!(storage.location_for(e2).unwrap().row(), 0.into());
+
+        // Verify e2's data still accessible
+        let loc = storage.location_for(e2).unwrap();
+        let table = storage.get_table(loc.table_id());
+        unsafe {
+            let pos = table.get::<Position>(loc.row()).unwrap();
+            assert_eq!(pos.x, 2.0);
+        }
+    }
+
+    #[test]
+    fn migration_single_entity_no_swap() {
+        // Given - only one entity in source table
+        let mut storage = Storage::new();
+        let registry = world::TypeRegistry::new();
+        let mut allocator = crate::ecs::entity::Allocator::new();
+        let entity = allocator.alloc();
+        storage.spawn_entity(entity, Position { x: 1.0, y: 2.0 }, &registry);
+
+        // When - migrate (no other entity to swap)
+        storage.add_components(entity, Velocity { dx: 0.5, dy: 0.3 }, &registry);
+
+        // Then - should succeed without issues
+        let loc = storage.location_for(entity).unwrap();
+        let table = storage.get_table(loc.table_id());
+        unsafe {
+            assert_eq!(table.get::<Position>(loc.row()).unwrap().x, 1.0);
+            assert_eq!(table.get::<Velocity>(loc.row()).unwrap().dx, 0.5);
+        }
+    }
+
+    #[test]
+    fn sequential_migrations() {
+        // Given
+        let mut storage = Storage::new();
+        let registry = world::TypeRegistry::new();
+        let mut allocator = crate::ecs::entity::Allocator::new();
+        let entity = allocator.alloc();
+        storage.spawn_entity(entity, Position { x: 1.0, y: 2.0 }, &registry);
+
+        // When - multiple migrations
+        storage.add_components(entity, Velocity { dx: 0.5, dy: 0.3 }, &registry);
+        storage.add_components(entity, Health { hp: 100 }, &registry);
+        storage.remove_components::<Velocity>(entity, &registry);
+
+        // Then - final state: Position + Health
+        let loc = storage.location_for(entity).unwrap();
+        let table = storage.get_table(loc.table_id());
+        unsafe {
+            assert!(table.get::<Position>(loc.row()).is_some());
+            assert!(table.get::<Health>(loc.row()).is_some());
+            assert!(table.get::<Velocity>(loc.row()).is_none());
+        }
+    }
+
+    #[test]
+    fn migration_with_drop_tracking() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        #[derive(Debug, Component)]
+        struct DropTracker(Arc<AtomicUsize>);
+
+        impl Drop for DropTracker {
+            fn drop(&mut self) {
+                self.0.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+
+        // Given
+        let mut storage = Storage::new();
+        let registry = world::TypeRegistry::new();
+        let mut allocator = crate::ecs::entity::Allocator::new();
+        let entity = allocator.alloc();
+        let counter = Arc::new(AtomicUsize::new(0));
+
+        storage.spawn_entity(
+            entity,
+            (Position { x: 1.0, y: 2.0 }, DropTracker(counter.clone())),
+            &registry,
+        );
+        assert_eq!(counter.load(Ordering::SeqCst), 0);
+
+        // When - remove DropTracker component
+        storage.remove_components::<DropTracker>(entity, &registry);
+
+        // Then - DropTracker should have been dropped exactly once
+        assert_eq!(counter.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn migration_preserves_shared_components_no_extra_drop() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        #[derive(Debug, Component)]
+        struct DropCounter {
+            counter: Arc<AtomicUsize>,
+        }
+
+        impl Drop for DropCounter {
+            fn drop(&mut self) {
+                self.counter.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+
+        // Given
+        let mut storage = Storage::new();
+        let registry = world::TypeRegistry::new();
+        let mut allocator = crate::ecs::entity::Allocator::new();
+        let entity = allocator.alloc();
+        let counter = Arc::new(AtomicUsize::new(0));
+
+        storage.spawn_entity(
+            entity,
+            DropCounter {
+                counter: counter.clone(),
+            },
+            &registry,
+        );
+
+        // When - add component (DropCounter should NOT be dropped during migration)
+        storage.add_components(entity, Position { x: 1.0, y: 2.0 }, &registry);
+
+        // Then - DropCounter not dropped (shared component, byte-copied)
+        assert_eq!(counter.load(Ordering::SeqCst), 0);
+
+        // Cleanup - despawn should drop it
+        storage.despawn_entity(entity);
+        assert_eq!(counter.load(Ordering::SeqCst), 1);
     }
 }

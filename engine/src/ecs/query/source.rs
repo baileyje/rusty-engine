@@ -11,11 +11,11 @@ pub trait DataSource {
 
     /// Get the ids for component storage tables that support the given component
     /// specification.
-    fn table_ids_for(&self, components: &component::Spec) -> Vec<storage::table::Id>;
+    fn table_ids_for(&self, components: &component::Spec) -> Vec<storage::TableId>;
 
     /// Get access to a specific component storage table by its ID.  The assumes the caller's
     /// access has already been validated via `allows()`.
-    fn table(&mut self, table_id: storage::table::Id) -> &mut storage::Table;
+    fn table(&mut self, table_id: storage::TableId) -> &mut storage::Table;
 }
 
 /// Implement DataSource for the ECS world.
@@ -28,14 +28,14 @@ impl DataSource for world::World {
 
     /// Gets the table IDs for the given component specification.
     #[inline]
-    fn table_ids_for(&self, components: &component::Spec) -> Vec<storage::table::Id> {
+    fn table_ids_for(&self, components: &component::Spec) -> Vec<storage::TableId> {
         self.archetypes().table_ids_for(components)
     }
 
     #[inline]
-    fn table(&mut self, table_id: storage::table::Id) -> &mut storage::Table {
+    fn table(&mut self, table_id: storage::TableId) -> &mut storage::Table {
         // Safety: Caller must ensure access is valid via allows()
-        self.storage_mut().get_mut(table_id)
+        self.storage_mut().get_table_mut(table_id)
     }
 }
 
@@ -49,13 +49,13 @@ impl DataSource for world::Shard<'_> {
 
     /// Gets the table IDs for the given component specification.
     #[inline]
-    fn table_ids_for(&self, components: &component::Spec) -> Vec<storage::table::Id> {
+    fn table_ids_for(&self, components: &component::Spec) -> Vec<storage::TableId> {
         self.archetypes().table_ids_for(components)
     }
 
     #[inline]
-    fn table(&mut self, table_id: storage::table::Id) -> &mut storage::Table {
+    fn table(&mut self, table_id: storage::TableId) -> &mut storage::Table {
         // Safety: Caller must ensure access is valid via allows()
-        self.storage_mut().get_mut(table_id)
+        self.storage_mut().get_table_mut(table_id)
     }
 }

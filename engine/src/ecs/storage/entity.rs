@@ -1,9 +1,8 @@
 use log::warn;
 
 use crate::ecs::{
-    archetype,
     entity::{Entity, Generation},
-    storage,
+    storage::{self, archetype},
 };
 
 /// The state of an entity in the world. If the entity is Spawned, then it holds the current
@@ -28,11 +27,11 @@ struct Entry {
 /// The collection of all known entities in the world. This tracks whether an entity is spawned and
 /// if spawned, where they are located in terms of archetype.
 #[derive(Debug, Default, Clone)]
-pub struct Registry {
+pub struct Entities {
     entries: Vec<Entry>,
 }
 
-impl Registry {
+impl Entities {
     /// Construct a new empty entity entries collection.
     pub const fn new() -> Self {
         Self {
@@ -46,7 +45,7 @@ impl Registry {
         // Ensure capacity for the entity index.
         self.ensure_capacity(index);
         // Set the index to spawned with with the current generation.
-        self.entries[index].state = State::Spawned(entity.generation, location);
+        self.entries[index].state = State::Spawned(entity.generation(), location);
     }
 
     /// Mark the given entity as despawned in the entries. Return `true` if the entity was
@@ -105,7 +104,7 @@ impl Registry {
     fn spawned_state(&self, entity: Entity) -> Option<(Generation, storage::Location)> {
         self.state(entity).and_then(|s| match s {
             State::Spawned(generation, location) => {
-                if entity.generation == generation {
+                if entity.generation() == generation {
                     Some((generation, location))
                 } else {
                     None
@@ -145,21 +144,23 @@ impl Registry {
 #[cfg(test)]
 mod test {
 
-    use crate::ecs::{
-        archetype,
-        entity::{Allocator, Entity, Id, Registry},
-        storage::{self, table},
-    };
+    use super::*;
+
+    use crate::ecs::{entity, storage};
 
     fn make_location(id: u32, row: usize) -> storage::Location {
-        storage::Location::new(archetype::Id::new(id), table::Id::new(id), row.into())
+        storage::Location::new(
+            storage::archetype::Id::new(id),
+            storage::TableId::new(id),
+            row.into(),
+        )
     }
 
     #[test]
     fn entity_spawn_check() {
         // Given
-        let mut entities = Registry::default();
-        let mut allocator = Allocator::default();
+        let mut entities = Entities::default();
+        let mut allocator = entity::Allocator::default();
 
         // When - just allocated and not spawned
         let entity = allocator.alloc();
@@ -183,8 +184,8 @@ mod test {
     #[test]
     fn get_location() {
         // Given
-        let mut entities = Registry::default();
-        let mut allocator = Allocator::default();
+        let mut entities = Entities::default();
+        let mut allocator = entity::Allocator::default();
 
         let entity = allocator.alloc();
         let location = make_location(0, 0);
@@ -199,8 +200,8 @@ mod test {
     #[test]
     fn get_archetype() {
         // Given
-        let mut entities = Registry::default();
-        let mut allocator = Allocator::default();
+        let mut entities = Entities::default();
+        let mut allocator = entity::Allocator::default();
 
         let entity = allocator.alloc();
         let location = make_location(0, 0);
@@ -215,8 +216,8 @@ mod test {
     #[test]
     fn set_location() {
         // Given
-        let mut entities = Registry::default();
-        let mut allocator = Allocator::default();
+        let mut entities = Entities::default();
+        let mut allocator = entity::Allocator::default();
         let entity = allocator.alloc();
         let location1 = make_location(0, 1);
         let location2 = make_location(1, 2);
@@ -235,8 +236,8 @@ mod test {
     )]
     fn set_archetype_panics_with_unspawned() {
         // Given
-        let mut entities = Registry::default();
-        let mut allocator = Allocator::default();
+        let mut entities = Entities::default();
+        let mut allocator = entity::Allocator::default();
         let entity = allocator.alloc();
 
         // When
@@ -249,8 +250,8 @@ mod test {
     )]
     fn set_archetype_panics_with_despawned() {
         // Given
-        let mut entities = Registry::default();
-        let mut allocator = Allocator::default();
+        let mut entities = Entities::default();
+        let mut allocator = entity::Allocator::default();
         let entity = allocator.alloc();
         let location = make_location(0, 1);
 
@@ -264,8 +265,8 @@ mod test {
     #[test]
     fn storage_handles_sparse_entity_ids() {
         // Given
-        let mut entities = Registry::default();
-        let mut allocator = Allocator::default();
+        let mut entities = Entities::default();
+        let mut allocator = entity::Allocator::default();
 
         // When - Create entities with gaps (allocate but don't spawn all)
         let e0 = allocator.alloc(); // Id 0
@@ -285,10 +286,10 @@ mod test {
     #[test]
     fn storage_capacity_grows() {
         // Given
-        let mut entities = Registry::default();
+        let mut entities = Entities::default();
 
         // When - Spawn entity with high ID
-        let high_id_entity = Entity::new(Id(999));
+        let high_id_entity = Entity::new(999);
         entities.spawn_at(high_id_entity, make_location(1, 0));
 
         // Then - Storage should have grown to accommodate
@@ -299,8 +300,8 @@ mod test {
     #[test]
     fn despawn_returns_false_for_already_despawned() {
         // Given
-        let mut entities = Registry::default();
-        let mut allocator = Allocator::default();
+        let mut entities = Entities::default();
+        let mut allocator = entity::Allocator::default();
         let entity = allocator.alloc();
         entities.spawn_at(entity, make_location(1, 0));
 
@@ -320,8 +321,8 @@ mod test {
     #[test]
     fn despawn_returns_false_for_never_spawned() {
         // Given
-        let mut entities = Registry::default();
-        let mut allocator = Allocator::default();
+        let mut entities = Entities::default();
+        let mut allocator = entity::Allocator::default();
         let entity = allocator.alloc();
 
         // When - Try to despawn without spawning
@@ -334,8 +335,8 @@ mod test {
     #[test]
     fn archetype_of_returns_none_for_wrong_generation() {
         // Given
-        let mut entities = Registry::default();
-        let mut allocator = Allocator::default();
+        let mut entities = Entities::default();
+        let mut allocator = entity::Allocator::default();
         let location = make_location(1, 0);
         let entity = allocator.alloc();
         entities.spawn_at(entity, location);
@@ -360,8 +361,8 @@ mod test {
     #[test]
     fn storage_multiple_archetypes() {
         // Given
-        let mut entities = Registry::default();
-        let mut allocator = Allocator::default();
+        let mut entities = Entities::default();
+        let mut allocator = entity::Allocator::default();
         let archetype1 = archetype::Id::new(1);
         let archetype2 = archetype::Id::new(2);
         let archetype3 = archetype::Id::new(3);
@@ -384,8 +385,8 @@ mod test {
     #[test]
     fn storage_respawn_after_despawn() {
         // Given
-        let mut entities = Registry::default();
-        let mut allocator = Allocator::default();
+        let mut entities = Entities::default();
+        let mut allocator = entity::Allocator::default();
         let archetype2 = archetype::Id::new(2);
         let entity = allocator.alloc();
 
@@ -406,8 +407,8 @@ mod test {
     #[test]
     fn is_spawned_returns_false_for_nonexistent_entity() {
         // Given
-        let entities = Registry::default();
-        let entity = Entity::new(Id(999));
+        let entities = Entities::default();
+        let entity = Entity::new(999);
 
         // When/Then
         assert!(!entities.is_spawned(entity));
@@ -416,8 +417,8 @@ mod test {
     #[test]
     fn archetype_of_returns_none_for_nonexistent_entity() {
         // Given
-        let entities = Registry::default();
-        let entity = Entity::new(Id(999));
+        let entities = Entities::default();
+        let entity = Entity::new(999);
 
         // When/Then
         assert_eq!(entities.archetype(entity), None);

@@ -56,15 +56,9 @@
 use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 
 mod reference;
-mod registry;
-
-/// Export the storage module for entity storage management.
-pub use registry::Registry;
 
 /// Export the reference module for entity references.
 pub use reference::{Ref, RefMut};
-
-use crate::ecs::storage::{self};
 
 /// The generation of an entity, used to track whether an entity is the active entity in a world.
 /// The generation starts at `FIRST` and is incremented each time an entity with the same `id` spawned.
@@ -93,13 +87,6 @@ impl From<u32> for Id {
     }
 }
 
-impl storage::index::SparseId for Id {
-    /// Get the index of this entity if it were to live in indexable storage (e.g. Vec)
-    fn index(&self) -> usize {
-        self.0 as usize
-    }
-}
-
 /// An entity in the ECS (Entity Component System).
 /// This struct uniquely identifies an entity using its `id` and `generation`.
 /// World should contain at most one `active` entity for a given `id`. The `generation` is used to
@@ -115,14 +102,16 @@ pub struct Entity {
 
 impl Entity {
     /// Construct a new entity with just an id. This will default to the first generation.
+    ///
+    /// This is primarily used for testing.
     #[inline]
-    pub const fn new(id: Id) -> Self {
-        Self::new_with_generation(id, Generation::FIRST)
+    pub(crate) fn new(id: impl Into<Id>) -> Self {
+        Self::new_with_generation(id.into(), Generation::FIRST)
     }
 
     /// Construct a new entity with an id and known generations.
     #[inline]
-    pub const fn new_with_generation(id: Id, generation: Generation) -> Self {
+    pub(crate) const fn new_with_generation(id: Id, generation: Generation) -> Self {
         Self { id, generation }
     }
 
@@ -165,14 +154,6 @@ impl Ord for Entity {
             std::cmp::Ordering::Equal => self.generation.cmp(&other.generation),
             ord => ord,
         }
-    }
-}
-
-/// Implement SparseId for Entity to get indexable storage index.
-impl storage::index::SparseId for Entity {
-    /// Get the index of this entity if it were to live in indexable storage (e.g. Vec)
-    fn index(&self) -> usize {
-        self.id.index()
     }
 }
 

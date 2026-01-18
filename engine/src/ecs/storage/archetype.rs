@@ -1,13 +1,82 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, hash::Hash};
 
-use crate::ecs::{
-    archetype::{Archetype, Id},
-    component, storage,
-};
+use crate::ecs::{component, storage};
+
+/// A unique identifier for an Archetype in the ECS (Entity Component System).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct Id(u32);
+
+impl Id {
+    /// Create a new Id with the given unique identifier.
+    #[inline]
+    pub const fn new(id: u32) -> Self {
+        Id(id)
+    }
+
+    /// Get the unique identifier of the Id.
+    #[inline]
+    pub fn id(&self) -> u32 {
+        self.0
+    }
+
+    /// Get the index of the Id as a usize to be used in collections.
+    #[inline]
+    pub fn index(&self) -> usize {
+        self.0 as usize
+    }
+}
+
+/// An Archetype represents a collection of entities with a unique combination of components.
+pub struct Archetype {
+    /// The archetype's unique identifier.
+    id: Id,
+
+    /// The id for the table that contains storage for this archetype.
+    table_id: storage::TableId,
+
+    /// The components that make up this archetype.
+    components: component::Spec,
+}
+
+impl Archetype {
+    /// Create a new Archetype with the given archetype ID
+    #[inline]
+    pub const fn new(id: Id, components: component::Spec, table_id: storage::TableId) -> Self {
+        Self {
+            id,
+            table_id,
+            components,
+        }
+    }
+
+    /// Get the Id of this archetype.
+    #[inline]
+    pub fn id(&self) -> Id {
+        self.id
+    }
+
+    /// Get the storage table identifier for this archetype.
+    #[inline]
+    pub fn table_id(&self) -> storage::TableId {
+        self.table_id
+    }
+
+    /// Get the component specification of this archetype.
+    #[inline]
+    pub fn components(&self) -> &component::Spec {
+        &self.components
+    }
+
+    /// Determines whether this archetype supports the provided component specification.
+    #[inline]
+    pub fn supports(&self, spec: &component::Spec) -> bool {
+        self.components.contains_all(spec)
+    }
+}
 
 /// Central registry of archetypes.
 #[derive(Default)]
-pub struct Registry {
+pub struct Archetypes {
     /// The archetypes stored by their unique identifier
     archetypes: Vec<Archetype>,
 
@@ -15,7 +84,7 @@ pub struct Registry {
     by_components: HashMap<component::Spec, Id>,
 }
 
-impl Registry {
+impl Archetypes {
     /// Create an empty archetype registry.
     #[inline]
     pub fn new() -> Self {
@@ -33,7 +102,7 @@ impl Registry {
     ///
     /// TODO: Consider adding a check to prevent duplicate archetypes with the same spec, but
     /// determoining how to handle the error secenario.
-    pub fn create(&mut self, spec: component::Spec, table_id: storage::table::Id) -> Id {
+    pub fn create(&mut self, spec: component::Spec, table_id: storage::TableId) -> Id {
         // Add a new archetype with the next valid index.
         let archetype_id = Id(self.archetypes.len() as u32);
         // Add to map by components (requires one clone for HashMap key)
@@ -85,55 +154,11 @@ impl Registry {
     /// This does not have to be an exact match; any archetype that contains all components in the
     /// spec `supports` the spec. This is useful for querying archetypes that can fulfill a set of
     /// query parameters.
-    pub fn table_ids_for(&self, spec: &component::Spec) -> Vec<storage::table::Id> {
+    pub fn table_ids_for(&self, spec: &component::Spec) -> Vec<storage::TableId> {
         self.archetypes
             .iter()
             .filter(|a| a.supports(spec))
             .map(|a| a.table_id())
             .collect()
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use rusty_macros::Component;
-
-    use crate::ecs::{archetype::Registry, component, storage, world};
-
-    #[test]
-    fn arch_registry_create() {
-        // Given
-        let type_registry = world::TypeRegistry::new();
-        let mut registry = Registry::new();
-
-        #[derive(Component)]
-        pub struct Comp1 {}
-        #[derive(Component)]
-        pub struct Comp2 {}
-        #[derive(Component)]
-        pub struct Comp3 {}
-
-        let id1 = type_registry.register_component::<Comp1>();
-        let id2 = type_registry.register_component::<Comp2>();
-        let id3 = type_registry.register_component::<Comp3>();
-
-        // When
-        let arch1 = registry
-            .create(component::Spec::new([id1, id2]), storage::table::Id::new(0))
-            .id();
-        let arch2 = registry
-            .create(component::Spec::new([id1, id3]), storage::table::Id::new(1))
-            .id();
-        let arch3 = registry
-            .create(
-                component::Spec::new([id1, id2, id3]),
-                storage::table::Id::new(2),
-            )
-            .id();
-
-        // Then
-        assert_ne!(arch1, arch2);
-        assert_ne!(arch1, arch3);
-        assert_ne!(arch2, arch3);
     }
 }

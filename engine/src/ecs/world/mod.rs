@@ -39,7 +39,6 @@ use std::cell::RefCell;
 use std::marker::PhantomData;
 
 use crate::ecs::{
-    archetype::{self},
     component::{self},
     entity,
     query::{self},
@@ -83,17 +82,11 @@ pub struct World {
     /// The world's entity allocator.
     entity_allocator: entity::Allocator,
 
-    /// The stored entities in the world.
-    entities: entity::Registry,
-
     /// The registry of all know resource types in the world.
     resources: TypeRegistry,
 
     /// The storage for components in the world.
     storage: storage::Storage,
-
-    /// The archetype registry for the world.
-    archetypes: archetype::Registry,
 
     /// The current access grants for the world.
     active_grants: RefCell<GrantTracker>,
@@ -107,10 +100,8 @@ impl World {
         Self {
             id,
             entity_allocator: entity::Allocator::default(),
-            entities: entity::Registry::default(),
             resources: TypeRegistry::default(),
             storage: storage::Storage::default(),
-            archetypes: archetype::Registry::default(),
             active_grants: RefCell::new(GrantTracker::default()),
             _not_send: PhantomData,
         }
@@ -127,8 +118,8 @@ impl World {
     }
 
     #[inline]
-    pub fn archetypes(&self) -> &archetype::Registry {
-        &self.archetypes
+    pub fn archetypes(&self) -> &storage::archetype::Archetypes {
+        self.storage.archetypes()
     }
 
     #[inline]
@@ -143,37 +134,12 @@ impl World {
 
     /// Spawn a new entity with the given set of components in the world.
     /// This will establish the entity in the appropriate archetype and storage table.
-    pub fn spawn<S: component::Set>(&mut self, set: S) -> entity::Entity {
+    pub fn spawn<S: component::Set + Send>(&mut self, set: S) -> entity::Entity {
         // Allocate a new entity.
         let entity = self.entity_allocator.alloc();
 
-        // Construct the component specification for this set of components.
-        // This will register any components not yet registered.
-        let spec = <S>::into_spec(&self.resources);
-
-        // Get the archetype and type for this component spec, creating them if they don't exist.
-        let (archetype_id, table) = match self.archetypes.get_by_spec(&spec) {
-            Some(archetype) => {
-                let table = self.storage.get_mut(archetype.table_id());
-                (archetype.id(), table)
-            }
-            None => {
-                let table = self
-                    .storage
-                    .create_table(&self.resources.info_for_spec(&spec));
-                let archetype_id = self.archetypes.create(spec.clone(), table.id());
-                (archetype_id, table)
-            }
-        };
-
-        // Add the entity with all the components
-        let row = table.add_entity(entity, set, &self.resources);
-
-        // Mark the entity as spawned in the world.
-        self.entities.spawn_at(
-            entity,
-            storage::Location::new(archetype_id, table.id(), row),
-        );
+        // Spawn the entity in storage.
+        self.storage.spawn_entity(entity, set, &self.resources);
 
         entity
     }
@@ -183,34 +149,38 @@ impl World {
     ///
     /// If the entity is not currently spawned, this method does nothing.
     pub fn despawn(&mut self, entity: entity::Entity) {
-        // Only despawn if the entity is currently spawned
-        if !self.entities.is_spawned(entity) {
-            return;
-        }
-
-        // Remove the entity from its archetype table.
-        if let Some((table, row)) = self.storage_for_mut(entity) {
-            // Remove the entity from the table using swap-remove, which moves the last entity
-            // in the table to fill the gap.
-            let moved = table.swap_remove_row(row);
-            // If an entity was moved into this row, update its location in the registry.
-            if let Some(moved_entity) = moved
-                && let Some(loc) = self.entities.location(moved_entity)
-            {
-                self.entities.set_location(
-                    moved_entity,
-                    storage::Location::new(loc.archetype_id(), loc.table_id(), row),
-                );
-            }
-        }
-        self.entities.despawn(entity);
+        // Delegate to storage to despawn the entity.
+        self.storage.despawn_entity(entity);
     }
 
-    /// Get the storage location for the given entity, if it's spawned.
-    pub fn location_for(&self, entity: entity::Entity) -> Option<storage::Location> {
-        self.entities.location(entity)
+    /// Add a component to an existing entity.
+    ///
+    /// This migrates the entity to a new archetype that includes the new component.
+    /// If the entity already has this component type, this method does nothing.
+    ///
+    /// # Returns
+    /// - `true` if the component was added
+    /// - `false` if the entity doesn't exist or already has this component
+    pub fn add_components<S: component::Set>(
+        &mut self,
+        entity: entity::Entity,
+        components: S,
+    ) -> bool {
+        self.storage
+            .add_components(entity, components, &self.resources)
     }
 
+    /// Remove a component from an existing entity.
+    ///
+    /// This migrates the entity to a new archetype that excludes the component.
+    /// If the entity doesn't have this component type, this method does nothing.
+    ///
+    /// # Returns
+    /// - `true` if the component was removed
+    /// - `false` if the entity doesn't exist or doesn't have this component
+    pub fn remove_components<S: component::IntoSpec>(&mut self, entity: entity::Entity) -> bool {
+        self.storage.remove_components::<S>(entity, &self.resources)
+    }
     /// Get a reference to the given entity, if it's spawned.
     ///
     /// Returns `None` if the entity is not currently spawned in the world.
@@ -226,17 +196,17 @@ impl World {
     /// # Note
     /// This method holds a mutable reference to the entire world's storage, preventing
     /// any other access while the `RefMut` is held. For performance-critical code,
-    /// consider using queriss/systems that can access multiple entities efficiently.
+    /// consider using queries/systems that can access multiple entities efficiently.
     pub fn entity_mut(&mut self, entity: entity::Entity) -> Option<entity::RefMut<'_>> {
-        let loc = self.location_for(entity)?;
-        let table = self.storage.get_mut(loc.table_id());
+        let loc = self.storage.location_for(entity)?;
+        let table = self.storage.get_table_mut(loc.table_id());
         Some(entity::RefMut::new(entity, table, loc.row()))
     }
 
     /// Get the storage table and row for a reference to the given entity, if the entity is spawned.
     pub fn storage_for(&self, entity: entity::Entity) -> Option<(&storage::Table, storage::Row)> {
-        let loc = self.location_for(entity)?;
-        Some((self.storage.get(loc.table_id()), loc.row()))
+        let loc = self.storage.location_for(entity)?;
+        Some((self.storage.get_table(loc.table_id()), loc.row()))
     }
 
     /// Get the storage table and row for a mutable reference to the given entity, if the entity is
@@ -245,8 +215,8 @@ impl World {
         &mut self,
         entity: entity::Entity,
     ) -> Option<(&mut storage::Table, storage::Row)> {
-        let loc = self.location_for(entity)?;
-        Some((self.storage.get_mut(loc.table_id()), loc.row()))
+        let loc = self.storage.location_for(entity)?;
+        Some((self.storage.get_table_mut(loc.table_id()), loc.row()))
     }
 
     /// Register a new component type in the world.
@@ -320,140 +290,6 @@ impl World {
     pub fn release_grant(&self, grant: &AccessGrant) {
         self.active_grants.borrow_mut().remove(grant);
     }
-
-    /// Add a component to an existing entity.
-    ///
-    /// This migrates the entity to a new archetype that includes the new component.
-    /// If the entity already has this component type, this method does nothing.
-    ///
-    /// # Returns
-    /// - `true` if the component was added
-    /// - `false` if the entity doesn't exist or already has this component
-    pub fn add_component<C: component::Component>(&mut self, entity: entity::Entity, component: C) -> bool {
-        // Check if entity is spawned
-        let location = match self.entities.location(entity) {
-            Some(loc) => loc,
-            None => return false,
-        };
-
-        // Get the current archetype's spec
-        let current_archetype = self.archetypes.get(location.archetype_id())
-            .expect("entity location references valid archetype");
-        let current_spec = current_archetype.components();
-
-        // Register the component and get its ID
-        let component_id = self.resources.register_component::<C>();
-
-        // Check if entity already has this component
-        if current_spec.contains(component_id) {
-            return false;
-        }
-
-        // Compute the new spec with the component added
-        let new_spec = current_spec.with(component_id);
-
-        // Get or create the target archetype/table
-        let (target_archetype_id, target_table_id) = match self.archetypes.get_by_spec(&new_spec) {
-            Some(archetype) => (archetype.id(), archetype.table_id()),
-            None => {
-                // Create new table and archetype
-                let table = self.storage.create_table(&self.resources.info_for_spec(&new_spec));
-                let archetype_id = self.archetypes.create(new_spec.clone(), table.id());
-                (archetype_id, table.id())
-            }
-        };
-
-        // Build and execute the migration change
-        let source = storage::change::MigrationSource::new(location.table_id(), location.row());
-        let change = storage::change::Change::migrate_with(entity, source, target_table_id, component);
-        let result = self.storage.execute_one(change, &self.resources);
-
-        // Update entity location and handle swapped entity
-        if let storage::change::ChangeResult::Migrated { new_row, source_moved } = result {
-            // Update the migrated entity's location
-            self.entities.set_location(
-                entity,
-                storage::Location::new(target_archetype_id, target_table_id, new_row),
-            );
-
-            // Handle entity that was moved during swap-remove in source table
-            if let Some(moved_entity) = source_moved {
-                self.entities.set_location(
-                    moved_entity,
-                    storage::Location::new(location.archetype_id(), location.table_id(), location.row()),
-                );
-            }
-        }
-
-        true
-    }
-
-    /// Remove a component from an existing entity.
-    ///
-    /// This migrates the entity to a new archetype that excludes the component.
-    /// If the entity doesn't have this component type, this method does nothing.
-    ///
-    /// # Returns
-    /// - `true` if the component was removed
-    /// - `false` if the entity doesn't exist or doesn't have this component
-    pub fn remove_component<C: component::Component>(&mut self, entity: entity::Entity) -> bool {
-        // Check if entity is spawned
-        let location = match self.entities.location(entity) {
-            Some(loc) => loc,
-            None => return false,
-        };
-
-        // Get the current archetype's spec
-        let current_archetype = self.archetypes.get(location.archetype_id())
-            .expect("entity location references valid archetype");
-        let current_spec = current_archetype.components();
-
-        // Register the component and get its ID
-        let component_id = self.resources.register_component::<C>();
-
-        // Check if entity has this component
-        if !current_spec.contains(component_id) {
-            return false;
-        }
-
-        // Compute the new spec without the component
-        let new_spec = current_spec.without(component_id);
-
-        // Get or create the target archetype/table
-        let (target_archetype_id, target_table_id) = match self.archetypes.get_by_spec(&new_spec) {
-            Some(archetype) => (archetype.id(), archetype.table_id()),
-            None => {
-                // Create new table and archetype
-                let table = self.storage.create_table(&self.resources.info_for_spec(&new_spec));
-                let archetype_id = self.archetypes.create(new_spec.clone(), table.id());
-                (archetype_id, table.id())
-            }
-        };
-
-        // Build and execute the migration change
-        let source = storage::change::MigrationSource::new(location.table_id(), location.row());
-        let change = storage::change::Change::migrate(entity, source, target_table_id);
-        let result = self.storage.execute_one(change, &self.resources);
-
-        // Update entity location and handle swapped entity
-        if let storage::change::ChangeResult::Migrated { new_row, source_moved } = result {
-            // Update the migrated entity's location
-            self.entities.set_location(
-                entity,
-                storage::Location::new(target_archetype_id, target_table_id, new_row),
-            );
-
-            // Handle entity that was moved during swap-remove in source table
-            if let Some(moved_entity) = source_moved {
-                self.entities.set_location(
-                    moved_entity,
-                    storage::Location::new(location.archetype_id(), location.table_id(), location.row()),
-                );
-            }
-        }
-
-        true
-    }
 }
 
 // World is intentionally !Send and !Sync:
@@ -476,7 +312,7 @@ mod test {
         // When
         let entity = world.spawn(());
         // Then
-        assert!(world.entities.is_spawned(entity));
+        assert!(world.storage.entities().is_spawned(entity));
     }
 
     #[test]
@@ -503,7 +339,7 @@ mod test {
         ));
 
         // Then
-        assert!(world.entities.is_spawned(entity));
+        assert!(world.storage.entities().is_spawned(entity));
 
         let entity_ref = world.entity(entity).unwrap();
 
@@ -535,13 +371,13 @@ mod test {
         ));
 
         // Then
-        assert!(world.entities.is_spawned(entity));
+        assert!(world.storage.entities().is_spawned(entity));
 
         // And When
         world.despawn(entity);
 
         // Then
-        assert!(!world.entities.is_spawned(entity));
+        assert!(!world.storage.entities().is_spawned(entity));
         assert!(world.entity(entity).is_none());
     }
 
@@ -555,23 +391,32 @@ mod test {
 
         let entity1 = world.spawn(Comp1);
         // Confirm entity1 is at row 0
-        assert_eq!(world.entities.location(entity1).unwrap().row(), 0.into());
+        assert_eq!(
+            world.storage.entities().location(entity1).unwrap().row(),
+            0.into()
+        );
 
         let entity2 = world.spawn(Comp1);
         // Confirm entity2 is at row 1
-        assert_eq!(world.entities.location(entity2).unwrap().row(), 1.into());
+        assert_eq!(
+            world.storage.entities().location(entity2).unwrap().row(),
+            1.into()
+        );
 
         // And When
         world.despawn(entity1);
 
         // Then
-        assert!(!world.entities.is_spawned(entity1));
+        assert!(!world.storage.entities().is_spawned(entity1));
 
         // Confirm entity2 is now at row 0
-        assert_eq!(world.entities.location(entity2).unwrap().row(), 0.into());
+        assert_eq!(
+            world.storage.entities().location(entity2).unwrap().row(),
+            0.into()
+        );
 
         // Confirm entity2 is still spawned
-        assert!(world.entities.is_spawned(entity2));
+        assert!(world.storage.entities().is_spawned(entity2));
 
         // Confirm we can still get its components
         assert!(world.entity(entity2).unwrap().get::<Comp1>().is_some());
@@ -598,7 +443,7 @@ mod test {
         world.despawn(entity1);
 
         // Entity should still be despawned
-        assert!(!world.entities.is_spawned(entity1));
+        assert!(!world.storage.entities().is_spawned(entity1));
     }
 
     #[test]
@@ -663,10 +508,10 @@ mod test {
         let e4 = world.spawn((A, B, C));
 
         // All should be spawned
-        assert!(world.entities.is_spawned(e1));
-        assert!(world.entities.is_spawned(e2));
-        assert!(world.entities.is_spawned(e3));
-        assert!(world.entities.is_spawned(e4));
+        assert!(world.storage.entities().is_spawned(e1));
+        assert!(world.storage.entities().is_spawned(e2));
+        assert!(world.storage.entities().is_spawned(e3));
+        assert!(world.storage.entities().is_spawned(e4));
 
         // Verify we can access them
         assert!(world.entity(e1).is_some());
@@ -696,8 +541,8 @@ mod test {
         }
 
         // Original entity should not be accessible
-        assert!(!world.entities.is_spawned(entity1));
-        assert!(world.entities.is_spawned(entity2));
+        assert!(!world.storage.entities().is_spawned(entity1));
+        assert!(world.storage.entities().is_spawned(entity2));
     }
 
     #[test]
@@ -705,10 +550,16 @@ mod test {
         let mut world = World::new(Id(1));
 
         #[derive(Component, Debug, PartialEq)]
-        struct Position { x: f32, y: f32 }
+        struct Position {
+            x: f32,
+            y: f32,
+        }
 
         #[derive(Component, Debug, PartialEq)]
-        struct Velocity { dx: f32, dy: f32 }
+        struct Velocity {
+            dx: f32,
+            dy: f32,
+        }
 
         // Spawn entity with just Position
         let entity = world.spawn(Position { x: 1.0, y: 2.0 });
@@ -721,7 +572,7 @@ mod test {
         }
 
         // Add Velocity component
-        let added = world.add_component(entity, Velocity { dx: 0.5, dy: 0.3 });
+        let added = world.add_components(entity, Velocity { dx: 0.5, dy: 0.3 });
         assert!(added);
 
         // Verify now has both components
@@ -739,12 +590,15 @@ mod test {
         let mut world = World::new(Id(1));
 
         #[derive(Component, Debug, PartialEq)]
-        struct Position { x: f32, y: f32 }
+        struct Position {
+            x: f32,
+            y: f32,
+        }
 
         let entity = world.spawn(Position { x: 1.0, y: 2.0 });
 
         // Try to add Position again
-        let added = world.add_component(entity, Position { x: 5.0, y: 6.0 });
+        let added = world.add_components(entity, Position { x: 5.0, y: 6.0 });
         assert!(!added);
 
         // Original values should be unchanged
@@ -766,7 +620,7 @@ mod test {
         world.despawn(entity);
 
         // Try to add component to despawned entity
-        let added = world.add_component(entity, TestComp);
+        let added = world.add_components(entity, TestComp);
         assert!(!added);
     }
 
@@ -775,16 +629,19 @@ mod test {
         let mut world = World::new(Id(1));
 
         #[derive(Component, Debug, PartialEq)]
-        struct Position { x: f32, y: f32 }
+        struct Position {
+            x: f32,
+            y: f32,
+        }
 
         #[derive(Component, Debug, PartialEq)]
-        struct Velocity { dx: f32, dy: f32 }
+        struct Velocity {
+            dx: f32,
+            dy: f32,
+        }
 
         // Spawn entity with Position and Velocity
-        let entity = world.spawn((
-            Position { x: 1.0, y: 2.0 },
-            Velocity { dx: 0.5, dy: 0.3 },
-        ));
+        let entity = world.spawn((Position { x: 1.0, y: 2.0 }, Velocity { dx: 0.5, dy: 0.3 }));
 
         // Verify has both components
         {
@@ -794,7 +651,7 @@ mod test {
         }
 
         // Remove Velocity component
-        let removed = world.remove_component::<Velocity>(entity);
+        let removed = world.remove_components::<Velocity>(entity);
         assert!(removed);
 
         // Verify only has Position now
@@ -810,7 +667,10 @@ mod test {
         let mut world = World::new(Id(1));
 
         #[derive(Component)]
-        struct Position { x: f32, y: f32 }
+        struct Position {
+            x: f32,
+            y: f32,
+        }
 
         #[derive(Component)]
         struct Velocity;
@@ -818,7 +678,7 @@ mod test {
         let entity = world.spawn(Position { x: 1.0, y: 2.0 });
 
         // Try to remove Velocity which doesn't exist
-        let removed = world.remove_component::<Velocity>(entity);
+        let removed = world.remove_components::<Velocity>(entity);
         assert!(!removed);
     }
 
@@ -833,7 +693,7 @@ mod test {
         world.despawn(entity);
 
         // Try to remove component from despawned entity
-        let removed = world.remove_component::<TestComp>(entity);
+        let removed = world.remove_components::<TestComp>(entity);
         assert!(!removed);
     }
 
@@ -843,24 +703,30 @@ mod test {
         let mut world = World::new(Id(1));
 
         #[derive(Component, Debug, PartialEq)]
-        struct Position { x: f32, y: f32 }
+        struct Position {
+            x: f32,
+            y: f32,
+        }
 
         #[derive(Component, Debug, PartialEq)]
-        struct Velocity { dx: f32, dy: f32 }
+        struct Velocity {
+            dx: f32,
+            dy: f32,
+        }
 
         // Spawn two entities with same archetype
         let entity1 = world.spawn(Position { x: 1.0, y: 1.0 });
         let entity2 = world.spawn(Position { x: 2.0, y: 2.0 });
 
         // entity1 at row 0, entity2 at row 1
-        assert_eq!(world.location_for(entity1).unwrap().row(), 0.into());
-        assert_eq!(world.location_for(entity2).unwrap().row(), 1.into());
+        assert_eq!(world.storage.location_for(entity1).unwrap().row(), 0.into());
+        assert_eq!(world.storage.location_for(entity2).unwrap().row(), 1.into());
 
         // Migrate entity1 to new archetype (Position + Velocity)
-        world.add_component(entity1, Velocity { dx: 0.5, dy: 0.3 });
+        world.add_components(entity1, Velocity { dx: 0.5, dy: 0.3 });
 
         // entity2 should now be at row 0 (was swapped during entity1's migration)
-        assert_eq!(world.location_for(entity2).unwrap().row(), 0.into());
+        assert_eq!(world.storage.location_for(entity2).unwrap().row(), 0.into());
 
         // Both entities should still be accessible with correct data
         let e1_ref = world.entity(entity1).unwrap();
@@ -877,24 +743,30 @@ mod test {
         let mut world = World::new(Id(1));
 
         #[derive(Component, Debug, PartialEq)]
-        struct Position { x: f32, y: f32 }
+        struct Position {
+            x: f32,
+            y: f32,
+        }
 
         #[derive(Component, Debug, PartialEq)]
-        struct Velocity { dx: f32, dy: f32 }
+        struct Velocity {
+            dx: f32,
+            dy: f32,
+        }
 
         // Spawn two entities with same archetype (Position + Velocity)
         let entity1 = world.spawn((Position { x: 1.0, y: 1.0 }, Velocity { dx: 0.5, dy: 0.5 }));
         let entity2 = world.spawn((Position { x: 2.0, y: 2.0 }, Velocity { dx: 1.0, dy: 1.0 }));
 
         // entity1 at row 0, entity2 at row 1
-        assert_eq!(world.location_for(entity1).unwrap().row(), 0.into());
-        assert_eq!(world.location_for(entity2).unwrap().row(), 1.into());
+        assert_eq!(world.storage.location_for(entity1).unwrap().row(), 0.into());
+        assert_eq!(world.storage.location_for(entity2).unwrap().row(), 1.into());
 
         // Remove Velocity from entity1
-        world.remove_component::<Velocity>(entity1);
+        world.remove_components::<Velocity>(entity1);
 
         // entity2 should now be at row 0
-        assert_eq!(world.location_for(entity2).unwrap().row(), 0.into());
+        assert_eq!(world.storage.location_for(entity2).unwrap().row(), 0.into());
 
         // Both entities should still be accessible with correct data
         let e1_ref = world.entity(entity1).unwrap();
@@ -911,7 +783,10 @@ mod test {
         let mut world = World::new(Id(1));
 
         #[derive(Component, Debug, PartialEq)]
-        struct Position { x: f32, y: f32 }
+        struct Position {
+            x: f32,
+            y: f32,
+        }
 
         #[derive(Component, Debug, PartialEq)]
         struct Tag;
@@ -919,11 +794,11 @@ mod test {
         let entity = world.spawn(Position { x: 1.0, y: 2.0 });
 
         // Add Tag
-        assert!(world.add_component(entity, Tag));
+        assert!(world.add_components(entity, Tag));
         assert!(world.entity(entity).unwrap().get::<Tag>().is_some());
 
         // Remove Tag
-        assert!(world.remove_component::<Tag>(entity));
+        assert!(world.remove_components::<Tag>(entity));
         assert!(world.entity(entity).unwrap().get::<Tag>().is_none());
 
         // Position should still be there

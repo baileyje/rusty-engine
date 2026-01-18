@@ -80,7 +80,7 @@ mod tests {
     use crate::ecs::{
         component::IntoSpec,
         entity::{self},
-        storage::{Table, table},
+        storage::{Table, TableId},
         world,
     };
     use rusty_macros::Component;
@@ -108,7 +108,7 @@ mod tests {
         let registry = world::TypeRegistry::new();
 
         let spec = <(Position, Velocity)>::into_spec(&registry);
-        let mut table = Table::new(table::Id::new(0), &registry.info_for_spec(&spec));
+        let mut table = Table::new(TableId::new(0), &registry.info_for_spec(&spec));
 
         let mut allocator = entity::Allocator::new();
         let entity = allocator.alloc();
@@ -133,7 +133,7 @@ mod tests {
         let registry = world::TypeRegistry::new();
 
         let spec = <Position>::into_spec(&registry);
-        let mut table = Table::new(table::Id::new(0), &registry.info_for_spec(&spec));
+        let mut table = Table::new(TableId::new(0), &registry.info_for_spec(&spec));
 
         let mut allocator = entity::Allocator::new();
         let entity = allocator.alloc();
@@ -156,7 +156,7 @@ mod tests {
         // Note: Health is NOT registered
 
         let spec = <Position>::into_spec(&registry);
-        let mut table = Table::new(table::Id::new(0), &registry.info_for_spec(&spec));
+        let mut table = Table::new(TableId::new(0), &registry.info_for_spec(&spec));
 
         let mut allocator = entity::Allocator::new();
         let entity = allocator.alloc();
@@ -178,7 +178,7 @@ mod tests {
         let registry = world::TypeRegistry::new();
         let spec = <(Position, Velocity, Health)>::into_spec(&registry);
 
-        let mut table = Table::new(table::Id::new(0), &registry.info_for_spec(&spec));
+        let mut table = Table::new(TableId::new(0), &registry.info_for_spec(&spec));
 
         let mut allocator = entity::Allocator::new();
         let entity = allocator.alloc();
@@ -208,7 +208,7 @@ mod tests {
         let registry = world::TypeRegistry::new();
 
         let spec = <Position>::into_spec(&registry);
-        let mut table = Table::new(table::Id::new(0), &registry.info_for_spec(&spec));
+        let mut table = Table::new(TableId::new(0), &registry.info_for_spec(&spec));
 
         let mut allocator = entity::Allocator::new();
         let entity1 = allocator.alloc();
@@ -231,7 +231,7 @@ mod tests {
         let registry = world::TypeRegistry::new();
 
         let spec = <(Position, Velocity)>::into_spec(&registry);
-        let mut table = Table::new(table::Id::new(0), &registry.info_for_spec(&spec));
+        let mut table = Table::new(TableId::new(0), &registry.info_for_spec(&spec));
 
         let mut allocator = entity::Allocator::new();
         let entity = allocator.alloc();
@@ -256,7 +256,7 @@ mod tests {
         let registry = world::TypeRegistry::new();
 
         let spec = <Position>::into_spec(&registry);
-        let mut table = Table::new(table::Id::new(0), &registry.info_for_spec(&spec));
+        let mut table = Table::new(TableId::new(0), &registry.info_for_spec(&spec));
 
         let mut allocator = entity::Allocator::new();
         let entity = allocator.alloc();
@@ -278,7 +278,7 @@ mod tests {
         let registry = world::TypeRegistry::new();
 
         let spec = <(Position, Velocity)>::into_spec(&registry);
-        let mut table = Table::new(table::Id::new(0), &registry.info_for_spec(&spec));
+        let mut table = Table::new(TableId::new(0), &registry.info_for_spec(&spec));
 
         let mut allocator = entity::Allocator::new();
         let entity = allocator.alloc();

@@ -1,7 +1,4 @@
-use crate::ecs::{
-    archetype,
-    storage::{table, Row},
-};
+use crate::ecs::storage::{Row, archetype, table};
 
 /// The location an entity is stored in the ECS. This is made up of the entity's, archetype ID, table ID and storage row.
 /// This is intended to create near constant time lookups for entities within the world's storage.

@@ -14,7 +14,7 @@ pub trait Target {
 ///
 /// Examples of sets include: a single component type, a tuple of component types, or something
 /// hand created.
-pub trait Set: IntoSpec + Sized + 'static {
+pub trait Set: IntoSpec + 'static {
     /// Apply the component values in this set to the given target. This takes ownership of self.
     fn apply<T: Target>(self, target: &mut T);
 }

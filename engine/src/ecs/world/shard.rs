@@ -1,7 +1,7 @@
 use std::marker::PhantomData;
 
 use crate::ecs::{
-    archetype, query, storage, unique,
+    query, storage, unique,
     world::{TypeRegistry, World, access::AccessGrant},
 };
 
@@ -68,9 +68,9 @@ impl<'w> Shard<'w> {
     ///
     /// This is always safe to access as it's read-only metadata about archetypes.
     #[inline]
-    pub fn archetypes(&self) -> &archetype::Registry {
+    pub fn archetypes(&self) -> &storage::archetype::Archetypes {
         // SAFETY: Resource registry is read-only metadata, safe to access
-        unsafe { (*self.world).archetypes() }
+        unsafe { (*self.world).storage().archetypes() }
     }
 
     /// Get immutable access to storage.

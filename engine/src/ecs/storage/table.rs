@@ -87,7 +87,7 @@ pub struct Table {
     columns: Vec<Column>,
     // TODO: Evaluate if a map or sparse set is worth it for faster lookups. Using array search for
     // now since number of components per table is expected to be small. Need benchmarks. Perhaps
-    // the bahvior can be configurable based on column count.
+    // the behavior can be configurable based on column count.
 }
 
 impl Table {
@@ -161,29 +161,39 @@ impl Table {
         row
     }
 
-    /// Add an entity using a type-erased component applicator.
+    /// Add an entity using a type-erased component data from an extraction and possible additional
+    /// data.
     ///
     /// This is used by the storage change system where component types
     /// are not known at compile time.
     ///
     /// # Arguments
     /// * `entity` - The entity to add
-    /// * `applicator` - A boxed trait object that applies components to the table
-    /// * `registry` - The type registry for component validation
+    /// * `extract` - A vector of (TypeId, bytes) tuples representing the extracted components to add
+    /// * `additions` - A set of additional components to add
     ///
     /// # Returns
     /// The row where the entity was placed.
-    pub fn add_entity_dynamic(
+    pub(crate) fn add_entity_from_extract<S: Set>(
         &mut self,
         entity: entity::Entity,
-        applicator: Box<dyn super::change::ApplyOnce + '_>,
-        registry: &world::TypeRegistry,
+        extract: Vec<(world::TypeId, Vec<u8>)>,
+        additions: S,
     ) -> Row {
         // Capture the entity row
         let row = Row::new(self.entities.len());
 
-        // Apply the components to this table
-        applicator.apply_once(self, registry);
+        // Push extracted component bytes to target columns
+        for (id, bytes) in extract {
+            if let Some(column) = self.get_column_by_id_mut(id) {
+                unsafe {
+                    column.push_bytes(&bytes);
+                }
+            }
+        }
+
+        // Apply additions (new components) if any
+        additions.apply(self);
 
         // Add the entity once the components are all added
         self.entities.push(entity);
@@ -348,7 +358,83 @@ impl Table {
         // Get the entity that was moved into the removed row
         let moved_entity = self.entities[index];
 
+        // Verify we have kept the entity/column lengths consistent
+        #[cfg(debug_assertions)]
+        self.verify_invariants();
+
         Some(moved_entity)
+    }
+
+    /// Extract raw component data for the specified row and extraction spec. The retunred data
+    /// will be a type erased Vec of (TypeId, bytes) tuples for each extracted component. This will
+    /// remove the entity from the table using swap-remove. Any components not part of the
+    /// extraction will be dropped. If an entity was moved as part of this operation, it is
+    /// returned.
+    ///
+    /// # Panics
+    /// In debug builds, panics if the row is out of bounds.
+    pub(crate) fn extract_and_swap_row(
+        &mut self,
+        row: Row,
+        to_extract: &component::Spec,
+    ) -> (Vec<(world::TypeId, Vec<u8>)>, Option<entity::Entity>) {
+        debug_assert!(row.index() < self.entities.len(), "row index out of bounds");
+
+        // Capture the last index for fixing moved entity later
+        let last_index = self.entities.len() - 1;
+        let row_index = row.index();
+
+        // Swap-remove the entity in the list
+        self.entities.swap_remove(row_index);
+
+        // Create the full table spec for comparison
+        let table_spec = component::Spec::new(
+            self.columns
+                .iter()
+                .map(|col| col.info().id())
+                .collect::<Vec<_>>(),
+        );
+
+        let mut shared_data: Vec<(world::TypeId, Vec<u8>)> = Vec::with_capacity(to_extract.len());
+        // Iterate through all fields in the spec to extract the value and remove it from the column without drop.
+        for &id in to_extract.ids() {
+            if let Some(column) = self.get_column_by_id_mut(id) {
+                // SAFETY: row < entities.len() == columns.len() (by invariant)
+                let bytes = unsafe { column.read_bytes(row) };
+                shared_data.push((id, bytes.to_vec()));
+                // Shared component - don't drop (data was copied)
+                unsafe {
+                    column.swap_remove_no_drop(row);
+                }
+            }
+            // TODO: Should we panic if no colmn is found? Unlikely as the components come from the
+            // the storage module migration logic.
+        }
+
+        // Determine any columns that are not part of the extract and remove with drop.
+        let removed_spec = table_spec.difference(to_extract);
+        for &id in removed_spec.ids() {
+            if let Some(column) = self.get_column_by_id_mut(id) {
+                // Removed component - drop it
+                unsafe {
+                    column.swap_remove(row);
+                }
+            }
+        }
+
+        // Special case for last row removal
+        if last_index == row_index {
+            // Removed the last entity, nothing was moved
+            return (shared_data, None);
+        }
+        // Get the entity that was moved into the removed row
+        let moved_entity = self.entities[row_index];
+
+        // Verify we have kept the entity/column lengths consistent
+        #[cfg(debug_assertions)]
+        self.verify_invariants();
+
+        (shared_data, Some(moved_entity))
     }
 
     /// Verify that all columns have the same length as entities.

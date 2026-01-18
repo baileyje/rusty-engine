@@ -45,17 +45,16 @@ impl Spec {
         self.ids.binary_search(&id).is_ok()
     }
 
-    // TODO: Use set operations for better performance? How big are specs typically?
-
     /// Determine if this specification contains all component IDs in the other specification.
     #[inline]
     pub fn contains_all(&self, other: &Spec) -> bool {
-        for id in &other.ids {
-            if !self.contains(*id) {
-                return false;
-            }
-        }
-        true
+        other.ids.iter().all(|id| self.contains(*id))
+    }
+
+    /// Determine if this specification contains any component IDs in the other specification.
+    #[inline]
+    pub fn contains_any(&self, other: &Spec) -> bool {
+        other.ids.iter().any(|id| self.contains(*id))
     }
 
     /// Merge this specification with another, returning a new specification containing
@@ -69,28 +68,13 @@ impl Spec {
         Self::new(ids)
     }
 
-    /// Create a new spec with an additional component ID.
-    /// If the ID is already present, returns a clone of self.
+    /// Create a new spec that is the union with the othen spec.
     #[inline]
-    pub fn with(&self, id: world::TypeId) -> Self {
-        if self.contains(id) {
-            return self.clone();
-        }
-        let mut ids = Vec::with_capacity(self.ids.len() + 1);
+    pub fn union(&self, other: &Spec) -> Self {
+        let mut ids = Vec::with_capacity(self.ids.len() + other.ids.len());
         ids.extend_from_slice(&self.ids);
-        ids.push(id);
+        ids.extend_from_slice(&other.ids);
         Self::new(ids)
-    }
-
-    /// Create a new spec without a component ID.
-    /// If the ID is not present, returns a clone of self.
-    #[inline]
-    pub fn without(&self, id: world::TypeId) -> Self {
-        if !self.contains(id) {
-            return self.clone();
-        }
-        let ids: Vec<_> = self.ids.iter().copied().filter(|&i| i != id).collect();
-        Self { ids } // Already sorted since we're filtering from sorted
     }
 
     /// Get the components in self that are not in other (set difference).
@@ -295,9 +279,10 @@ mod tests {
         let id3 = registry.register_component::<Comp3>();
 
         let spec = Spec::new(vec![id1, id2]);
+        let other = Spec::new(vec![id3]);
 
         // When
-        let new_spec = spec.with(id3);
+        let new_spec = spec.union(&other);
 
         // Then
         assert_eq!(new_spec.ids().len(), 3);
@@ -309,55 +294,17 @@ mod tests {
     }
 
     #[test]
-    fn with_existing_component_returns_clone() {
+    fn with_existing_component_returns_same() {
         // Given
         let registry = world::TypeRegistry::new();
         let id1 = registry.register_component::<Comp1>();
         let id2 = registry.register_component::<Comp2>();
 
         let spec = Spec::new(vec![id1, id2]);
+        let other = Spec::new(vec![id1, id2]);
 
         // When
-        let new_spec = spec.with(id1);
-
-        // Then
-        assert_eq!(new_spec, spec);
-    }
-
-    #[test]
-    fn without_removes_component() {
-        // Given
-        let registry = world::TypeRegistry::new();
-        let id1 = registry.register_component::<Comp1>();
-        let id2 = registry.register_component::<Comp2>();
-        let id3 = registry.register_component::<Comp3>();
-
-        let spec = Spec::new(vec![id1, id2, id3]);
-
-        // When
-        let new_spec = spec.without(id2);
-
-        // Then
-        assert_eq!(new_spec.ids().len(), 2);
-        assert!(new_spec.contains(id1));
-        assert!(!new_spec.contains(id2));
-        assert!(new_spec.contains(id3));
-        // Original unchanged
-        assert_eq!(spec.ids().len(), 3);
-    }
-
-    #[test]
-    fn without_missing_component_returns_clone() {
-        // Given
-        let registry = world::TypeRegistry::new();
-        let id1 = registry.register_component::<Comp1>();
-        let id2 = registry.register_component::<Comp2>();
-        let id3 = registry.register_component::<Comp3>();
-
-        let spec = Spec::new(vec![id1, id2]);
-
-        // When
-        let new_spec = spec.without(id3);
+        let new_spec = spec.union(&other);
 
         // Then
         assert_eq!(new_spec, spec);

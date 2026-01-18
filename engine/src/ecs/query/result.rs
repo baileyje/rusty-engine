@@ -82,7 +82,7 @@ pub struct Result<'w, D: Data> {
     source: &'w mut dyn DataSource,
 
     /// List of table IDs that match the query specification.
-    table_ids: Vec<storage::table::Id>,
+    table_ids: Vec<storage::TableId>,
 
     /// Current table index in the table_ids vector.
     table_index: usize,
@@ -118,7 +118,7 @@ impl<'w, D: Data> Result<'w, D> {
     ///
     /// [`Query::invoke`]: super::Query::invoke
     #[inline]
-    pub fn new(source: &'w mut dyn DataSource, table_ids: Vec<storage::table::Id>) -> Self {
+    pub fn new(source: &'w mut dyn DataSource, table_ids: Vec<storage::TableId>) -> Self {
         // Pre-calculate the total length for ExactSizeIterator support.
         let mut len = 0;
         for table_id in table_ids.iter() {
