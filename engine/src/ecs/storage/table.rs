@@ -161,6 +161,40 @@ impl Table {
         row
     }
 
+    /// Add an entity using a type-erased component applicator.
+    ///
+    /// This is used by the storage change system where component types
+    /// are not known at compile time.
+    ///
+    /// # Arguments
+    /// * `entity` - The entity to add
+    /// * `applicator` - A boxed trait object that applies components to the table
+    /// * `registry` - The type registry for component validation
+    ///
+    /// # Returns
+    /// The row where the entity was placed.
+    pub fn add_entity_dynamic(
+        &mut self,
+        entity: entity::Entity,
+        applicator: Box<dyn super::change::ApplyOnce + '_>,
+        registry: &world::TypeRegistry,
+    ) -> Row {
+        // Capture the entity row
+        let row = Row::new(self.entities.len());
+
+        // Apply the components to this table
+        applicator.apply_once(self, registry);
+
+        // Add the entity once the components are all added
+        self.entities.push(entity);
+
+        // Verify we have kept the entity/column lengths consistent
+        #[cfg(debug_assertions)]
+        self.verify_invariants();
+
+        row
+    }
+
     /// Get the number of entities (rows) in the table.
     #[inline]
     pub fn len(&self) -> usize {
@@ -177,6 +211,14 @@ impl Table {
     #[inline]
     pub fn entities(&self) -> &[entity::Entity] {
         &self.entities
+    }
+
+    /// Get mutable access to the entities vector.
+    ///
+    /// This is primarily used by the migration system for direct manipulation.
+    #[inline]
+    pub fn entities_mut(&mut self) -> &mut Vec<entity::Entity> {
+        &mut self.entities
     }
 
     /// Get an entity stored at a specific row.
@@ -208,6 +250,28 @@ impl Table {
         self.columns
             .iter_mut()
             .find(|col| col.info().type_id() == TypeId::of::<C>())
+    }
+
+    /// Get a reference to a column by component ID.
+    ///
+    /// Returns `None` if the component is not in this table.
+    #[inline]
+    pub fn get_column_by_id(&self, id: world::TypeId) -> Option<&Column> {
+        self.columns.iter().find(|col| col.info().id() == id)
+    }
+
+    /// Get a mutable reference to a column by component ID.
+    ///
+    /// Returns `None` if the component is not in this table.
+    #[inline]
+    pub fn get_column_by_id_mut(&mut self, id: world::TypeId) -> Option<&mut Column> {
+        self.columns.iter_mut().find(|col| col.info().id() == id)
+    }
+
+    /// Get the component IDs for all columns in this table.
+    #[inline]
+    pub fn component_ids(&self) -> impl Iterator<Item = world::TypeId> + '_ {
+        self.columns.iter().map(|col| col.info().id())
     }
 
     /// Get a component reference for a specific row.

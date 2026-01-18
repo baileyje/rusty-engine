@@ -320,6 +320,140 @@ impl World {
     pub fn release_grant(&self, grant: &AccessGrant) {
         self.active_grants.borrow_mut().remove(grant);
     }
+
+    /// Add a component to an existing entity.
+    ///
+    /// This migrates the entity to a new archetype that includes the new component.
+    /// If the entity already has this component type, this method does nothing.
+    ///
+    /// # Returns
+    /// - `true` if the component was added
+    /// - `false` if the entity doesn't exist or already has this component
+    pub fn add_component<C: component::Component>(&mut self, entity: entity::Entity, component: C) -> bool {
+        // Check if entity is spawned
+        let location = match self.entities.location(entity) {
+            Some(loc) => loc,
+            None => return false,
+        };
+
+        // Get the current archetype's spec
+        let current_archetype = self.archetypes.get(location.archetype_id())
+            .expect("entity location references valid archetype");
+        let current_spec = current_archetype.components();
+
+        // Register the component and get its ID
+        let component_id = self.resources.register_component::<C>();
+
+        // Check if entity already has this component
+        if current_spec.contains(component_id) {
+            return false;
+        }
+
+        // Compute the new spec with the component added
+        let new_spec = current_spec.with(component_id);
+
+        // Get or create the target archetype/table
+        let (target_archetype_id, target_table_id) = match self.archetypes.get_by_spec(&new_spec) {
+            Some(archetype) => (archetype.id(), archetype.table_id()),
+            None => {
+                // Create new table and archetype
+                let table = self.storage.create_table(&self.resources.info_for_spec(&new_spec));
+                let archetype_id = self.archetypes.create(new_spec.clone(), table.id());
+                (archetype_id, table.id())
+            }
+        };
+
+        // Build and execute the migration change
+        let source = storage::change::MigrationSource::new(location.table_id(), location.row());
+        let change = storage::change::Change::migrate_with(entity, source, target_table_id, component);
+        let result = self.storage.execute_one(change, &self.resources);
+
+        // Update entity location and handle swapped entity
+        if let storage::change::ChangeResult::Migrated { new_row, source_moved } = result {
+            // Update the migrated entity's location
+            self.entities.set_location(
+                entity,
+                storage::Location::new(target_archetype_id, target_table_id, new_row),
+            );
+
+            // Handle entity that was moved during swap-remove in source table
+            if let Some(moved_entity) = source_moved {
+                self.entities.set_location(
+                    moved_entity,
+                    storage::Location::new(location.archetype_id(), location.table_id(), location.row()),
+                );
+            }
+        }
+
+        true
+    }
+
+    /// Remove a component from an existing entity.
+    ///
+    /// This migrates the entity to a new archetype that excludes the component.
+    /// If the entity doesn't have this component type, this method does nothing.
+    ///
+    /// # Returns
+    /// - `true` if the component was removed
+    /// - `false` if the entity doesn't exist or doesn't have this component
+    pub fn remove_component<C: component::Component>(&mut self, entity: entity::Entity) -> bool {
+        // Check if entity is spawned
+        let location = match self.entities.location(entity) {
+            Some(loc) => loc,
+            None => return false,
+        };
+
+        // Get the current archetype's spec
+        let current_archetype = self.archetypes.get(location.archetype_id())
+            .expect("entity location references valid archetype");
+        let current_spec = current_archetype.components();
+
+        // Register the component and get its ID
+        let component_id = self.resources.register_component::<C>();
+
+        // Check if entity has this component
+        if !current_spec.contains(component_id) {
+            return false;
+        }
+
+        // Compute the new spec without the component
+        let new_spec = current_spec.without(component_id);
+
+        // Get or create the target archetype/table
+        let (target_archetype_id, target_table_id) = match self.archetypes.get_by_spec(&new_spec) {
+            Some(archetype) => (archetype.id(), archetype.table_id()),
+            None => {
+                // Create new table and archetype
+                let table = self.storage.create_table(&self.resources.info_for_spec(&new_spec));
+                let archetype_id = self.archetypes.create(new_spec.clone(), table.id());
+                (archetype_id, table.id())
+            }
+        };
+
+        // Build and execute the migration change
+        let source = storage::change::MigrationSource::new(location.table_id(), location.row());
+        let change = storage::change::Change::migrate(entity, source, target_table_id);
+        let result = self.storage.execute_one(change, &self.resources);
+
+        // Update entity location and handle swapped entity
+        if let storage::change::ChangeResult::Migrated { new_row, source_moved } = result {
+            // Update the migrated entity's location
+            self.entities.set_location(
+                entity,
+                storage::Location::new(target_archetype_id, target_table_id, new_row),
+            );
+
+            // Handle entity that was moved during swap-remove in source table
+            if let Some(moved_entity) = source_moved {
+                self.entities.set_location(
+                    moved_entity,
+                    storage::Location::new(location.archetype_id(), location.table_id(), location.row()),
+                );
+            }
+        }
+
+        true
+    }
 }
 
 // World is intentionally !Send and !Sync:
@@ -564,5 +698,238 @@ mod test {
         // Original entity should not be accessible
         assert!(!world.entities.is_spawned(entity1));
         assert!(world.entities.is_spawned(entity2));
+    }
+
+    #[test]
+    fn add_component_to_entity() {
+        let mut world = World::new(Id(1));
+
+        #[derive(Component, Debug, PartialEq)]
+        struct Position { x: f32, y: f32 }
+
+        #[derive(Component, Debug, PartialEq)]
+        struct Velocity { dx: f32, dy: f32 }
+
+        // Spawn entity with just Position
+        let entity = world.spawn(Position { x: 1.0, y: 2.0 });
+
+        // Verify only has Position
+        {
+            let entity_ref = world.entity(entity).unwrap();
+            assert!(entity_ref.get::<Position>().is_some());
+            assert!(entity_ref.get::<Velocity>().is_none());
+        }
+
+        // Add Velocity component
+        let added = world.add_component(entity, Velocity { dx: 0.5, dy: 0.3 });
+        assert!(added);
+
+        // Verify now has both components
+        let entity_ref = world.entity(entity).unwrap();
+        let pos = entity_ref.get::<Position>().unwrap();
+        let vel = entity_ref.get::<Velocity>().unwrap();
+        assert_eq!(pos.x, 1.0);
+        assert_eq!(pos.y, 2.0);
+        assert_eq!(vel.dx, 0.5);
+        assert_eq!(vel.dy, 0.3);
+    }
+
+    #[test]
+    fn add_component_already_exists_returns_false() {
+        let mut world = World::new(Id(1));
+
+        #[derive(Component, Debug, PartialEq)]
+        struct Position { x: f32, y: f32 }
+
+        let entity = world.spawn(Position { x: 1.0, y: 2.0 });
+
+        // Try to add Position again
+        let added = world.add_component(entity, Position { x: 5.0, y: 6.0 });
+        assert!(!added);
+
+        // Original values should be unchanged
+        let entity_ref = world.entity(entity).unwrap();
+        let pos = entity_ref.get::<Position>().unwrap();
+        assert_eq!(pos.x, 1.0);
+        assert_eq!(pos.y, 2.0);
+    }
+
+    #[test]
+    fn add_component_to_nonexistent_entity_returns_false() {
+        let mut world = World::new(Id(1));
+
+        #[derive(Component)]
+        struct TestComp;
+
+        // Create and despawn an entity
+        let entity = world.spawn(TestComp);
+        world.despawn(entity);
+
+        // Try to add component to despawned entity
+        let added = world.add_component(entity, TestComp);
+        assert!(!added);
+    }
+
+    #[test]
+    fn remove_component_from_entity() {
+        let mut world = World::new(Id(1));
+
+        #[derive(Component, Debug, PartialEq)]
+        struct Position { x: f32, y: f32 }
+
+        #[derive(Component, Debug, PartialEq)]
+        struct Velocity { dx: f32, dy: f32 }
+
+        // Spawn entity with Position and Velocity
+        let entity = world.spawn((
+            Position { x: 1.0, y: 2.0 },
+            Velocity { dx: 0.5, dy: 0.3 },
+        ));
+
+        // Verify has both components
+        {
+            let entity_ref = world.entity(entity).unwrap();
+            assert!(entity_ref.get::<Position>().is_some());
+            assert!(entity_ref.get::<Velocity>().is_some());
+        }
+
+        // Remove Velocity component
+        let removed = world.remove_component::<Velocity>(entity);
+        assert!(removed);
+
+        // Verify only has Position now
+        let entity_ref = world.entity(entity).unwrap();
+        let pos = entity_ref.get::<Position>().unwrap();
+        assert_eq!(pos.x, 1.0);
+        assert_eq!(pos.y, 2.0);
+        assert!(entity_ref.get::<Velocity>().is_none());
+    }
+
+    #[test]
+    fn remove_component_not_present_returns_false() {
+        let mut world = World::new(Id(1));
+
+        #[derive(Component)]
+        struct Position { x: f32, y: f32 }
+
+        #[derive(Component)]
+        struct Velocity;
+
+        let entity = world.spawn(Position { x: 1.0, y: 2.0 });
+
+        // Try to remove Velocity which doesn't exist
+        let removed = world.remove_component::<Velocity>(entity);
+        assert!(!removed);
+    }
+
+    #[test]
+    fn remove_component_from_nonexistent_entity_returns_false() {
+        let mut world = World::new(Id(1));
+
+        #[derive(Component)]
+        struct TestComp;
+
+        let entity = world.spawn(TestComp);
+        world.despawn(entity);
+
+        // Try to remove component from despawned entity
+        let removed = world.remove_component::<TestComp>(entity);
+        assert!(!removed);
+    }
+
+    #[test]
+    fn add_component_updates_other_entity_location() {
+        // Test that swap-remove during migration properly updates other entities
+        let mut world = World::new(Id(1));
+
+        #[derive(Component, Debug, PartialEq)]
+        struct Position { x: f32, y: f32 }
+
+        #[derive(Component, Debug, PartialEq)]
+        struct Velocity { dx: f32, dy: f32 }
+
+        // Spawn two entities with same archetype
+        let entity1 = world.spawn(Position { x: 1.0, y: 1.0 });
+        let entity2 = world.spawn(Position { x: 2.0, y: 2.0 });
+
+        // entity1 at row 0, entity2 at row 1
+        assert_eq!(world.location_for(entity1).unwrap().row(), 0.into());
+        assert_eq!(world.location_for(entity2).unwrap().row(), 1.into());
+
+        // Migrate entity1 to new archetype (Position + Velocity)
+        world.add_component(entity1, Velocity { dx: 0.5, dy: 0.3 });
+
+        // entity2 should now be at row 0 (was swapped during entity1's migration)
+        assert_eq!(world.location_for(entity2).unwrap().row(), 0.into());
+
+        // Both entities should still be accessible with correct data
+        let e1_ref = world.entity(entity1).unwrap();
+        assert_eq!(e1_ref.get::<Position>().unwrap().x, 1.0);
+        assert_eq!(e1_ref.get::<Velocity>().unwrap().dx, 0.5);
+
+        let e2_ref = world.entity(entity2).unwrap();
+        assert_eq!(e2_ref.get::<Position>().unwrap().x, 2.0);
+        assert!(e2_ref.get::<Velocity>().is_none());
+    }
+
+    #[test]
+    fn remove_component_updates_other_entity_location() {
+        let mut world = World::new(Id(1));
+
+        #[derive(Component, Debug, PartialEq)]
+        struct Position { x: f32, y: f32 }
+
+        #[derive(Component, Debug, PartialEq)]
+        struct Velocity { dx: f32, dy: f32 }
+
+        // Spawn two entities with same archetype (Position + Velocity)
+        let entity1 = world.spawn((Position { x: 1.0, y: 1.0 }, Velocity { dx: 0.5, dy: 0.5 }));
+        let entity2 = world.spawn((Position { x: 2.0, y: 2.0 }, Velocity { dx: 1.0, dy: 1.0 }));
+
+        // entity1 at row 0, entity2 at row 1
+        assert_eq!(world.location_for(entity1).unwrap().row(), 0.into());
+        assert_eq!(world.location_for(entity2).unwrap().row(), 1.into());
+
+        // Remove Velocity from entity1
+        world.remove_component::<Velocity>(entity1);
+
+        // entity2 should now be at row 0
+        assert_eq!(world.location_for(entity2).unwrap().row(), 0.into());
+
+        // Both entities should still be accessible with correct data
+        let e1_ref = world.entity(entity1).unwrap();
+        assert_eq!(e1_ref.get::<Position>().unwrap().x, 1.0);
+        assert!(e1_ref.get::<Velocity>().is_none());
+
+        let e2_ref = world.entity(entity2).unwrap();
+        assert_eq!(e2_ref.get::<Position>().unwrap().x, 2.0);
+        assert_eq!(e2_ref.get::<Velocity>().unwrap().dx, 1.0);
+    }
+
+    #[test]
+    fn add_then_remove_component() {
+        let mut world = World::new(Id(1));
+
+        #[derive(Component, Debug, PartialEq)]
+        struct Position { x: f32, y: f32 }
+
+        #[derive(Component, Debug, PartialEq)]
+        struct Tag;
+
+        let entity = world.spawn(Position { x: 1.0, y: 2.0 });
+
+        // Add Tag
+        assert!(world.add_component(entity, Tag));
+        assert!(world.entity(entity).unwrap().get::<Tag>().is_some());
+
+        // Remove Tag
+        assert!(world.remove_component::<Tag>(entity));
+        assert!(world.entity(entity).unwrap().get::<Tag>().is_none());
+
+        // Position should still be there
+        let entity_ref = world.entity(entity).unwrap();
+        let pos = entity_ref.get::<Position>().unwrap();
+        assert_eq!(pos.x, 1.0);
+        assert_eq!(pos.y, 2.0);
     }
 }

@@ -258,6 +258,99 @@ impl Column {
         self.len -= 1;
     }
 
+    /// Remove the element at the given index using swap-remove WITHOUT calling drop.
+    ///
+    /// This is used for migrations where the data is being moved, not destroyed.
+    /// The caller is responsible for ensuring the data is properly handled elsewhere.
+    ///
+    /// # Safety
+    /// The caller must ensure that:
+    /// - `row.index() < self.len()`
+    /// - The removed data will be properly dropped or moved elsewhere
+    pub unsafe fn swap_remove_no_drop(&mut self, row: Row) {
+        debug_assert!(self.is_row_valid(row), "index out of bounds");
+
+        let row_index = row.index();
+        let last_index = self.len - 1;
+
+        if row_index != last_index {
+            // Get pointers to the element to remove and the last element
+            let element_ptr = self.data.ptr_at_mut(row_index);
+            let last_ptr = self.data.ptr_at_mut(last_index);
+
+            // Swap with the last element
+            // SAFETY: Both pointers are valid and within bounds
+            unsafe {
+                ptr::swap_nonoverlapping(
+                    element_ptr.as_ptr(),
+                    last_ptr.as_ptr(),
+                    self.info.layout().size(),
+                );
+            }
+        }
+        // Do NOT drop - data is being moved, not destroyed
+
+        self.len -= 1;
+    }
+
+    /// Read the raw bytes for a component at the given row.
+    ///
+    /// Returns a slice of bytes representing the component data.
+    /// For ZSTs, returns an empty slice.
+    ///
+    /// # Safety
+    /// The caller must ensure that:
+    /// - `row.index() < self.len()`
+    /// - The returned bytes are not modified while aliased references exist
+    #[inline]
+    pub unsafe fn read_bytes(&self, row: Row) -> &[u8] {
+        debug_assert!(self.is_row_valid(row), "index out of bounds");
+
+        let size = self.info.layout().size();
+        if size == 0 {
+            // ZST - return empty slice
+            return &[];
+        }
+
+        let ptr = self.data.ptr_at(row.index());
+        unsafe { std::slice::from_raw_parts(ptr.as_ptr(), size) }
+    }
+
+    /// Push raw bytes as a new component.
+    ///
+    /// The bytes must represent a valid instance of the component type.
+    /// For ZSTs, the bytes slice should be empty.
+    ///
+    /// # Safety
+    /// The caller must ensure that:
+    /// - `bytes.len() == self.info.layout().size()` (or both are 0 for ZSTs)
+    /// - The bytes represent a valid, properly aligned instance of the component type
+    /// - The source data will not be dropped (this is a move, not a copy)
+    #[inline]
+    pub unsafe fn push_bytes(&mut self, bytes: &[u8]) {
+        let size = self.info.layout().size();
+        debug_assert_eq!(
+            bytes.len(),
+            size,
+            "bytes length {} does not match component size {}",
+            bytes.len(),
+            size
+        );
+
+        // Reserve space for one more element
+        self.reserve(1);
+
+        if size > 0 {
+            let dst_ptr = self.data.ptr_at_mut(self.len);
+            unsafe {
+                ptr::copy_nonoverlapping(bytes.as_ptr(), dst_ptr.as_ptr(), size);
+            }
+        }
+        // For ZSTs, no bytes to copy, just increment len
+
+        self.len += 1;
+    }
+
     /// Get the column info.
     #[inline]
     pub fn info(&self) -> &component::Info {
@@ -1090,6 +1183,230 @@ mod tests {
         // When/Then - should panic when pushing wrong type, even in release builds
         unsafe {
             column.push(TypeB { value: 99 }); // Wrong type!
+        }
+    }
+
+    #[test]
+    fn column_read_bytes() {
+        // Given
+        #[derive(Component, Debug, PartialEq)]
+        struct Position {
+            x: f32,
+            y: f32,
+        }
+
+        let registry = world::TypeRegistry::new();
+        let id = registry.register_component::<Position>();
+        let mut column = Column::new(registry.get_info(id).unwrap());
+
+        let pos = Position { x: 1.0, y: 2.0 };
+        unsafe {
+            column.push(pos);
+        }
+
+        // When
+        let bytes = unsafe { column.read_bytes(Row::new(0)) };
+
+        // Then
+        assert_eq!(bytes.len(), std::mem::size_of::<Position>());
+
+        // Verify the bytes match the original value
+        let pos_from_bytes: Position =
+            unsafe { std::ptr::read_unaligned(bytes.as_ptr() as *const Position) };
+        assert_eq!(pos_from_bytes.x, 1.0);
+        assert_eq!(pos_from_bytes.y, 2.0);
+    }
+
+    #[test]
+    fn column_read_bytes_zst() {
+        // Given
+        #[derive(Component, Debug)]
+        struct Marker;
+
+        let registry = world::TypeRegistry::new();
+        let id = registry.register_component::<Marker>();
+        let mut column = Column::new(registry.get_info(id).unwrap());
+
+        unsafe {
+            column.push(Marker);
+        }
+
+        // When
+        let bytes = unsafe { column.read_bytes(Row::new(0)) };
+
+        // Then - ZST returns empty slice
+        assert_eq!(bytes.len(), 0);
+    }
+
+    #[test]
+    fn column_push_bytes() {
+        // Given
+        #[derive(Component, Debug, PartialEq)]
+        struct Position {
+            x: f32,
+            y: f32,
+        }
+
+        let registry = world::TypeRegistry::new();
+        let id = registry.register_component::<Position>();
+        let mut column = Column::new(registry.get_info(id).unwrap());
+
+        let pos = Position { x: 3.0, y: 4.0 };
+        let bytes: &[u8] = unsafe {
+            std::slice::from_raw_parts(
+                &pos as *const Position as *const u8,
+                std::mem::size_of::<Position>(),
+            )
+        };
+
+        // When
+        unsafe {
+            column.push_bytes(bytes);
+        }
+        // Forget the original to avoid double-drop
+        std::mem::forget(pos);
+
+        // Then
+        assert_eq!(column.len(), 1);
+        unsafe {
+            let result = column.get::<Position>(Row::new(0)).unwrap();
+            assert_eq!(result.x, 3.0);
+            assert_eq!(result.y, 4.0);
+        }
+    }
+
+    #[test]
+    fn column_push_bytes_zst() {
+        // Given
+        #[derive(Component, Debug)]
+        struct Marker;
+
+        let registry = world::TypeRegistry::new();
+        let id = registry.register_component::<Marker>();
+        let mut column = Column::new(registry.get_info(id).unwrap());
+
+        // When - push empty bytes for ZST
+        unsafe {
+            column.push_bytes(&[]);
+        }
+
+        // Then
+        assert_eq!(column.len(), 1);
+    }
+
+    #[test]
+    fn column_swap_remove_no_drop() {
+        // Given - use a drop tracker to verify drop is NOT called
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+
+        #[derive(Debug)]
+        struct DropTracker(Arc<AtomicUsize>);
+
+        impl Drop for DropTracker {
+            fn drop(&mut self) {
+                self.0.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+
+        impl component::Component for DropTracker {}
+
+        let registry = world::TypeRegistry::new();
+        let id = registry.register_component::<DropTracker>();
+        let mut column = Column::new(registry.get_info(id).unwrap());
+
+        let counter = Arc::new(AtomicUsize::new(0));
+
+        unsafe {
+            column.push(DropTracker(counter.clone()));
+            column.push(DropTracker(counter.clone()));
+            column.push(DropTracker(counter.clone()));
+        }
+
+        assert_eq!(column.len(), 3);
+        assert_eq!(counter.load(Ordering::SeqCst), 0, "No drops yet");
+
+        // When - swap_remove_no_drop the middle element
+        unsafe {
+            column.swap_remove_no_drop(Row::new(1));
+        }
+
+        // Then - NO drop should have occurred
+        assert_eq!(column.len(), 2);
+        assert_eq!(
+            counter.load(Ordering::SeqCst),
+            0,
+            "swap_remove_no_drop should NOT call drop"
+        );
+
+        // Clean up - manually drop the remaining elements to avoid memory leak
+        // (In real usage, the data would be moved elsewhere)
+        column.clear();
+        assert_eq!(
+            counter.load(Ordering::SeqCst),
+            2,
+            "clear() should drop remaining 2 elements"
+        );
+    }
+
+    #[test]
+    fn column_byte_operations_roundtrip() {
+        // Test the full migration pattern: read_bytes -> push_bytes -> swap_remove_no_drop
+        #[derive(Component, Debug, PartialEq, Clone)]
+        struct Data {
+            a: u32,
+            b: u64,
+            c: f32,
+        }
+
+        let registry = world::TypeRegistry::new();
+        let id = registry.register_component::<Data>();
+
+        let mut source = Column::new(registry.get_info(id).unwrap());
+        let mut target = Column::new(registry.get_info(id).unwrap());
+
+        // Add some data to source
+        unsafe {
+            source.push(Data {
+                a: 1,
+                b: 2,
+                c: 3.0,
+            });
+            source.push(Data {
+                a: 4,
+                b: 5,
+                c: 6.0,
+            });
+        }
+
+        // Migrate row 0 from source to target
+        unsafe {
+            // 1. Read bytes from source
+            let bytes = source.read_bytes(Row::new(0));
+
+            // 2. Push bytes to target
+            target.push_bytes(bytes);
+
+            // 3. Remove from source without drop (data was moved)
+            source.swap_remove_no_drop(Row::new(0));
+        }
+
+        // Verify
+        assert_eq!(source.len(), 1);
+        assert_eq!(target.len(), 1);
+
+        unsafe {
+            // Target should have the migrated data
+            let target_data = target.get::<Data>(Row::new(0)).unwrap();
+            assert_eq!(target_data.a, 1);
+            assert_eq!(target_data.b, 2);
+            assert_eq!(target_data.c, 3.0);
+
+            // Source should have the swapped element (was at row 1, now at row 0)
+            let source_data = source.get::<Data>(Row::new(0)).unwrap();
+            assert_eq!(source_data.a, 4);
+            assert_eq!(source_data.b, 5);
+            assert_eq!(source_data.c, 6.0);
         }
     }
 }

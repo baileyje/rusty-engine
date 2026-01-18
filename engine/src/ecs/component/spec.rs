@@ -68,6 +68,66 @@ impl Spec {
         ids.extend_from_slice(&other.ids);
         Self::new(ids)
     }
+
+    /// Create a new spec with an additional component ID.
+    /// If the ID is already present, returns a clone of self.
+    #[inline]
+    pub fn with(&self, id: world::TypeId) -> Self {
+        if self.contains(id) {
+            return self.clone();
+        }
+        let mut ids = Vec::with_capacity(self.ids.len() + 1);
+        ids.extend_from_slice(&self.ids);
+        ids.push(id);
+        Self::new(ids)
+    }
+
+    /// Create a new spec without a component ID.
+    /// If the ID is not present, returns a clone of self.
+    #[inline]
+    pub fn without(&self, id: world::TypeId) -> Self {
+        if !self.contains(id) {
+            return self.clone();
+        }
+        let ids: Vec<_> = self.ids.iter().copied().filter(|&i| i != id).collect();
+        Self { ids } // Already sorted since we're filtering from sorted
+    }
+
+    /// Get the components in self that are not in other (set difference).
+    #[inline]
+    pub fn difference(&self, other: &Spec) -> Self {
+        let ids: Vec<_> = self
+            .ids
+            .iter()
+            .copied()
+            .filter(|id| !other.contains(*id))
+            .collect();
+        Self { ids } // Already sorted
+    }
+
+    /// Get the components in both self and other (set intersection).
+    #[inline]
+    pub fn intersection(&self, other: &Spec) -> Self {
+        let ids: Vec<_> = self
+            .ids
+            .iter()
+            .copied()
+            .filter(|id| other.contains(*id))
+            .collect();
+        Self { ids } // Already sorted
+    }
+
+    /// Returns true if this spec is empty.
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.ids.is_empty()
+    }
+
+    /// Returns the number of component IDs in this spec.
+    #[inline]
+    pub fn len(&self) -> usize {
+        self.ids.len()
+    }
 }
 
 impl From<Vec<world::TypeId>> for Spec {
@@ -224,5 +284,143 @@ mod tests {
         assert!(spec1.contains_all(&spec2));
         assert!(spec1.contains_all(&spec1));
         assert!(!spec1.contains_all(&spec3));
+    }
+
+    #[test]
+    fn with_adds_new_component() {
+        // Given
+        let registry = world::TypeRegistry::new();
+        let id1 = registry.register_component::<Comp1>();
+        let id2 = registry.register_component::<Comp2>();
+        let id3 = registry.register_component::<Comp3>();
+
+        let spec = Spec::new(vec![id1, id2]);
+
+        // When
+        let new_spec = spec.with(id3);
+
+        // Then
+        assert_eq!(new_spec.ids().len(), 3);
+        assert!(new_spec.contains(id1));
+        assert!(new_spec.contains(id2));
+        assert!(new_spec.contains(id3));
+        // Original unchanged
+        assert_eq!(spec.ids().len(), 2);
+    }
+
+    #[test]
+    fn with_existing_component_returns_clone() {
+        // Given
+        let registry = world::TypeRegistry::new();
+        let id1 = registry.register_component::<Comp1>();
+        let id2 = registry.register_component::<Comp2>();
+
+        let spec = Spec::new(vec![id1, id2]);
+
+        // When
+        let new_spec = spec.with(id1);
+
+        // Then
+        assert_eq!(new_spec, spec);
+    }
+
+    #[test]
+    fn without_removes_component() {
+        // Given
+        let registry = world::TypeRegistry::new();
+        let id1 = registry.register_component::<Comp1>();
+        let id2 = registry.register_component::<Comp2>();
+        let id3 = registry.register_component::<Comp3>();
+
+        let spec = Spec::new(vec![id1, id2, id3]);
+
+        // When
+        let new_spec = spec.without(id2);
+
+        // Then
+        assert_eq!(new_spec.ids().len(), 2);
+        assert!(new_spec.contains(id1));
+        assert!(!new_spec.contains(id2));
+        assert!(new_spec.contains(id3));
+        // Original unchanged
+        assert_eq!(spec.ids().len(), 3);
+    }
+
+    #[test]
+    fn without_missing_component_returns_clone() {
+        // Given
+        let registry = world::TypeRegistry::new();
+        let id1 = registry.register_component::<Comp1>();
+        let id2 = registry.register_component::<Comp2>();
+        let id3 = registry.register_component::<Comp3>();
+
+        let spec = Spec::new(vec![id1, id2]);
+
+        // When
+        let new_spec = spec.without(id3);
+
+        // Then
+        assert_eq!(new_spec, spec);
+    }
+
+    #[test]
+    fn difference_returns_components_not_in_other() {
+        // Given
+        let registry = world::TypeRegistry::new();
+        let id1 = registry.register_component::<Comp1>();
+        let id2 = registry.register_component::<Comp2>();
+        let id3 = registry.register_component::<Comp3>();
+        let id4 = registry.register_component::<Comp4>();
+
+        let spec1 = Spec::new(vec![id1, id2, id3]);
+        let spec2 = Spec::new(vec![id2, id4]);
+
+        // When
+        let diff = spec1.difference(&spec2);
+
+        // Then - id1 and id3 are in spec1 but not spec2
+        assert_eq!(diff.ids().len(), 2);
+        assert!(diff.contains(id1));
+        assert!(diff.contains(id3));
+        assert!(!diff.contains(id2));
+        assert!(!diff.contains(id4));
+    }
+
+    #[test]
+    fn intersection_returns_common_components() {
+        // Given
+        let registry = world::TypeRegistry::new();
+        let id1 = registry.register_component::<Comp1>();
+        let id2 = registry.register_component::<Comp2>();
+        let id3 = registry.register_component::<Comp3>();
+        let id4 = registry.register_component::<Comp4>();
+
+        let spec1 = Spec::new(vec![id1, id2, id3]);
+        let spec2 = Spec::new(vec![id2, id3, id4]);
+
+        // When
+        let inter = spec1.intersection(&spec2);
+
+        // Then - id2 and id3 are common
+        assert_eq!(inter.ids().len(), 2);
+        assert!(inter.contains(id2));
+        assert!(inter.contains(id3));
+        assert!(!inter.contains(id1));
+        assert!(!inter.contains(id4));
+    }
+
+    #[test]
+    fn is_empty_and_len() {
+        // Given
+        let registry = world::TypeRegistry::new();
+        let id1 = registry.register_component::<Comp1>();
+
+        // Then
+        assert!(Spec::EMPTY.is_empty());
+        assert_eq!(Spec::EMPTY.len(), 0);
+
+        let spec = Spec::new(vec![id1]);
+        assert!(!spec.is_empty());
+        assert_eq!(spec.len(), 1);
     }
 }
