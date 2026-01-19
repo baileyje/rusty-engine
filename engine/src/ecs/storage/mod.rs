@@ -174,13 +174,21 @@
 //!     println!("Entity {:?} at ({}, {})", entity, pos.x, pos.y);
 //! }
 //!
-//! // Add a component (migrates to new archetype)
+//! // Add a single component (migrates to new archetype)
 //! #[derive(Component)]
 //! struct Health { hp: i32 }
-//! storage.add_component(entity, Health { hp: 100 }, &registry);
+//! storage.add_components(entity, Health { hp: 100 }, &registry);
 //!
-//! // Remove a component (migrates to new archetype)
-//! storage.remove_component::<Velocity>(entity, &registry);
+//! // Add multiple components at once
+//! #[derive(Component)]
+//! struct Armor { defense: i32 }
+//! storage.add_components(entity, (Health { hp: 100 }, Armor { defense: 50 }), &registry);
+//!
+//! // Remove a single component (migrates to new archetype)
+//! storage.remove_components::<Velocity>(entity, &registry);
+//!
+//! // Remove multiple components at once
+//! storage.remove_components::<(Health, Armor)>(entity, &registry);
 //!
 //! // Despawn entity
 //! storage.despawn_entity(entity);
@@ -334,8 +342,11 @@ pub mod view;
 /// let entity = allocator.alloc();
 /// storage.spawn_entity(entity, (Position { x: 0.0, y: 0.0 },), &registry);
 ///
-/// // Add component (triggers migration)
-/// storage.add_component(entity, Velocity { dx: 1.0, dy: 0.0 }, &registry);
+/// // Add single component (triggers migration)
+/// storage.add_components(entity, Velocity { dx: 1.0, dy: 0.0 }, &registry);
+///
+/// // Add multiple components at once
+/// storage.add_components(entity, (Health { hp: 100 }, Armor { defense: 10 }), &registry);
 ///
 /// // Query location
 /// let loc = storage.location_for(entity).unwrap();
@@ -460,14 +471,26 @@ impl Storage {
         }
     }
 
-    /// Add component(s) to an existing entity.
+    /// Add one or more components to an existing entity.
     ///
-    /// This migrates the entity to a new archetype that includes the new component.
-    /// If the entity already has any these component type, this method does nothing.
+    /// This migrates the entity to a new archetype that includes the new components.
+    /// Accepts either a single component or a tuple of components.
     ///
     /// # Returns
-    /// - `true` if the component was added
-    /// - `false` if the entity doesn't exist or already has this component
+    /// - `true` if the components were added
+    /// - `false` if:
+    ///   - The entity doesn't exist
+    ///   - The entity already has ANY of the specified components
+    ///   - The component set is empty
+    ///
+    /// # Examples
+    /// ```rust,ignore
+    /// // Add single component
+    /// storage.add_components(entity, Velocity { dx: 1.0, dy: 0.0 }, &registry);
+    ///
+    /// // Add multiple components at once
+    /// storage.add_components(entity, (Velocity { dx: 1.0, dy: 0.0 }, Health { hp: 100 }), &registry);
+    /// ```
     pub fn add_components<S: component::Set>(
         &mut self,
         entity: Entity,
@@ -511,14 +534,26 @@ impl Storage {
         true
     }
 
-    /// Remove component(s) from an existing entity.
+    /// Remove one or more components from an existing entity.
     ///
-    /// This migrates the entity to a new archetype that excludes the component.
-    /// If the entity doesn't have these component types, this method does nothing.
+    /// This migrates the entity to a new archetype that excludes the specified components.
+    /// Accepts either a single component type or a tuple of component types.
     ///
     /// # Returns
-    /// - `true` if the component was removed
-    /// - `false` if the entity doesn't exist or doesn't have this component
+    /// - `true` if the components were removed
+    /// - `false` if:
+    ///   - The entity doesn't exist
+    ///   - The entity doesn't have ALL of the specified components
+    ///   - The component set is empty
+    ///
+    /// # Examples
+    /// ```rust,ignore
+    /// // Remove single component
+    /// storage.remove_components::<Velocity>(entity, &registry);
+    ///
+    /// // Remove multiple components at once
+    /// storage.remove_components::<(Velocity, Health)>(entity, &registry);
+    /// ```
     pub fn remove_components<S: component::IntoSpec>(
         &mut self,
         entity: Entity,
@@ -563,7 +598,7 @@ impl Storage {
 
     /// Execute a migration - move an entity from one archetype/table to another.
     ///
-    /// This is the core operation for `add_component` and `remove_component`. It safely
+    /// This is the core operation for `add_components` and `remove_components`. It safely
     /// transfers an entity between tables while preserving shared component data.
     ///
     /// # Process
@@ -1163,5 +1198,399 @@ mod tests {
         // Cleanup - despawn should drop it
         storage.despawn_entity(entity);
         assert_eq!(counter.load(Ordering::SeqCst), 1);
+    }
+
+    // ==================== Multi-Component Add Tests ====================
+
+    #[test]
+    fn add_multiple_components_at_once() {
+        // Given
+        let mut storage = Storage::new();
+        let registry = world::TypeRegistry::new();
+        let mut allocator = crate::ecs::entity::Allocator::new();
+        let entity = allocator.alloc();
+        storage.spawn_entity(entity, Position { x: 1.0, y: 2.0 }, &registry);
+
+        // When - add two components at once
+        let added = storage.add_components(
+            entity,
+            (Velocity { dx: 0.5, dy: 0.3 }, Health { hp: 100 }),
+            &registry,
+        );
+
+        // Then
+        assert!(added);
+        assert_eq!(storage.tables.len(), 2); // one migration
+
+        // Verify all component data
+        let loc = storage.location_for(entity).unwrap();
+        let table = storage.get_table(loc.table_id());
+        unsafe {
+            let pos = table.get::<Position>(loc.row()).unwrap();
+            let vel = table.get::<Velocity>(loc.row()).unwrap();
+            let health = table.get::<Health>(loc.row()).unwrap();
+            assert_eq!(pos.x, 1.0);
+            assert_eq!(pos.y, 2.0);
+            assert_eq!(vel.dx, 0.5);
+            assert_eq!(vel.dy, 0.3);
+            assert_eq!(health.hp, 100);
+        }
+    }
+
+    #[test]
+    fn add_multiple_components_returns_false_if_any_exists() {
+        // Given
+        let mut storage = Storage::new();
+        let registry = world::TypeRegistry::new();
+        let mut allocator = crate::ecs::entity::Allocator::new();
+        let entity = allocator.alloc();
+        // Entity already has Velocity
+        storage.spawn_entity(
+            entity,
+            (Position { x: 1.0, y: 2.0 }, Velocity { dx: 0.1, dy: 0.1 }),
+            &registry,
+        );
+
+        // When - try to add (Velocity, Health) - Velocity already exists
+        let added = storage.add_components(
+            entity,
+            (Velocity { dx: 0.5, dy: 0.3 }, Health { hp: 100 }),
+            &registry,
+        );
+
+        // Then - should fail because Velocity already exists
+        assert!(!added);
+
+        // Verify original Velocity unchanged, Health not added
+        let loc = storage.location_for(entity).unwrap();
+        let table = storage.get_table(loc.table_id());
+        unsafe {
+            let vel = table.get::<Velocity>(loc.row()).unwrap();
+            assert_eq!(vel.dx, 0.1); // original value
+            assert!(table.get::<Health>(loc.row()).is_none());
+        }
+    }
+
+    #[test]
+    fn add_multiple_components_empty_tuple_returns_false() {
+        // Given
+        let mut storage = Storage::new();
+        let registry = world::TypeRegistry::new();
+        let mut allocator = crate::ecs::entity::Allocator::new();
+        let entity = allocator.alloc();
+        storage.spawn_entity(entity, Position { x: 1.0, y: 2.0 }, &registry);
+
+        // When - try to add empty tuple
+        let added = storage.add_components(entity, (), &registry);
+
+        // Then
+        assert!(!added);
+    }
+
+    #[test]
+    fn add_three_components_at_once() {
+        // Given
+        #[derive(Component, Debug, PartialEq)]
+        struct Tag;
+
+        let mut storage = Storage::new();
+        let registry = world::TypeRegistry::new();
+        let mut allocator = crate::ecs::entity::Allocator::new();
+        let entity = allocator.alloc();
+        storage.spawn_entity(entity, Position { x: 1.0, y: 2.0 }, &registry);
+
+        // When - add three components at once
+        let added = storage.add_components(
+            entity,
+            (Velocity { dx: 0.5, dy: 0.3 }, Health { hp: 100 }, Tag),
+            &registry,
+        );
+
+        // Then
+        assert!(added);
+
+        let loc = storage.location_for(entity).unwrap();
+        let table = storage.get_table(loc.table_id());
+        unsafe {
+            assert!(table.get::<Position>(loc.row()).is_some());
+            assert!(table.get::<Velocity>(loc.row()).is_some());
+            assert!(table.get::<Health>(loc.row()).is_some());
+            assert!(table.get::<Tag>(loc.row()).is_some());
+        }
+    }
+
+    // ==================== Multi-Component Remove Tests ====================
+
+    #[test]
+    fn remove_multiple_components_at_once() {
+        // Given
+        let mut storage = Storage::new();
+        let registry = world::TypeRegistry::new();
+        let mut allocator = crate::ecs::entity::Allocator::new();
+        let entity = allocator.alloc();
+        storage.spawn_entity(
+            entity,
+            (
+                Position { x: 1.0, y: 2.0 },
+                Velocity { dx: 0.5, dy: 0.3 },
+                Health { hp: 100 },
+            ),
+            &registry,
+        );
+
+        // When - remove two components at once
+        let removed = storage.remove_components::<(Velocity, Health)>(entity, &registry);
+
+        // Then
+        assert!(removed);
+
+        // Verify only Position remains
+        let loc = storage.location_for(entity).unwrap();
+        let table = storage.get_table(loc.table_id());
+        unsafe {
+            let pos = table.get::<Position>(loc.row()).unwrap();
+            assert_eq!(pos.x, 1.0);
+            assert!(table.get::<Velocity>(loc.row()).is_none());
+            assert!(table.get::<Health>(loc.row()).is_none());
+        }
+    }
+
+    #[test]
+    fn remove_multiple_components_returns_false_if_any_missing() {
+        // Given
+        let mut storage = Storage::new();
+        let registry = world::TypeRegistry::new();
+        let mut allocator = crate::ecs::entity::Allocator::new();
+        let entity = allocator.alloc();
+        // Entity has Position and Velocity, but NOT Health
+        storage.spawn_entity(
+            entity,
+            (Position { x: 1.0, y: 2.0 }, Velocity { dx: 0.5, dy: 0.3 }),
+            &registry,
+        );
+
+        // When - try to remove (Velocity, Health) - Health doesn't exist
+        let removed = storage.remove_components::<(Velocity, Health)>(entity, &registry);
+
+        // Then - should fail because entity doesn't have ALL components
+        assert!(!removed);
+
+        // Verify Velocity still exists (nothing was removed)
+        let loc = storage.location_for(entity).unwrap();
+        let table = storage.get_table(loc.table_id());
+        unsafe {
+            assert!(table.get::<Velocity>(loc.row()).is_some());
+        }
+    }
+
+    #[test]
+    fn remove_multiple_components_empty_tuple_returns_false() {
+        // Given
+        let mut storage = Storage::new();
+        let registry = world::TypeRegistry::new();
+        let mut allocator = crate::ecs::entity::Allocator::new();
+        let entity = allocator.alloc();
+        storage.spawn_entity(entity, Position { x: 1.0, y: 2.0 }, &registry);
+
+        // When - try to remove empty tuple
+        let removed = storage.remove_components::<()>(entity, &registry);
+
+        // Then
+        assert!(!removed);
+    }
+
+    #[test]
+    fn remove_three_components_at_once() {
+        // Given
+        #[derive(Component)]
+        struct Tag;
+
+        let mut storage = Storage::new();
+        let registry = world::TypeRegistry::new();
+        let mut allocator = crate::ecs::entity::Allocator::new();
+        let entity = allocator.alloc();
+        storage.spawn_entity(
+            entity,
+            (
+                Position { x: 1.0, y: 2.0 },
+                Velocity { dx: 0.5, dy: 0.3 },
+                Health { hp: 100 },
+                Tag,
+            ),
+            &registry,
+        );
+
+        // When - remove three components at once
+        let removed = storage.remove_components::<(Velocity, Health, Tag)>(entity, &registry);
+
+        // Then
+        assert!(removed);
+
+        let loc = storage.location_for(entity).unwrap();
+        let table = storage.get_table(loc.table_id());
+        unsafe {
+            assert!(table.get::<Position>(loc.row()).is_some());
+            assert!(table.get::<Velocity>(loc.row()).is_none());
+            assert!(table.get::<Health>(loc.row()).is_none());
+            assert!(table.get::<Tag>(loc.row()).is_none());
+        }
+    }
+
+    #[test]
+    fn multi_component_add_then_remove() {
+        // Given
+        let mut storage = Storage::new();
+        let registry = world::TypeRegistry::new();
+        let mut allocator = crate::ecs::entity::Allocator::new();
+        let entity = allocator.alloc();
+        storage.spawn_entity(entity, Position { x: 1.0, y: 2.0 }, &registry);
+
+        // When - add multiple, then remove multiple
+        storage.add_components(
+            entity,
+            (Velocity { dx: 0.5, dy: 0.3 }, Health { hp: 100 }),
+            &registry,
+        );
+        storage.remove_components::<(Velocity, Health)>(entity, &registry);
+
+        // Then - back to just Position
+        let loc = storage.location_for(entity).unwrap();
+        let table = storage.get_table(loc.table_id());
+        unsafe {
+            assert!(table.get::<Position>(loc.row()).is_some());
+            assert!(table.get::<Velocity>(loc.row()).is_none());
+            assert!(table.get::<Health>(loc.row()).is_none());
+        }
+    }
+
+    #[test]
+    fn multi_component_migration_with_drop_tracking() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+
+        #[derive(Debug, Component)]
+        struct DropTracker1(Arc<AtomicUsize>);
+        #[derive(Debug, Component)]
+        struct DropTracker2(Arc<AtomicUsize>);
+
+        impl Drop for DropTracker1 {
+            fn drop(&mut self) {
+                self.0.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+        impl Drop for DropTracker2 {
+            fn drop(&mut self) {
+                self.0.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+
+        // Given
+        let mut storage = Storage::new();
+        let registry = world::TypeRegistry::new();
+        let mut allocator = crate::ecs::entity::Allocator::new();
+        let entity = allocator.alloc();
+        let counter1 = Arc::new(AtomicUsize::new(0));
+        let counter2 = Arc::new(AtomicUsize::new(0));
+
+        storage.spawn_entity(
+            entity,
+            (
+                Position { x: 1.0, y: 2.0 },
+                DropTracker1(counter1.clone()),
+                DropTracker2(counter2.clone()),
+            ),
+            &registry,
+        );
+        assert_eq!(counter1.load(Ordering::SeqCst), 0);
+        assert_eq!(counter2.load(Ordering::SeqCst), 0);
+
+        // When - remove both trackers at once
+        storage.remove_components::<(DropTracker1, DropTracker2)>(entity, &registry);
+
+        // Then - both should be dropped exactly once
+        assert_eq!(counter1.load(Ordering::SeqCst), 1);
+        assert_eq!(counter2.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn multi_component_add_preserves_existing_no_drop() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+
+        #[derive(Debug, Component)]
+        struct DropCounter {
+            counter: Arc<AtomicUsize>,
+        }
+
+        impl Drop for DropCounter {
+            fn drop(&mut self) {
+                self.counter.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+
+        // Given
+        let mut storage = Storage::new();
+        let registry = world::TypeRegistry::new();
+        let mut allocator = crate::ecs::entity::Allocator::new();
+        let entity = allocator.alloc();
+        let counter = Arc::new(AtomicUsize::new(0));
+
+        storage.spawn_entity(
+            entity,
+            DropCounter {
+                counter: counter.clone(),
+            },
+            &registry,
+        );
+
+        // When - add multiple components (DropCounter should NOT be dropped)
+        storage.add_components(
+            entity,
+            (Position { x: 1.0, y: 2.0 }, Velocity { dx: 0.5, dy: 0.3 }),
+            &registry,
+        );
+
+        // Then - DropCounter not dropped (shared component, byte-copied)
+        assert_eq!(counter.load(Ordering::SeqCst), 0);
+
+        // Cleanup
+        storage.despawn_entity(entity);
+        assert_eq!(counter.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn multi_component_updates_swapped_entity_location() {
+        // Given
+        let mut storage = Storage::new();
+        let registry = world::TypeRegistry::new();
+        let mut allocator = crate::ecs::entity::Allocator::new();
+
+        // Spawn two entities with same archetype
+        let e1 = allocator.alloc();
+        let e2 = allocator.alloc();
+        storage.spawn_entity(e1, Position { x: 1.0, y: 1.0 }, &registry);
+        storage.spawn_entity(e2, Position { x: 2.0, y: 2.0 }, &registry);
+
+        // e1 at row 0, e2 at row 1
+        assert_eq!(storage.location_for(e1).unwrap().row(), 0.into());
+        assert_eq!(storage.location_for(e2).unwrap().row(), 1.into());
+
+        // When - add multiple components to e1 (e2 should swap into row 0)
+        storage.add_components(
+            e1,
+            (Velocity { dx: 0.5, dy: 0.3 }, Health { hp: 100 }),
+            &registry,
+        );
+
+        // Then - e2's location should be updated
+        assert_eq!(storage.location_for(e2).unwrap().row(), 0.into());
+
+        // Verify e2's data still accessible
+        let loc = storage.location_for(e2).unwrap();
+        let table = storage.get_table(loc.table_id());
+        unsafe {
+            let pos = table.get::<Position>(loc.row()).unwrap();
+            assert_eq!(pos.x, 2.0);
+        }
     }
 }
