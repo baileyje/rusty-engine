@@ -137,6 +137,16 @@ impl<'w, D: Data> Result<'w, D> {
             _marker: PhantomData,
         }
     }
+
+    /// Get the length of the query results.
+    pub fn len(&self) -> usize {
+        self.len
+    }
+
+    /// Determine if the query results are empty.
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
 }
 
 impl<'w, D: Data> Iterator for Result<'w, D> {

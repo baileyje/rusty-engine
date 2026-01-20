@@ -139,6 +139,11 @@ impl Entities {
             self.entries.resize(capacity, Entry::default());
         }
     }
+
+    /// Get the the length of the entity list.
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
 }
 
 #[cfg(test)]
