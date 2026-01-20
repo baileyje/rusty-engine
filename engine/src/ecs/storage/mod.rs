@@ -182,7 +182,9 @@
 //! // Add multiple components at once
 //! #[derive(Component)]
 //! struct Armor { defense: i32 }
-//! storage.add_components(entity, (Health { hp: 100 }, Armor { defense: 50 }), &registry);
+//! #[derive(Component)]
+//! struct Shield { block: i32 }
+//! storage.add_components(entity, (Armor { defense: 50 }, Shield { block: 25 }), &registry);
 //!
 //! // Remove a single component (migrates to new archetype)
 //! storage.remove_components::<Velocity>(entity, &registry);
@@ -222,7 +224,7 @@
 //! - **Layout consistency**: Matches component type layout
 //!
 //! ## Migration Safety
-//! When an entity migrates between archetypes (via `add_component`/`remove_component`):
+//! When an entity migrates between archetypes (via `add_components`/`remove_components`):
 //! - **Shared data transfer**: Components common to both archetypes are byte-copied (no drop)
 //! - **Removed data cleanup**: Components only in source archetype are properly dropped
 //! - **Swap-remove handling**: When source table uses swap-remove, the moved entity's
@@ -233,7 +235,7 @@
 //! | Operation | Time | Notes |
 //! |-----------|------|-------|
 //! | Column iteration | O(n) | Cache-friendly, ~3-10ns per element |
-//! | Entity lookup | O(1) | Via index, ~25-50µs typical |
+//! | Entity lookup | O(1) | Via index, ~25-50ns typical |
 //! | Add entity | O(c) | c = number of components |
 //! | Remove entity | O(c) | Swap-remove, c = number of components |
 //! | Get component | O(1) | Direct index, bounds-checked in debug |
@@ -267,7 +269,7 @@
 //!
 //! **Cons:**
 //! - Adding/removing components requires table migration
-//! - Entity lookup is O(1) but not free (~25-50µs)
+//! - Entity lookup is O(1) but not free (~25-50ns)
 //! - More tables for diverse entity types
 //!
 //! # Thread Safety
@@ -296,6 +298,7 @@ pub use location::Location;
 pub use row::Row;
 pub use table::Id as TableId;
 pub use table::Table;
+pub use value::Values;
 
 use crate::ecs::entity::Entity;
 use crate::ecs::{
@@ -313,6 +316,7 @@ pub(crate) mod mem;
 pub(crate) mod row;
 pub(crate) mod table;
 pub(crate) mod unique;
+pub mod value;
 pub mod view;
 
 /// Central storage container for the ECS, managing all entity and component data.
@@ -432,27 +436,40 @@ impl Storage {
         &mut self.uniques
     }
 
-    pub fn spawn_entity<S: component::Set>(
+    /// Initial non-optimized version of spawning multiple entities at once.
+    ///
+    /// Eventually this will optimize to adding multiple entities in a batch to the table.
+    pub fn spawn_entities<V: Values>(
         &mut self,
-        entity: Entity,
-        set: S,
+        entities: impl IntoIterator<Item = (Entity, V)>,
         types: &world::TypeRegistry,
     ) {
         // Construct the component specification for this set of components.
         // This will register any components not yet registered.
-        let spec = <S>::into_spec(types);
+        let spec = <V>::into_spec(types);
 
-        // Get the archetype and type for this component spec, creating them if they don't exist.
+        // Get the archetype and table for this component spec, creating them if they don't exist.
         let (archetype_id, table_id) = self.get_storage_target(&spec, types);
-
         let table = self.get_table_mut(table_id);
+        // Add rows to the table and collect their locations for entity registration.
+        table
+            .add_entities(entities)
+            .into_iter()
+            .for_each(|(row, entity)| {
+                // Mark the entity as spawned in the world.
+                self.entities
+                    .spawn_at(entity, Location::new(archetype_id, table_id, row));
+            });
+    }
 
-        // Add the entity to the table.
-        let row = table.add_entity(entity, set, types);
-
-        // Mark the entity as spawned in the world.
-        self.entities
-            .spawn_at(entity, Location::new(archetype_id, table_id, row));
+    /// Spawn a new entity with the given set of components.
+    pub fn spawn_entity<V: Values>(
+        &mut self,
+        entity: Entity,
+        values: V,
+        types: &world::TypeRegistry,
+    ) {
+        self.spawn_entities([(entity, values)], types);
     }
 
     pub fn despawn_entity(&mut self, entity: Entity) {
@@ -491,10 +508,10 @@ impl Storage {
     /// // Add multiple components at once
     /// storage.add_components(entity, (Velocity { dx: 1.0, dy: 0.0 }, Health { hp: 100 }), &registry);
     /// ```
-    pub fn add_components<S: component::Set>(
+    pub fn add_components<V: Values>(
         &mut self,
         entity: Entity,
-        components: S,
+        components: V,
         types: &world::TypeRegistry,
     ) -> bool {
         // Check if entity is spawned
@@ -504,7 +521,7 @@ impl Storage {
         };
 
         // Get the specification for columns to add
-        let add_spec = S::into_spec(types);
+        let add_spec = V::into_spec(types);
 
         // No reason to process an empty add
         if add_spec.is_empty() {
@@ -615,14 +632,33 @@ impl Storage {
     /// - Removed components (in source but not target) are properly dropped
     /// - Swap-remove in source table may move another entity; its location is updated
     /// - The migrated entity's location is updated to point to target table
-    fn execute_migration<S: component::Set>(
+    fn execute_migration<V: Values>(
         &mut self,
         entity: Entity,
         source: Location,
         target: component::Spec,
-        additions: S,
+        additions: V,
         types: &world::TypeRegistry,
     ) {
+        // Debug: Verify that shared components + additions = target spec
+        // This ensures add_entity_from_extract will write to all columns
+        #[cfg(debug_assertions)]
+        {
+            let additions_spec = V::into_spec(types);
+            let source_spec = self
+                .archetypes
+                .get(source.archetype_id())
+                .expect("valid source archetype")
+                .components();
+            let shared_spec = source_spec.intersection(&target);
+            let combined = shared_spec.union(&additions_spec);
+            debug_assert_eq!(
+                combined, target,
+                "Migration invariant violated: shared components ({:?}) + additions ({:?}) != target ({:?})",
+                shared_spec, additions_spec, target
+            );
+        }
+
         // Get or create the target archetype/table
         let (target_archetype_id, target_table_id) = self.get_storage_target(&target, types);
 
@@ -861,6 +897,36 @@ mod tests {
         storage.spawn_entity(e1, Position { x: 1.0, y: 1.0 }, &registry);
         storage.spawn_entity(e2, Position { x: 2.0, y: 2.0 }, &registry);
         storage.spawn_entity(e3, Position { x: 3.0, y: 3.0 }, &registry);
+
+        // Then - all in same table
+        assert_eq!(storage.tables.len(), 1);
+        assert_eq!(storage.get_table(TableId::new(0)).len(), 3);
+
+        // Verify locations
+        assert_eq!(storage.location_for(e1).unwrap().row(), 0.into());
+        assert_eq!(storage.location_for(e2).unwrap().row(), 1.into());
+        assert_eq!(storage.location_for(e3).unwrap().row(), 2.into());
+    }
+
+    #[test]
+    fn spawn_multiple_entities_in_batch() {
+        // Given
+        let mut storage = Storage::new();
+        let registry = world::TypeRegistry::new();
+        let mut allocator = crate::ecs::entity::Allocator::new();
+
+        // When
+        let e1 = allocator.alloc();
+        let e2 = allocator.alloc();
+        let e3 = allocator.alloc();
+        storage.spawn_entities(
+            vec![
+                (e1, Position { x: 1.0, y: 1.0 }),
+                (e2, Position { x: 2.0, y: 2.0 }),
+                (e3, Position { x: 3.0, y: 3.0 }),
+            ],
+            &registry,
+        );
 
         // Then - all in same table
         assert_eq!(storage.tables.len(), 1);
@@ -1465,8 +1531,8 @@ mod tests {
 
     #[test]
     fn multi_component_migration_with_drop_tracking() {
-        use std::sync::atomic::{AtomicUsize, Ordering};
         use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
 
         #[derive(Debug, Component)]
         struct DropTracker1(Arc<AtomicUsize>);
@@ -1514,8 +1580,8 @@ mod tests {
 
     #[test]
     fn multi_component_add_preserves_existing_no_drop() {
-        use std::sync::atomic::{AtomicUsize, Ordering};
         use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
 
         #[derive(Debug, Component)]
         struct DropCounter {

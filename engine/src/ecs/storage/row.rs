@@ -22,15 +22,9 @@ impl Row {
         self.0
     }
 
-    /// Increment the row index by 1.
+    /// Increment the row index by 1 and consume self.
     #[inline]
-    pub fn increment(&mut self) {
-        self.0 += 1;
-    }
-
-    /// Decrement the row index by 1.
-    #[inline]
-    pub fn decrement(&mut self) {
-        self.0 -= 1;
+    pub fn increment(self) -> Self {
+        Self::new(self.0 + 1)
     }
 }

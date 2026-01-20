@@ -14,11 +14,7 @@
 //!
 //! - **[`Allocator`]**: Manages entity ID allocation and recycling. When entities are
 //!   freed, they are placed in a dead pool for reuse. This prevents ID exhaustion and
-//!   improves memory locality. The allocator uses atomic operations to enable thread-safe
-//!   access to the dead pool count.
-//!
-//! - **[`Storage`]**: Tracks active entities and their generations, enabling validation
-//!   of entity references. This ensures that operations on deleted entities fail gracefully.
+//!   improves memory locality.
 //!
 //! - **[`Ref`]**: A lightweight reference to an entity that can be validated against the
 //!   current state of the world. This prevents use-after-free bugs at the entity level.
@@ -37,14 +33,6 @@
 //! // Original entity reference is now invalid due to generation mismatch
 //! ```
 //!
-//! # Thread Safety
-//!
-//! The allocator uses atomic operations for the dead pool count and next ID, allowing
-//! concurrent allocations. The dead pool resynchronization logic in `free()` ensures
-//! consistency when the pool is modified. While `alloc()` and `free()` require `&mut self`,
-//! the atomic fields enable these operations to be safely interleaved when the allocator
-//! is accessed through interior mutability patterns (e.g., `Mutex` or `RwLock`).
-//!
 //! # Performance Considerations
 //!
 //! Entity IDs are reused from the dead pool when available, which provides several benefits:
@@ -52,8 +40,6 @@
 //! - Improves cache locality for entity-indexed data structures
 //! - Prevents ID exhaustion in long-running applications
 //! - Maintains a compact ID space for efficient storage indexing
-
-use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 
 mod reference;
 
@@ -157,17 +143,25 @@ impl Ord for Entity {
     }
 }
 
-/// An allocator for entities in the ECS. This will allocate unique entity IDs and
-/// recycle freed entities to avoid ID exhaustion. The `next_id` and `freed_count` are
-/// atomic to allow for concurrent allocations and deallocations.
+/// An allocator for entities in the ECS.
+///
+/// Allocates unique entity IDs and recycles freed entities to avoid ID exhaustion.
+/// When an entity is freed, its generation is incremented before being placed in the
+/// dead pool, invalidating any stale references.
+///
+/// # Design Note
+///
+/// This allocator requires `&mut self` for all operations and is owned by the World,
+/// which is `!Send`. No atomic operations are needed since exclusive access is
+/// guaranteed by the borrow checker. If a command buffer pattern is added later
+/// that requires ID reservation from parallel contexts, consider batch reservation
+/// rather than making allocation atomic.
 #[derive(Default, Debug)]
 pub struct Allocator {
     /// The pool of freed entities available for reuse.
     dead_pool: Vec<Entity>,
-    /// The count of freed entities in the pool.
-    dead_count: AtomicUsize,
     /// The next unique ID to allocate.
-    next_id: AtomicU32,
+    next_id: u32,
 }
 
 impl Allocator {
@@ -176,65 +170,50 @@ impl Allocator {
     pub const fn new() -> Self {
         Self {
             dead_pool: Vec::new(),
-            dead_count: AtomicUsize::new(0),
-            next_id: AtomicU32::new(0),
+            next_id: 0,
         }
+    }
+
+    /// Allocate many new entities at once.
+    ///
+    /// Reuses entities from the dead pool first, then allocates new IDs as needed.
+    /// More efficient than calling `alloc()` in a loop.
+    pub fn alloc_many(&mut self, count: usize) -> Vec<Entity> {
+        let mut entities = Vec::with_capacity(count);
+
+        // Drain from dead pool first (from the end for efficiency)
+        let from_pool = count.min(self.dead_pool.len());
+        entities.extend(self.dead_pool.drain(self.dead_pool.len() - from_pool..));
+
+        // Allocate remaining as new sequential IDs
+        let remaining = count - entities.len();
+        if remaining > 0 {
+            let start_id = self.next_id;
+            self.next_id += remaining as u32;
+
+            entities.extend((start_id..self.next_id).map(|id| {
+                Entity::new_with_generation(Id(id), Generation::FIRST)
+            }));
+        }
+
+        entities
     }
 
     /// Allocate a new entity, either by reusing a freed entity from the dead pool
     /// or by allocating a new unique ID.
-    ///
-    /// This uses atomics to allow thread-safe access to the dead pool count. When the pool
-    /// is empty (dead_count == 0), fetch_sub will underflow to usize::MAX, and the subsequent
-    /// wrapping_sub(1) produces usize::MAX - 1, which is out of bounds for the dead_pool Vec,
-    /// causing get() to return None and triggering allocation of a new entity ID.
     pub fn alloc(&mut self) -> Entity {
-        // Atomically decrement dead_count and get the previous value.
-        // If dead_count was 0, this underflows to usize::MAX.
-        // wrapping_sub(1) then gives us usize::MAX - 1, which is out of bounds.
-        let free_index = self
-            .dead_count
-            .fetch_sub(1, Ordering::Relaxed)
-            .wrapping_sub(1);
-
-        // Attempt to get a recycled entity from the dead pool.
-        // If free_index is out of bounds (pool empty or underflowed), allocate a new ID.
-        self.dead_pool.get(free_index).copied().unwrap_or_else(|| {
-            let id = Id(self
-                .next_id
-                .fetch_add(1, std::sync::atomic::Ordering::Relaxed));
-            Entity {
-                id,
-                generation: Generation(0),
-            }
+        self.dead_pool.pop().unwrap_or_else(|| {
+            let id = Id(self.next_id);
+            self.next_id += 1;
+            Entity::new_with_generation(id, Generation::FIRST)
         })
     }
 
-    /// Free an entity, making it available for reuse. The generation is incremented to
-    /// invalidate any existing references to this entity.
+    /// Free an entity, making it available for reuse.
     ///
-    /// This method synchronizes the atomic dead_count with the actual dead_pool Vec.
-    /// If dead_count has underflowed (become very large due to more allocs than frees),
-    /// the pool is cleared and rebuilt. Otherwise, excess entries are truncated to match
-    /// the atomic count.
+    /// The generation is incremented to invalidate any existing references to this entity.
     pub fn free(&mut self, entity: Entity) {
-        let dead_count = self.dead_count.get_mut();
-
-        // If dead_count > dead_pool.len(), it means alloc() caused underflow.
-        // This happens when more allocations occurred than entities in the pool.
-        // Clear the pool and start fresh.
-        if *dead_count > self.dead_pool.len() {
-            self.dead_pool.clear();
-        } else {
-            // Truncate to match the atomic count (handles case where dead_count < pool length).
-            self.dead_pool.truncate(*dead_count);
-        }
-
-        // Add the freed entity to the pool with incremented generation.
         self.dead_pool.push(entity.genned());
-
-        // Update atomic count to match the new pool size.
-        *dead_count = self.dead_pool.len();
     }
 }
 
@@ -285,46 +264,52 @@ fn allocator_reuse() {
 }
 
 #[test]
-fn allocator_exhaustion() {
+fn allocator_free_and_reuse_cycle() {
     // Given
     let mut allocator = Allocator::default();
 
-    // When
+    // When - Allocate 5 entities
     let mut entities = Vec::new();
     for _ in 0..5 {
         entities.push(allocator.alloc());
     }
 
-    for (i, e) in entities.drain(..).enumerate() {
+    // Then - Pool should be empty
+    assert_eq!(allocator.dead_pool.len(), 0);
+
+    // When - Free all entities
+    for e in entities.drain(..) {
         allocator.free(e);
-        assert_eq!(allocator.dead_count.load(Ordering::Relaxed), i + 1)
     }
 
-    // Then - Free counts match
-    assert_eq!(
-        allocator.dead_pool.len(),
-        allocator.dead_count.load(Ordering::Relaxed)
-    );
+    // Then - Pool should have 5 entities
+    assert_eq!(allocator.dead_pool.len(), 5);
 
-    // And When pushed past dead count
+    // When - Allocate 6 (more than pool size)
+    let mut new_entities = Vec::new();
     for _ in 0..6 {
-        allocator.alloc();
+        new_entities.push(allocator.alloc());
     }
 
-    // Then
-    assert!(allocator.dead_count.load(Ordering::Relaxed) > allocator.dead_pool.len());
+    // Then - Pool should be empty and we got one new ID
+    assert_eq!(allocator.dead_pool.len(), 0);
+    // 5 reused (gen 1) + 1 new (gen 0)
+    let new_count = new_entities.iter().filter(|e| e.generation.0 == 0).count();
+    let reused_count = new_entities.iter().filter(|e| e.generation.0 == 1).count();
+    assert_eq!(new_count, 1);
+    assert_eq!(reused_count, 5);
 }
 
 #[test]
-fn allocator_underflow_handling() {
+fn allocator_empty_pool_allocates_new() {
     // Given
     let mut allocator = Allocator::default();
 
-    // When - Allocate without any freed entities (dead_count is 0)
+    // When - Allocate without any freed entities
     let e1 = allocator.alloc();
     let e2 = allocator.alloc();
 
-    // Then - Should allocate new IDs, not crash from underflow
+    // Then - Should allocate new sequential IDs
     assert_eq!(e1.id.0, 0);
     assert_eq!(e2.id.0, 1);
     assert_eq!(e1.generation.0, 0);
@@ -335,7 +320,6 @@ fn allocator_underflow_handling() {
 
     // Then - Dead pool should have one entity with incremented generation
     assert_eq!(allocator.dead_pool.len(), 1);
-    assert_eq!(allocator.dead_count.load(Ordering::Relaxed), 1);
     assert_eq!(allocator.dead_pool[0].generation.0, 1);
 
     // When - Allocate again (should reuse from pool)
@@ -344,47 +328,14 @@ fn allocator_underflow_handling() {
     // Then - Should get the freed entity with new generation
     assert_eq!(e1_reused.id, e1.id);
     assert_eq!(e1_reused.generation.0, 1);
+    assert_eq!(allocator.dead_pool.len(), 0);
 
-    // When - Allocate again (pool now empty, should trigger underflow)
+    // When - Allocate again (pool empty)
     let e3 = allocator.alloc();
 
-    // Then - Should allocate new ID without crashing
+    // Then - Should allocate new ID
     assert_eq!(e3.id.0, 2);
     assert_eq!(e3.generation.0, 0);
-
-    // Verify dead_count underflowed (very large number)
-    // The actual value depends on the wrapping_sub implementation
-    assert!(allocator.dead_count.load(Ordering::Relaxed) > 1000);
-}
-
-#[test]
-fn allocator_pool_resync_after_underflow() {
-    // Given
-    let mut allocator = Allocator::default();
-
-    // When - Free entity to populate pool
-    let e1 = allocator.alloc();
-    allocator.free(e1);
-
-    // When - Allocate twice (empties pool and causes underflow)
-    let _ = allocator.alloc();
-    let _ = allocator.alloc();
-
-    // Then - dead_count should be very large (underflowed)
-    let dead_count = allocator.dead_count.load(Ordering::Relaxed);
-    assert!(dead_count > allocator.dead_pool.len());
-
-    // When - Free another entity (should resync pool)
-    let e2 = allocator.alloc();
-    allocator.free(e2);
-
-    // Then - Pool should be cleared and resynced
-    assert_eq!(allocator.dead_pool.len(), 1);
-    assert_eq!(allocator.dead_count.load(Ordering::Relaxed), 1);
-
-    // And - Next alloc should work correctly
-    let reused = allocator.alloc();
-    assert_eq!(reused.id, e2.id);
 }
 
 #[test]
@@ -452,6 +403,74 @@ fn allocator_multiple_generations() {
 
     assert_eq!(gen3.id, original_id);
     assert_eq!(gen3.generation.0, 3);
+}
+
+#[test]
+fn allocator_alloc_many_from_empty() {
+    // Given
+    let mut allocator = Allocator::default();
+
+    // When - Allocate many from empty allocator
+    let entities = allocator.alloc_many(5);
+
+    // Then - Should get sequential new IDs
+    assert_eq!(entities.len(), 5);
+    for (i, e) in entities.iter().enumerate() {
+        assert_eq!(e.id.0, i as u32);
+        assert_eq!(e.generation.0, 0);
+    }
+    assert_eq!(allocator.next_id, 5);
+}
+
+#[test]
+fn allocator_alloc_many_from_pool() {
+    // Given
+    let mut allocator = Allocator::default();
+    // Create and free 5 entities to populate the pool
+    for e in allocator.alloc_many(5) {
+        allocator.free(e);
+    }
+    assert_eq!(allocator.dead_pool.len(), 5);
+
+    // When - Allocate 3 (less than pool size)
+    let entities = allocator.alloc_many(3);
+
+    // Then - Should reuse from pool
+    assert_eq!(entities.len(), 3);
+    for e in &entities {
+        assert_eq!(e.generation.0, 1); // Reused entities have generation 1
+    }
+    assert_eq!(allocator.dead_pool.len(), 2); // 2 left in pool
+}
+
+#[test]
+fn allocator_alloc_many_mixed() {
+    // Given
+    let mut allocator = Allocator::default();
+    // Create and free 3 entities to populate the pool
+    for e in allocator.alloc_many(3) {
+        allocator.free(e);
+    }
+    assert_eq!(allocator.dead_pool.len(), 3);
+    assert_eq!(allocator.next_id, 3);
+
+    // When - Allocate 5 (more than pool size)
+    let entities = allocator.alloc_many(5);
+
+    // Then - Should get 3 reused + 2 new
+    assert_eq!(entities.len(), 5);
+    let reused: Vec<_> = entities.iter().filter(|e| e.generation.0 == 1).collect();
+    let new: Vec<_> = entities.iter().filter(|e| e.generation.0 == 0).collect();
+    assert_eq!(reused.len(), 3);
+    assert_eq!(new.len(), 2);
+
+    // New entities should have IDs 3 and 4
+    let mut new_ids: Vec<_> = new.iter().map(|e| e.id.0).collect();
+    new_ids.sort();
+    assert_eq!(new_ids, vec![3, 4]);
+
+    assert_eq!(allocator.dead_pool.len(), 0);
+    assert_eq!(allocator.next_id, 5);
 }
 
 #[test]

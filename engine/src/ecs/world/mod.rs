@@ -134,7 +134,7 @@ impl World {
 
     /// Spawn a new entity with the given set of components in the world.
     /// This will establish the entity in the appropriate archetype and storage table.
-    pub fn spawn<S: component::Set + Send>(&mut self, set: S) -> entity::Entity {
+    pub fn spawn<V: storage::Values>(&mut self, set: V) -> entity::Entity {
         // Allocate a new entity.
         let entity = self.entity_allocator.alloc();
 
@@ -142,6 +142,25 @@ impl World {
         self.storage.spawn_entity(entity, set, &self.resources);
 
         entity
+    }
+
+    /// Spawn a new entity with the given set of components in the world.
+    /// This will establish the entity in the appropriate archetype and storage table.
+    pub fn spawn_many<V: storage::Values>(
+        &mut self,
+        values: impl IntoIterator<Item = V>,
+    ) -> Vec<entity::Entity> {
+        // Get the component sets as a vec.
+        let sets = values.into_iter();
+
+        // Allocate a new entities based on the number of values.
+        let entities = self.entity_allocator.alloc_many(sets.size_hint().0);
+
+        // Spawn the entities in storage with the component sets.
+        self.storage
+            .spawn_entities(entities.iter().copied().zip(sets), &self.resources);
+
+        entities
     }
 
     /// Despawn the given entity from the world. This will remove the entity and all its components
@@ -161,10 +180,10 @@ impl World {
     /// # Returns
     /// - `true` if the component was added
     /// - `false` if the entity doesn't exist or already has this component
-    pub fn add_components<S: component::Set>(
+    pub fn add_components<V: storage::Values>(
         &mut self,
         entity: entity::Entity,
-        components: S,
+        components: V,
     ) -> bool {
         self.storage
             .add_components(entity, components, &self.resources)
@@ -305,6 +324,18 @@ mod test {
 
     use crate::ecs::world::{Id, World};
 
+    #[derive(Component, Debug, PartialEq)]
+    struct Position {
+        x: f32,
+        y: f32,
+    }
+
+    #[derive(Component, Debug, PartialEq)]
+    struct Velocity {
+        dx: f32,
+        dy: f32,
+    }
+
     #[test]
     fn spawn_empty_entity() {
         // Given
@@ -320,31 +351,63 @@ mod test {
         // Given
         let mut world = World::new(Id(1));
 
-        #[derive(Component, Debug, PartialEq)]
-        struct Comp1 {
-            value: u32,
-        }
-
-        #[derive(Component, Debug, PartialEq)]
-        struct Comp2 {
-            value: String,
-        }
-
         // When
-        let entity = world.spawn((
-            Comp1 { value: 42 },
-            Comp2 {
-                value: "Hello".to_string(),
-            },
-        ));
+        let entity = world.spawn((Position { x: 42.0, y: 67.0 }, Velocity { dx: 0.0, dy: 1.0 }));
 
         // Then
         assert!(world.storage.entities().is_spawned(entity));
 
         let entity_ref = world.entity(entity).unwrap();
 
-        assert_eq!(Comp1 { value: 42 }, *entity_ref.get::<Comp1>().unwrap());
-        assert_eq!("Hello", entity_ref.get::<Comp2>().unwrap().value.as_str());
+        assert_eq!(
+            Position { x: 42.0, y: 67.0 },
+            *entity_ref.get::<Position>().unwrap()
+        );
+        assert_eq!(
+            Velocity { dx: 0.0, dy: 1.0 },
+            *entity_ref.get::<Velocity>().unwrap()
+        );
+    }
+
+    #[test]
+    fn spawn_many_entity_with_components() {
+        // Given
+        let mut world = World::new(Id(1));
+
+        // When
+        let entities = world.spawn_many([
+            (Position { x: 42.0, y: 67.0 }, Velocity { dx: 0.0, dy: 1.0 }),
+            (Position { x: 67.0, y: 42.0 }, Velocity { dx: 1.0, dy: 0.0 }),
+        ]);
+
+        // Then
+        let entity = entities[0];
+        assert!(world.storage.entities().is_spawned(entity));
+
+        let entity_ref = world.entity(entity).unwrap();
+
+        assert_eq!(
+            Position { x: 42.0, y: 67.0 },
+            *entity_ref.get::<Position>().unwrap()
+        );
+        assert_eq!(
+            Velocity { dx: 0.0, dy: 1.0 },
+            *entity_ref.get::<Velocity>().unwrap()
+        );
+
+        let entity = entities[1];
+        assert!(world.storage.entities().is_spawned(entity));
+
+        let entity_ref = world.entity(entity).unwrap();
+
+        assert_eq!(
+            Position { x: 67.0, y: 42.0 },
+            *entity_ref.get::<Position>().unwrap()
+        );
+        assert_eq!(
+            Velocity { dx: 1.0, dy: 0.0 },
+            *entity_ref.get::<Velocity>().unwrap()
+        );
     }
 
     #[test]
@@ -450,12 +513,6 @@ mod test {
     fn entity_ref_access() {
         let mut world = World::new(Id(1));
 
-        #[derive(Component, Debug, PartialEq)]
-        struct Position {
-            x: f32,
-            y: f32,
-        }
-
         let entity = world.spawn(Position { x: 10.0, y: 20.0 });
 
         // Test entity() method
@@ -549,18 +606,6 @@ mod test {
     fn add_component_to_entity() {
         let mut world = World::new(Id(1));
 
-        #[derive(Component, Debug, PartialEq)]
-        struct Position {
-            x: f32,
-            y: f32,
-        }
-
-        #[derive(Component, Debug, PartialEq)]
-        struct Velocity {
-            dx: f32,
-            dy: f32,
-        }
-
         // Spawn entity with just Position
         let entity = world.spawn(Position { x: 1.0, y: 2.0 });
 
@@ -588,12 +633,6 @@ mod test {
     #[test]
     fn add_component_already_exists_returns_false() {
         let mut world = World::new(Id(1));
-
-        #[derive(Component, Debug, PartialEq)]
-        struct Position {
-            x: f32,
-            y: f32,
-        }
 
         let entity = world.spawn(Position { x: 1.0, y: 2.0 });
 
@@ -628,18 +667,6 @@ mod test {
     fn remove_component_from_entity() {
         let mut world = World::new(Id(1));
 
-        #[derive(Component, Debug, PartialEq)]
-        struct Position {
-            x: f32,
-            y: f32,
-        }
-
-        #[derive(Component, Debug, PartialEq)]
-        struct Velocity {
-            dx: f32,
-            dy: f32,
-        }
-
         // Spawn entity with Position and Velocity
         let entity = world.spawn((Position { x: 1.0, y: 2.0 }, Velocity { dx: 0.5, dy: 0.3 }));
 
@@ -665,15 +692,6 @@ mod test {
     #[test]
     fn remove_component_not_present_returns_false() {
         let mut world = World::new(Id(1));
-
-        #[derive(Component)]
-        struct Position {
-            x: f32,
-            y: f32,
-        }
-
-        #[derive(Component)]
-        struct Velocity;
 
         let entity = world.spawn(Position { x: 1.0, y: 2.0 });
 
@@ -701,18 +719,6 @@ mod test {
     fn add_component_updates_other_entity_location() {
         // Test that swap-remove during migration properly updates other entities
         let mut world = World::new(Id(1));
-
-        #[derive(Component, Debug, PartialEq)]
-        struct Position {
-            x: f32,
-            y: f32,
-        }
-
-        #[derive(Component, Debug, PartialEq)]
-        struct Velocity {
-            dx: f32,
-            dy: f32,
-        }
 
         // Spawn two entities with same archetype
         let entity1 = world.spawn(Position { x: 1.0, y: 1.0 });
@@ -742,18 +748,6 @@ mod test {
     fn remove_component_updates_other_entity_location() {
         let mut world = World::new(Id(1));
 
-        #[derive(Component, Debug, PartialEq)]
-        struct Position {
-            x: f32,
-            y: f32,
-        }
-
-        #[derive(Component, Debug, PartialEq)]
-        struct Velocity {
-            dx: f32,
-            dy: f32,
-        }
-
         // Spawn two entities with same archetype (Position + Velocity)
         let entity1 = world.spawn((Position { x: 1.0, y: 1.0 }, Velocity { dx: 0.5, dy: 0.5 }));
         let entity2 = world.spawn((Position { x: 2.0, y: 2.0 }, Velocity { dx: 1.0, dy: 1.0 }));
@@ -781,12 +775,6 @@ mod test {
     #[test]
     fn add_then_remove_component() {
         let mut world = World::new(Id(1));
-
-        #[derive(Component, Debug, PartialEq)]
-        struct Position {
-            x: f32,
-            y: f32,
-        }
 
         #[derive(Component, Debug, PartialEq)]
         struct Tag;

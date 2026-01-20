@@ -316,7 +316,42 @@ impl Column {
         unsafe { std::slice::from_raw_parts(ptr.as_ptr(), size) }
     }
 
-    /// Push raw bytes as a new component.
+    /// Write raw bytes as a new component to a specified row.
+    ///
+    /// The bytes must represent a valid instance of the component type.
+    /// For ZSTs, the bytes slice should be empty.
+    ///
+    /// Like the other `write` method, this asumes row has been reserved and will not update length
+    /// directly.
+    ///
+    /// # Safety
+    /// The caller must ensure that:
+    /// - `bytes.len() == self.info.layout().size()` (or both are 0 for ZSTs)
+    /// - The bytes represent a valid, properly aligned instance of the component type
+    /// - The source data will not be dropped (this is a move, not a copy)
+    /// - The row has been reserved and is in-bounds.
+    #[inline]
+    pub unsafe fn write_bytes(&mut self, row: Row, bytes: &[u8]) {
+        debug_assert!(row.index() < self.data.capacity(), "index out of bounds");
+
+        let size = self.info.layout().size();
+        debug_assert_eq!(
+            bytes.len(),
+            size,
+            "bytes length {} does not match component size {}",
+            bytes.len(),
+            size
+        );
+
+        if size > 0 {
+            let dst_ptr = self.data.ptr_at_mut(row.index());
+            unsafe {
+                ptr::copy_nonoverlapping(bytes.as_ptr(), dst_ptr.as_ptr(), size);
+            }
+        }
+    }
+
+    /// Push raw bytes as a new component to a specified row.
     ///
     /// The bytes must represent a valid instance of the component type.
     /// For ZSTs, the bytes slice should be empty.
@@ -337,17 +372,13 @@ impl Column {
             size
         );
 
-        // Reserve space for one more element
+        // Reserve an additional row.
         self.reserve(1);
-
-        if size > 0 {
-            let dst_ptr = self.data.ptr_at_mut(self.len);
-            unsafe {
-                ptr::copy_nonoverlapping(bytes.as_ptr(), dst_ptr.as_ptr(), size);
-            }
+        // SAFETY: len < capacity after reserve(1), and we're writing to self.len which is valid
+        unsafe {
+            self.write_bytes(Row::new(self.len), bytes);
         }
-        // For ZSTs, no bytes to copy, just increment len
-
+        // Update length to mark row initialized
         self.len += 1;
     }
 
@@ -1239,7 +1270,7 @@ mod tests {
     }
 
     #[test]
-    fn column_push_bytes() {
+    fn column_bytes() {
         // Given
         #[derive(Component, Debug, PartialEq)]
         struct Position {
@@ -1263,6 +1294,7 @@ mod tests {
         unsafe {
             column.push_bytes(bytes);
         }
+
         // Forget the original to avoid double-drop
         std::mem::forget(pos);
 
@@ -1276,7 +1308,7 @@ mod tests {
     }
 
     #[test]
-    fn column_push_bytes_zst() {
+    fn column_write_bytes_zst() {
         // Given
         #[derive(Component, Debug)]
         struct Marker;
@@ -1297,8 +1329,8 @@ mod tests {
     #[test]
     fn column_swap_remove_no_drop() {
         // Given - use a drop tracker to verify drop is NOT called
-        use std::sync::atomic::{AtomicUsize, Ordering};
         use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
 
         #[derive(Debug)]
         struct DropTracker(Arc<AtomicUsize>);
@@ -1367,28 +1399,22 @@ mod tests {
 
         // Add some data to source
         unsafe {
-            source.push(Data {
-                a: 1,
-                b: 2,
-                c: 3.0,
-            });
-            source.push(Data {
-                a: 4,
-                b: 5,
-                c: 6.0,
-            });
+            source.push(Data { a: 1, b: 2, c: 3.0 });
+            source.push(Data { a: 4, b: 5, c: 6.0 });
         }
+
+        let row = Row::new(0);
 
         // Migrate row 0 from source to target
         unsafe {
             // 1. Read bytes from source
-            let bytes = source.read_bytes(Row::new(0));
+            let bytes = source.read_bytes(row);
 
             // 2. Push bytes to target
             target.push_bytes(bytes);
 
             // 3. Remove from source without drop (data was moved)
-            source.swap_remove_no_drop(Row::new(0));
+            source.swap_remove_no_drop(row);
         }
 
         // Verify

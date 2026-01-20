@@ -572,7 +572,7 @@ mod tests {
         value: i32,
     }
 
-    fn setup_table() -> (Table, world::TypeRegistry, entity::Allocator) {
+    fn setup_table() -> (Table, entity::Allocator) {
         let registry = world::TypeRegistry::new();
         registry.register_component::<Position>();
         registry.register_component::<Velocity>();
@@ -588,13 +588,13 @@ mod tests {
         );
         let allocator = entity::Allocator::new();
 
-        (table, registry, allocator)
+        (table, allocator)
     }
 
     #[test]
     fn view_single_component_immutable() {
         // Given
-        let (mut table, registry, mut allocator) = setup_table();
+        let (mut table, mut allocator) = setup_table();
         let entity = allocator.alloc();
 
         let row = table.add_entity(
@@ -604,7 +604,6 @@ mod tests {
                 Velocity { dx: 0.5, dy: 0.3 },
                 Health { value: 100 },
             ),
-            &registry,
         );
 
         // When
@@ -620,7 +619,7 @@ mod tests {
     #[test]
     fn view_single_component_mutable() {
         // Given
-        let (mut table, registry, mut allocator) = setup_table();
+        let (mut table, mut allocator) = setup_table();
         let entity = allocator.alloc();
 
         let row = table.add_entity(
@@ -630,7 +629,6 @@ mod tests {
                 Velocity { dx: 0.5, dy: 0.3 },
                 Health { value: 100 },
             ),
-            &registry,
         );
 
         // When
@@ -652,7 +650,7 @@ mod tests {
     #[test]
     fn view_tuple_two_components() {
         // Given
-        let (mut table, registry, mut allocator) = setup_table();
+        let (mut table, mut allocator) = setup_table();
         let entity = allocator.alloc();
 
         let row = table.add_entity(
@@ -662,7 +660,6 @@ mod tests {
                 Velocity { dx: 0.5, dy: 0.3 },
                 Health { value: 100 },
             ),
-            &registry,
         );
 
         // When
@@ -681,7 +678,7 @@ mod tests {
     #[test]
     fn view_tuple_three_components() {
         // Given
-        let (mut table, registry, mut allocator) = setup_table();
+        let (mut table, mut allocator) = setup_table();
         let entity = allocator.alloc();
 
         let row = table.add_entity(
@@ -691,7 +688,6 @@ mod tests {
                 Velocity { dx: 0.5, dy: 0.3 },
                 Health { value: 100 },
             ),
-            &registry,
         );
 
         // When
@@ -709,7 +705,7 @@ mod tests {
     #[test]
     fn view_tuple_mixed_mutability() {
         // Given
-        let (mut table, registry, mut allocator) = setup_table();
+        let (mut table, mut allocator) = setup_table();
         let entity = allocator.alloc();
 
         let row = table.add_entity(
@@ -719,7 +715,6 @@ mod tests {
                 Velocity { dx: 0.5, dy: 0.3 },
                 Health { value: 100 },
             ),
-            &registry,
         );
 
         // When
@@ -748,7 +743,7 @@ mod tests {
     #[test]
     fn view_returns_none_for_invalid_row() {
         // Given
-        let (table, _registry, _allocator) = setup_table();
+        let (table, _allocator) = setup_table();
 
         // When - try to fetch from invalid row
         let view: Option<&Position> = unsafe { <&Position>::fetch(&table, Row::new(999)) };
@@ -760,7 +755,7 @@ mod tests {
     #[test]
     fn view_returns_none_for_unregistered_component() {
         // Given
-        let (mut table, registry, mut allocator) = setup_table();
+        let (mut table, mut allocator) = setup_table();
 
         #[derive(Component)]
         struct UnregisteredComponent;
@@ -773,7 +768,6 @@ mod tests {
                 Velocity { dx: 0.5, dy: 0.3 },
                 Health { value: 100 },
             ),
-            &registry,
         );
 
         // When - try to fetch unregistered component
@@ -787,7 +781,7 @@ mod tests {
     #[test]
     fn view_empty_tuple() {
         // Given
-        let (table, _registry, _allocator) = setup_table();
+        let (table, _allocator) = setup_table();
 
         // When
         let view: Option<()> = unsafe { <()>::fetch(&table, Row::new(0)) };
@@ -799,7 +793,7 @@ mod tests {
     #[test]
     fn view_mutable_from_immutable_table_returns_none() {
         // Given
-        let (mut table, registry, mut allocator) = setup_table();
+        let (mut table, mut allocator) = setup_table();
         let entity = allocator.alloc();
 
         let row = table.add_entity(
@@ -809,7 +803,6 @@ mod tests {
                 Velocity { dx: 0.5, dy: 0.3 },
                 Health { value: 100 },
             ),
-            &registry,
         );
 
         // When - try to get mutable view from immutable table
@@ -822,49 +815,50 @@ mod tests {
     #[test]
     fn view_multiple_entities() {
         // Given
-        let (mut table, registry, mut allocator) = setup_table();
+        let (mut table, mut allocator) = setup_table();
 
         let entity1 = allocator.alloc();
         let entity2 = allocator.alloc();
         let entity3 = allocator.alloc();
 
-        let row1 = table.add_entity(
-            entity1,
-            (
-                Position { x: 1.0, y: 2.0 },
-                Velocity { dx: 0.5, dy: 0.3 },
-                Health { value: 100 },
-            ),
-            &registry,
-        );
-
-        let row2 = table.add_entity(
-            entity2,
-            (
-                Position { x: 3.0, y: 4.0 },
-                Velocity { dx: -0.5, dy: 0.8 },
-                Health { value: 75 },
-            ),
-            &registry,
-        );
-
-        let row3 = table.add_entity(
-            entity3,
-            (
-                Position { x: 5.0, y: 6.0 },
-                Velocity { dx: 0.0, dy: -0.2 },
-                Health { value: 50 },
-            ),
-            &registry,
-        );
+        let rows = table
+            .add_entities([
+                (
+                    entity1,
+                    (
+                        Position { x: 1.0, y: 2.0 },
+                        Velocity { dx: 0.5, dy: 0.3 },
+                        Health { value: 100 },
+                    ),
+                ),
+                (
+                    entity2,
+                    (
+                        Position { x: 3.0, y: 4.0 },
+                        Velocity { dx: -0.5, dy: 0.8 },
+                        Health { value: 75 },
+                    ),
+                ),
+                (
+                    entity3,
+                    (
+                        Position { x: 5.0, y: 6.0 },
+                        Velocity { dx: 0.0, dy: -0.2 },
+                        Health { value: 50 },
+                    ),
+                ),
+            ])
+            .into_iter()
+            .map(|(r, _)| r)
+            .collect::<Vec<_>>();
 
         // When - fetch views for each entity
         let view1: Option<(&Position, &Health)> =
-            unsafe { <(&Position, &Health)>::fetch(&table, row1) };
+            unsafe { <(&Position, &Health)>::fetch(&table, rows[0]) };
         let view2: Option<(&Position, &Health)> =
-            unsafe { <(&Position, &Health)>::fetch(&table, row2) };
+            unsafe { <(&Position, &Health)>::fetch(&table, rows[1]) };
         let view3: Option<(&Position, &Health)> =
-            unsafe { <(&Position, &Health)>::fetch(&table, row3) };
+            unsafe { <(&Position, &Health)>::fetch(&table, rows[2]) };
 
         // Then
         let (pos1, health1) = view1.unwrap();
@@ -912,7 +906,7 @@ mod tests {
         let mut allocator = entity::Allocator::new();
         let entity = allocator.alloc();
 
-        let row = table.add_entity(entity, (Comp1(1), Comp2(2), Comp3(3), Comp4(4)), &registry);
+        let row = table.add_entity(entity, (Comp1(1), Comp2(2), Comp3(3), Comp4(4)));
 
         // When
         let view: Option<(&Comp1, &Comp2, &Comp3, &Comp4)> =
@@ -959,7 +953,7 @@ mod tests {
         let mut allocator = entity::Allocator::new();
         let entity = allocator.alloc();
 
-        let row = table.add_entity(entity, (Comp1(1), Comp2(2), Comp3(3), Comp4(4)), &registry);
+        let row = table.add_entity(entity, (Comp1(1), Comp2(2), Comp3(3), Comp4(4)));
 
         // When
         #[allow(clippy::type_complexity)]
@@ -978,7 +972,7 @@ mod tests {
     #[test]
     fn view_iter_single_component() {
         // Given
-        let (mut table, registry, mut allocator) = setup_table();
+        let (mut table, mut allocator) = setup_table();
 
         // Add multiple entities
         for i in 0..5 {
@@ -993,7 +987,6 @@ mod tests {
                     Velocity { dx: 0.0, dy: 0.0 },
                     Health { value: 100 },
                 ),
-                &registry,
             );
         }
 
@@ -1012,7 +1005,7 @@ mod tests {
     #[test]
     fn view_iter_multiple_components() {
         // Given
-        let (mut table, registry, mut allocator) = setup_table();
+        let (mut table, mut allocator) = setup_table();
 
         // Add multiple entities
         for i in 0..3 {
@@ -1030,7 +1023,6 @@ mod tests {
                     },
                     Health { value: 100 - i },
                 ),
-                &registry,
             );
         }
 
@@ -1051,7 +1043,7 @@ mod tests {
     #[test]
     fn view_iter_mut_single_component() {
         // Given
-        let (mut table, registry, mut allocator) = setup_table();
+        let (mut table, mut allocator) = setup_table();
 
         for i in 0..3 {
             let entity = allocator.alloc();
@@ -1062,7 +1054,6 @@ mod tests {
                     Velocity { dx: 0.0, dy: 0.0 },
                     Health { value: i },
                 ),
-                &registry,
             );
         }
 
@@ -1081,7 +1072,7 @@ mod tests {
     #[test]
     fn view_iter_mut_mixed_mutability() {
         // Given
-        let (mut table, registry, mut allocator) = setup_table();
+        let (mut table, mut allocator) = setup_table();
 
         for i in 0..3 {
             let entity = allocator.alloc();
@@ -1095,7 +1086,6 @@ mod tests {
                     Velocity { dx: 0.0, dy: 0.0 },
                     Health { value: 100 },
                 ),
-                &registry,
             );
         }
 
@@ -1119,7 +1109,7 @@ mod tests {
     #[test]
     fn view_iter_empty_table() {
         // Given
-        let (table, _registry, _allocator) = setup_table();
+        let (table, _allocator) = setup_table();
 
         // When
         let count = unsafe { table.iter_views::<&Position>() }.count();
@@ -1131,7 +1121,7 @@ mod tests {
     #[test]
     fn view_iter_size_hint() {
         // Given
-        let (mut table, registry, mut allocator) = setup_table();
+        let (mut table, mut allocator) = setup_table();
 
         for _ in 0..10 {
             let entity = allocator.alloc();
@@ -1142,7 +1132,6 @@ mod tests {
                     Velocity { dx: 0.0, dy: 0.0 },
                     Health { value: 100 },
                 ),
-                &registry,
             );
         }
 
@@ -1157,7 +1146,7 @@ mod tests {
     #[test]
     fn view_iter_exact_size() {
         // Given
-        let (mut table, registry, mut allocator) = setup_table();
+        let (mut table, mut allocator) = setup_table();
 
         for _ in 0..5 {
             let entity = allocator.alloc();
@@ -1168,7 +1157,6 @@ mod tests {
                     Velocity { dx: 0.0, dy: 0.0 },
                     Health { value: 100 },
                 ),
-                &registry,
             );
         }
 
@@ -1186,7 +1174,7 @@ mod tests {
     #[test]
     fn view_iter_mut_exact_size() {
         // Given
-        let (mut table, registry, mut allocator) = setup_table();
+        let (mut table, mut allocator) = setup_table();
 
         for _ in 0..5 {
             let entity = allocator.alloc();
@@ -1197,7 +1185,6 @@ mod tests {
                     Velocity { dx: 0.0, dy: 0.0 },
                     Health { value: 100 },
                 ),
-                &registry,
             );
         }
 
@@ -1215,7 +1202,7 @@ mod tests {
     #[test]
     fn view_iter_physics_pattern() {
         // Given - simulate a physics update pattern
-        let (mut table, registry, mut allocator) = setup_table();
+        let (mut table, mut allocator) = setup_table();
 
         for i in 0..3 {
             let entity = allocator.alloc();
@@ -1229,7 +1216,6 @@ mod tests {
                     },
                     Health { value: 100 },
                 ),
-                &registry,
             );
         }
 
@@ -1254,7 +1240,7 @@ mod tests {
         // This test verifies that creating an iterator with duplicate mutable
         // components is now caught and panics at runtime.
 
-        let (mut table, registry, mut allocator) = setup_table();
+        let (mut table, mut allocator) = setup_table();
         let entity = allocator.alloc();
 
         table.add_entity(
@@ -1264,7 +1250,6 @@ mod tests {
                 Velocity { dx: 0.5, dy: 0.3 },
                 Health { value: 100 },
             ),
-            &registry,
         );
 
         // Try to create an iterator with duplicate mutable Position
@@ -1280,7 +1265,7 @@ mod tests {
         // This test verifies that having the same component both immutable
         // and mutable is NOT allowed (also creates aliasing).
 
-        let (mut table, registry, mut allocator) = setup_table();
+        let (mut table, mut allocator) = setup_table();
         let entity = allocator.alloc();
 
         table.add_entity(
@@ -1290,7 +1275,6 @@ mod tests {
                 Velocity { dx: 0.5, dy: 0.3 },
                 Health { value: 100 },
             ),
-            &registry,
         );
 
         // This is safe - different components, one mutable, one not
@@ -1304,7 +1288,7 @@ mod tests {
     fn view_multiple_different_mutable_components_ok() {
         // This test verifies that having multiple DIFFERENT mutable components is fine
 
-        let (mut table, registry, mut allocator) = setup_table();
+        let (mut table, mut allocator) = setup_table();
         let entity = allocator.alloc();
 
         table.add_entity(
@@ -1314,7 +1298,6 @@ mod tests {
                 Velocity { dx: 0.5, dy: 0.3 },
                 Health { value: 100 },
             ),
-            &registry,
         );
 
         // This is safe - all different components

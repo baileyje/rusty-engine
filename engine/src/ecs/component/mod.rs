@@ -13,7 +13,6 @@
 //! - [`Registry`]: Thread-safe registration and lookup of component types
 //! - [`Info`]: Metadata about a component type (layout, drop function, etc.)
 //! - [`Spec`]: A specification describing a set of component types
-//! - [`Set`]: A trait for applying component values to entities
 //!
 //! ## Thread Safety
 //!
@@ -36,10 +35,8 @@
 
 use std::hash::Hash;
 
-mod set;
 mod spec;
 
-pub(crate) use set::{Set, Target as SetTarget};
 pub use spec::{IntoSpec, Spec};
 
 use crate::ecs::world;

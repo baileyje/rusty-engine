@@ -84,8 +84,7 @@ The engine implements a **custom archetype-based ECS** with columnar storage for
 
 3. **Entity System** (`ecs/entity/`)
    - `Allocator` - Manages entity ID allocation and reuse
-   - `Registry` - Tracks spawned entities and their storage locations
-   - `Reference` - Safe handle to entities with generation checking
+   - `Ref`/`RefMut` - Safe handles to entities with generation checking
 
 4. **Storage Layer** (`ecs/storage/`)
    - **Archetype pattern**: Entities with identical component sets share a `Table`
@@ -93,11 +92,12 @@ The engine implements a **custom archetype-based ECS** with columnar storage for
    - **Type erasure**: Uniform storage via `IndexedMemory` with runtime type checking
    - **View trait**: Read-side API for accessing components (single or tuples)
    - **Info-based creation**: Tables created with `&[component::Info]`, not Spec
+   - **Entity tracking**: `Entities` registry tracks spawned entities and their `Location`
    - Key types:
+     - `Storage` - Central container owning tables, archetypes, and entity registry
      - `Table` - Multi-column storage for one archetype (created from Info array)
-     - `Storage` - Collection of all tables
      - `Column` - Type-erased single-component column (stores its own Info)
-     - `Index` - Entity → Row mapping (DynamicIndex or HashIndex)
+     - `Location` - Entity storage location (archetype_id, table_id, row)
 
 5. **Query System** (`ecs/query/`)
    - `Query<D>` - Type-safe iteration over entities matching component specs
@@ -216,7 +216,7 @@ See `ECS_SHARD_DESIGN.md` for the full parallel execution pattern.
 
 Tests are co-located with implementation:
 - Unit tests in `#[cfg(test)] mod tests` blocks within each module
-- Storage layer has comprehensive coverage (107+ tests)
+- Storage layer has comprehensive coverage (420+ tests)
 - Test component migration when adding/removing components
 - Validate archetype invariants in table operations
 
@@ -241,7 +241,7 @@ Key documentation files:
 - `ECS_SYSTEM_REFERENCE.md` - System parameter design (GAT + HRTB pattern)
 - `ECS_SHARD_DESIGN.md` - Shard pattern for parallel execution, thread safety model
 - `ECS_SCHEDULER_ALGORITHMS.md` - Graph coloring algorithms for system scheduling
-- `ECS_STORAGE_CHANGE_DESIGN.md` - Design for storage change/migration system (WIP)
+- `ECS_STORAGE_CHANGE_DESIGN.md` - Historical design doc for change system (superseded by direct Storage methods)
 
 Engine README describes the dual-thread architecture and core loop design.
 

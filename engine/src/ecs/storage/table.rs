@@ -1,11 +1,12 @@
 use std::any::TypeId;
 
 use crate::ecs::{
-    component::{self, Component, Set, SetTarget},
+    component,
     entity::{self},
     storage::{
         column::Column,
         row::Row,
+        value::Values,
         view::{self, View},
     },
     world,
@@ -110,61 +111,86 @@ impl Table {
         self.id
     }
 
-    /// Add an entity with the given set of components to the table.
+    /// Add a multiple entities in a single transaction.
     ///
-    /// The set must contain exactly the components specified in the table's
+    /// The values must contain exactly the components specified in the table's
     /// component specification. All components are added atomically.
     ///
-    /// # Panics
-    /// - Panics in debug builds if the set's component specification does not match the table's specification.
+    /// # Safety - The caller must ensure that:
+    /// - The values provided for each entity match the table's component specification.
     ///
     /// # Example
     /// ```ignore
-    /// table.add_entity(entity, (Position { x: 1.0, y: 2.0 }, Velocity { dx: 0.5, dy: 0.3 }), &mut registry);
+    /// table.add_entities([
+    ///     (entity, (Position { x: 1.0, y: 2.0 }, Velocity { dx: 0.5, dy: 0.3 })),
+    ///     (entity, (Position { x: 2.0, y: 2.0 }, Velocity { dx: 0.8, dy: 1.3 })),
+    /// ]);d
     /// ```
-    pub fn add_entity<S: Set>(
+    pub fn add_entities<V: Values>(
         &mut self,
-        entity: entity::Entity,
-        set: S,
-        registry: &world::TypeRegistry,
-    ) -> Row {
-        // Verify set matches table spec
-        #[cfg(debug_assertions)]
-        {
-            let table_spec = component::Spec::new(
-                self.columns
-                    .iter()
-                    .map(|col| col.info().id())
-                    .collect::<Vec<_>>(),
-            );
-            debug_assert_eq!(
-                <S>::into_spec(registry),
-                table_spec,
-                "set spec does not match table spec"
-            );
+        entities: impl IntoIterator<Item = (entity::Entity, V)>,
+    ) -> Vec<(Row, entity::Entity)> {
+        let data_iter = entities.into_iter();
+
+        // Capture the first entity row.
+        let mut row = Row::new(self.entities.len());
+
+        // Reserve space for all entities
+        self.entities.reserve(data_iter.size_hint().0);
+
+        // Reserve space in each column
+        for column in self.columns.iter_mut() {
+            column.reserve(data_iter.size_hint().0);
         }
 
-        // Capture the entity row.
-        let row = Row::new(self.entities.len());
+        // Iterate through each entity and its values and apply to the table.
+        let mut results = Vec::with_capacity(data_iter.size_hint().0);
+        for (entity, values) in data_iter {
+            // push the entity
+            self.entities.push(entity);
 
-        // Apply the set to this table. This assumes the set matches the table spec and the all the
-        // values from teh set are pushed at the current row.
-        set.apply(self);
+            // Apply the values to the row
+            values.apply(self, row);
 
-        // Add the entity once the components are all added.
-        self.entities.push(entity);
+            // Store the result
+            results.push((row, entity));
+
+            // Increment the row for the next entity
+            row = row.increment();
+        }
+
+        // Update column lengths after batch add
+        for column in self.columns.iter_mut() {
+            // Safety: We have reserved and pushed data for all entities.
+            unsafe { column.set_len(self.entities.len()) };
+        }
 
         // Verify we have kept the entity/column lengths consistent.
         #[cfg(debug_assertions)]
         self.verify_invariants();
 
-        row
+        results
+    }
+
+    /// Add a single entity with components. This is a shortcut to `add_entities` with a single
+    /// item.
+    ///
+    /// See `add_entities` for details.
+    ///
+    /// # Example
+    /// ```ignore
+    /// table.add_entity(
+    ///     entity, (Position { x: 1.0, y: 2.0 }, Velocity { dx: 0.5, dy: 0.3 }),
+    /// );
+    /// ```
+    pub fn add_entity<V: Values>(&mut self, entity: entity::Entity, values: V) -> Row {
+        self.add_entities([(entity, values)]).first().unwrap().0
     }
 
     /// Add an entity using a type-erased component data from an extraction and possible additional
     /// data.
     ///
-    /// This is used by the storage change system where component types
+    /// This is used by the storage migration system where component types
     /// are not known at compile time.
     ///
     /// # Arguments
@@ -172,32 +198,54 @@ impl Table {
     /// * `extract` - A vector of (TypeId, bytes) tuples representing the extracted components to add
     /// * `additions` - A set of additional components to add
     ///
+    /// # Safety Contract
+    /// The caller must ensure that `extract` + `additions` together cover ALL columns in this table.
+    /// This is verified at the Storage layer via spec validation in `execute_migration`.
+    ///
     /// # Returns
     /// The row where the entity was placed.
-    pub(crate) fn add_entity_from_extract<S: Set>(
+    pub(crate) fn add_entity_from_extract<V: Values>(
         &mut self,
         entity: entity::Entity,
         extract: Vec<(world::TypeId, Vec<u8>)>,
-        additions: S,
+        additions: V,
     ) -> Row {
         // Capture the entity row
         let row = Row::new(self.entities.len());
+
+        // Reserve space in each column
+        for column in self.columns.iter_mut() {
+            column.reserve(1);
+        }
 
         // Push extracted component bytes to target columns
         for (id, bytes) in extract {
             if let Some(column) = self.get_column_by_id_mut(id) {
                 unsafe {
-                    column.push_bytes(&bytes);
+                    column.write_bytes(row, &bytes);
                 }
+            } else {
+                // Extract contains a component ID not in this table - this is a bug
+                debug_assert!(
+                    false,
+                    "extract contains component ID {:?} not present in table",
+                    id
+                );
             }
         }
 
         // Apply additions (new components) if any
-        additions.apply(self);
+        // Note: additions.apply() will panic if a component doesn't exist in the table
+        additions.apply(self, row);
 
         // Add the entity once the components are all added
         self.entities.push(entity);
 
+        // Update the length after new row.
+        for column in self.columns.iter_mut() {
+            // Safety - The row was reserved above.
+            unsafe { column.set_len(self.entities.len()) };
+        }
         // Verify we have kept the entity/column lengths consistent
         #[cfg(debug_assertions)]
         self.verify_invariants();
@@ -245,7 +293,7 @@ impl Table {
     /// Returns `None` if:
     /// - the component column is not in this table
     #[inline]
-    pub fn get_column<C: Component>(&self) -> Option<&Column> {
+    pub fn get_column<C: component::Component>(&self) -> Option<&Column> {
         self.columns
             .iter()
             .find(|&col| col.info().type_id() == TypeId::of::<C>())
@@ -256,7 +304,7 @@ impl Table {
     /// Returns `None` if:
     /// - the component column is not in this table
     #[inline]
-    pub fn get_column_mut<C: Component>(&mut self) -> Option<&mut Column> {
+    pub fn get_column_mut<C: component::Component>(&mut self) -> Option<&mut Column> {
         self.columns
             .iter_mut()
             .find(|col| col.info().type_id() == TypeId::of::<C>())
@@ -300,7 +348,7 @@ impl Table {
     /// # Panics
     /// In debug builds, panics if type `C` doesn't match the component type.
     #[inline]
-    pub unsafe fn get<C: Component>(&self, row: Row) -> Option<&C> {
+    pub unsafe fn get<C: component::Component>(&self, row: Row) -> Option<&C> {
         unsafe { self.get_column::<C>().and_then(|c| c.get(row)) }
     }
 
@@ -320,7 +368,7 @@ impl Table {
     /// # Panics
     /// In debug builds, panics if type `C` doesn't match the component type.
     #[inline]
-    pub unsafe fn get_mut<C: Component>(&mut self, row: Row) -> Option<&mut C> {
+    pub unsafe fn get_mut<C: component::Component>(&mut self, row: Row) -> Option<&mut C> {
         unsafe { self.get_column_mut::<C>().and_then(|c| c.get_mut(row)) }
     }
 
@@ -661,25 +709,25 @@ impl Table {
     pub unsafe fn iter_views_mut<'a, V: View<'a>>(&'a mut self) -> view::ViewIterMut<'a, V> {
         unsafe { view::ViewIterMut::new(self) }
     }
-}
 
-impl SetTarget for Table {
     /// Apply a component value to the appropriate column in the table.
     ///
     /// # Panics
     /// - If the component ID is not valid for this table.
     /// - If the type `C` doesn't match the component ID's registered type.
+    /// - In debug builds, panics if the row is out of bounds.
     ///
     /// # Safety
     /// The caller must ensure that:
     /// - There is a valid column for the given component ID.
     /// - The type `C` matches the column's component type (validated at runtime).
-    fn apply<C: 'static + Component>(&mut self, value: C) {
+    /// - Row is valid for this table.
+    pub fn apply_value<C: component::Component>(&mut self, row: Row, value: C) {
         let column = self.get_column_mut::<C>().expect("component not in table");
-        // SAFETY: Type validation happens inside column.push()
-        // If type C doesn't match the column's type, push() will panic
+        // SAFETY: Write provides validation of type and row bounds in debugg. Caller must ensure
+        // all safety conditions are met for this method.
         unsafe {
-            column.push(value);
+            column.write(row, value);
         }
     }
 }
@@ -752,12 +800,12 @@ mod tests {
         let entity2 = allocator.alloc();
 
         // When
-        let row1 = table.add_entity(entity1, Health { value: 100 }, &registry);
-        let row2 = table.add_entity(entity2, Health { value: 75 }, &registry);
+        table.add_entities([
+            (entity1, Health { value: 100 }),
+            (entity2, Health { value: 75 }),
+        ]);
 
         // Then
-        assert_eq!(row1.index(), 0);
-        assert_eq!(row2.index(), 1);
         assert_eq!(table.len(), 2);
         assert_eq!(table.entities()[0], entity1);
         assert_eq!(table.entities()[1], entity2);
@@ -797,26 +845,24 @@ mod tests {
         // When
 
         // Add first entity with all components atomically
-        table.add_entity(
-            entity1,
+        table.add_entities([
             (
-                Position { x: 1.0, y: 2.0 },
-                Velocity { dx: 0.5, dy: 0.3 },
-                Health { value: 100 },
+                entity1,
+                (
+                    Position { x: 1.0, y: 2.0 },
+                    Velocity { dx: 0.5, dy: 0.3 },
+                    Health { value: 100 },
+                ),
             ),
-            &registry,
-        );
-
-        // Add second entity with all components atomically
-        table.add_entity(
-            entity2,
             (
-                Position { x: 3.0, y: 4.0 },
-                Velocity { dx: -0.2, dy: 0.8 },
-                Health { value: 75 },
+                entity2,
+                (
+                    Position { x: 3.0, y: 4.0 },
+                    Velocity { dx: -0.2, dy: 0.8 },
+                    Health { value: 75 },
+                ),
             ),
-            &registry,
-        );
+        ]);
 
         // Then
 
@@ -861,7 +907,7 @@ mod tests {
 
         // Add multiple entities with the builder
         for i in 0..5 {
-            table.add_entity(allocator.alloc(), Score { points: i * 10 }, &registry);
+            table.add_entities([(allocator.alloc(), Score { points: i * 10 })]);
         }
 
         // When / Then
@@ -890,29 +936,6 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "set spec does not match table spec")]
-    fn test_table_incomplete_row_panics() {
-        // Given
-        let registry = world::TypeRegistry::new();
-        registry.register_component::<Position>();
-        registry.register_component::<Velocity>();
-
-        let mut table = Table::new(
-            Id::new(0),
-            &[
-                registry.get_info_of::<Position>().unwrap(),
-                registry.get_info_of::<Velocity>().unwrap(),
-            ],
-        );
-
-        let mut allocator = entity::Allocator::new();
-        let entity = allocator.alloc();
-
-        // When Then - should panic because we don't add velocity
-        table.add_entity(entity, Position { x: 0.0, y: 0.0 }, &registry);
-    }
-
-    #[test]
     fn table_swap_remove_row() {
         // Given
         let registry = world::TypeRegistry::new();
@@ -924,9 +947,11 @@ mod tests {
         let entity2 = allocator.alloc();
         let entity3 = allocator.alloc();
 
-        table.add_entity(entity1, Health { value: 100 }, &registry);
-        table.add_entity(entity2, Health { value: 200 }, &registry);
-        table.add_entity(entity3, Health { value: 300 }, &registry);
+        table.add_entities([
+            (entity1, Health { value: 100 }),
+            (entity2, Health { value: 200 }),
+            (entity3, Health { value: 300 }),
+        ]);
 
         assert_eq!(table.len(), 3);
 
@@ -978,7 +1003,7 @@ mod tests {
 
         // When - add entity and try to remove out of bounds
         let mut allocator = entity::Allocator::new();
-        table.add_entity(allocator.alloc(), Position { x: 0.0, y: 0.0 }, &registry);
+        table.add_entities([(allocator.alloc(), Position { x: 0.0, y: 0.0 })]);
 
         table.swap_remove_row(Row::new(10));
     }
@@ -1001,33 +1026,36 @@ mod tests {
         let mut allocator = entity::Allocator::new();
         let entity1 = allocator.alloc();
         let entity2 = allocator.alloc();
-
-        let row1 = table.add_entity(
-            entity1,
-            (Position { x: 1.0, y: 2.0 }, Velocity { dx: 0.5, dy: 0.3 }),
-            &registry,
-        );
-        let row2 = table.add_entity(
-            entity2,
-            (Position { x: 3.0, y: 4.0 }, Velocity { dx: -0.2, dy: 0.8 }),
-            &registry,
-        );
+        let rows = table
+            .add_entities([
+                (
+                    entity1,
+                    (Position { x: 1.0, y: 2.0 }, Velocity { dx: 0.5, dy: 0.3 }),
+                ),
+                (
+                    entity2,
+                    (Position { x: 3.0, y: 4.0 }, Velocity { dx: -0.2, dy: 0.8 }),
+                ),
+            ])
+            .into_iter()
+            .map(|(row, _)| row)
+            .collect::<Vec<_>>();
 
         // When/Then - get components for entity1
         unsafe {
-            let pos = table.get::<Position>(row1);
+            let pos = table.get::<Position>(rows[0]);
             assert_eq!(pos, Some(&Position { x: 1.0, y: 2.0 }));
 
-            let vel = table.get::<Velocity>(row1);
+            let vel = table.get::<Velocity>(rows[0]);
             assert_eq!(vel, Some(&Velocity { dx: 0.5, dy: 0.3 }));
         }
 
         // When/Then - get components for entity2
         unsafe {
-            let pos = table.get::<Position>(row2);
+            let pos = table.get::<Position>(rows[1]);
             assert_eq!(pos, Some(&Position { x: 3.0, y: 4.0 }));
 
-            let vel = table.get::<Velocity>(row2);
+            let vel = table.get::<Velocity>(rows[1]);
             assert_eq!(vel, Some(&Velocity { dx: -0.2, dy: 0.8 }));
         }
 
@@ -1049,7 +1077,11 @@ mod tests {
         let mut allocator = entity::Allocator::new();
         let entity = allocator.alloc();
 
-        let row = table.add_entity(entity, Health { value: 100 }, &registry);
+        let row = table
+            .add_entities([(entity, Health { value: 100 })])
+            .first()
+            .unwrap()
+            .0;
 
         // When - mutate the health
         unsafe {
@@ -1092,9 +1124,11 @@ mod tests {
         let mut allocator = entity::Allocator::new();
 
         // Add 3 entities
-        table.add_entity(allocator.alloc(), DropTracker(counter.clone()), &registry);
-        table.add_entity(allocator.alloc(), DropTracker(counter.clone()), &registry);
-        table.add_entity(allocator.alloc(), DropTracker(counter.clone()), &registry);
+        table.add_entities([
+            (allocator.alloc(), DropTracker(counter.clone())),
+            (allocator.alloc(), DropTracker(counter.clone())),
+            (allocator.alloc(), DropTracker(counter.clone())),
+        ]);
 
         assert_eq!(counter.load(Ordering::SeqCst), 0);
 
@@ -1162,7 +1196,7 @@ mod tests {
         let mut allocator = entity::Allocator::new();
         let entity = allocator.alloc();
 
-        table.add_entity(entity, Health { value: 100 }, &registry);
+        table.add_entities([(entity, Health { value: 100 })]);
 
         // When/Then - entity not in table returns None
         unsafe {
@@ -1181,7 +1215,7 @@ mod tests {
         let mut allocator = entity::Allocator::new();
         let entity = allocator.alloc();
 
-        let row = table.add_entity(entity, Position { x: 1.0, y: 2.0 }, &registry);
+        let row = table.add_entity(entity, Position { x: 1.0, y: 2.0 });
 
         // When
         let pos: Option<&Position> = unsafe { table.view(row) };
@@ -1204,7 +1238,7 @@ mod tests {
         let mut allocator = entity::Allocator::new();
         let entity = allocator.alloc();
 
-        let row = table.add_entity(entity, Health { value: 100 }, &registry);
+        let row = table.add_entity(entity, Health { value: 100 });
 
         // When
         let health: Option<&mut Health> = unsafe { table.view_mut(row) };
@@ -1240,7 +1274,6 @@ mod tests {
         let row = table.add_entity(
             entity,
             (Position { x: 1.0, y: 2.0 }, Velocity { dx: 0.5, dy: 0.3 }),
-            &registry,
         );
 
         // When
@@ -1276,7 +1309,6 @@ mod tests {
         let row = table.add_entity(
             entity,
             (Position { x: 1.0, y: 2.0 }, Velocity { dx: 0.5, dy: 0.3 }),
-            &registry,
         );
 
         // When - mixed mutability view
@@ -1324,7 +1356,7 @@ mod tests {
 
         // Add entities
         for i in 0..5 {
-            table.add_entity(allocator.alloc(), Health { value: i * 10 }, &registry);
+            table.add_entity(allocator.alloc(), Health { value: i * 10 });
         }
 
         // When
@@ -1354,7 +1386,7 @@ mod tests {
         let mut allocator = entity::Allocator::new();
 
         for i in 0..3 {
-            table.add_entity(allocator.alloc(), Counter { value: i }, &registry);
+            table.add_entity(allocator.alloc(), Counter { value: i });
         }
 
         // When - increment all counters
@@ -1402,7 +1434,6 @@ mod tests {
                         dy: i as f32 * 0.2,
                     },
                 ),
-                &registry,
             );
         }
 
@@ -1442,7 +1473,7 @@ mod tests {
 
         let mut allocator = entity::Allocator::new();
         for i in 0..10 {
-            table.add_entity(allocator.alloc(), Health { value: i }, &registry);
+            table.add_entity(allocator.alloc(), Health { value: i });
         }
 
         // When
@@ -1467,6 +1498,6 @@ mod tests {
 
         // When/Then - should panic when applying wrong type to component ID
         // We're using TypeA's ID but passing a TypeB value
-        table.apply(Health { value: 99 });
+        table.apply_value(0.into(), Health { value: 99 });
     }
 }

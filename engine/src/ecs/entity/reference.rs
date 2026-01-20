@@ -116,7 +116,7 @@ mod tests {
         let position = Position { x: 10.0, y: 20.0 };
         let velocity = Velocity { dx: 1.0, dy: 2.0 };
 
-        let row = table.add_entity(entity, (position.clone(), velocity.clone()), &registry);
+        let row = table.add_entity(entity, (position.clone(), velocity.clone()));
 
         // When
         let entity_ref = Ref::new(entity, &table, row);
@@ -139,7 +139,7 @@ mod tests {
         let entity = allocator.alloc();
 
         let position = Position { x: 10.0, y: 20.0 };
-        let row = table.add_entity(entity, (position,), &registry);
+        let row = table.add_entity(entity, (position,));
 
         // When - Try to get component not in table
         let entity_ref = Ref::new(entity, &table, row);
@@ -162,7 +162,7 @@ mod tests {
         let entity = allocator.alloc();
 
         let position = Position { x: 10.0, y: 20.0 };
-        let row = table.add_entity(entity, (position,), &registry);
+        let row = table.add_entity(entity, (position,));
 
         // When - Try to get unregistered component
         let entity_ref = Ref::new(entity, &table, row);
@@ -187,11 +187,7 @@ mod tests {
         let velocity = Velocity { dx: -1.0, dy: 3.0 };
         let health = Health { hp: 100 };
 
-        let row = table.add_entity(
-            entity,
-            (position.clone(), velocity.clone(), health.clone()),
-            &registry,
-        );
+        let row = table.add_entity(entity, (position.clone(), velocity.clone(), health.clone()));
 
         // When
         let entity_ref = Ref::new(entity, &table, row);
@@ -215,7 +211,7 @@ mod tests {
         let entity2 = allocator.alloc();
 
         let position = Position { x: 10.0, y: 20.0 };
-        table.add_entity(entity1, (position,), &registry);
+        table.add_entity(entity1, (position,));
 
         // When - Create ref for entity2 which is NOT in the table
         let entity_ref = Ref::new(entity2, &table, 1.into());
@@ -239,7 +235,7 @@ mod tests {
         let position = Position { x: 10.0, y: 20.0 };
         let velocity = Velocity { dx: 1.0, dy: 2.0 };
 
-        let row = table.add_entity(entity, (position.clone(), velocity.clone()), &registry);
+        let row = table.add_entity(entity, (position.clone(), velocity.clone()));
 
         // When
         let entity_ref = RefMut::new(entity, &mut table, row);
@@ -262,7 +258,7 @@ mod tests {
         let entity = allocator.alloc();
 
         let position = Position { x: 10.0, y: 20.0 };
-        let row = table.add_entity(entity, (position,), &registry);
+        let row = table.add_entity(entity, (position,));
 
         // When - Try to get component not in table
         let entity_ref = RefMut::new(entity, &mut table, row);
@@ -286,7 +282,7 @@ mod tests {
         let position = Position { x: 10.0, y: 20.0 };
         let velocity = Velocity { dx: 1.0, dy: 2.0 };
 
-        let row = table.add_entity(entity, (position.clone(), velocity.clone()), &registry);
+        let row = table.add_entity(entity, (position.clone(), velocity.clone()));
 
         // When
         let mut entity_ref = RefMut::new(entity, &mut table, row);

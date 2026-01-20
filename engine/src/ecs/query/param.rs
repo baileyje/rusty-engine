@@ -412,33 +412,32 @@ mod tests {
             &world.resources().info_for_spec(&spec),
         );
 
-        table.add_entity(
-            entity::Entity::new(0),
+        table.add_entities([
             (
-                Comp1 { value: 10 },
-                Comp2 { value: 20 },
-                Comp3 { value: 30 },
+                entity::Entity::new(0),
+                (
+                    Comp1 { value: 10 },
+                    Comp2 { value: 20 },
+                    Comp3 { value: 30 },
+                ),
             ),
-            world.resources(),
-        );
-        table.add_entity(
-            entity::Entity::new(1),
             (
-                Comp1 { value: 20 },
-                Comp2 { value: 30 },
-                Comp3 { value: 40 },
+                entity::Entity::new(1),
+                (
+                    Comp1 { value: 20 },
+                    Comp2 { value: 30 },
+                    Comp3 { value: 40 },
+                ),
             ),
-            world.resources(),
-        );
-        table.add_entity(
-            entity::Entity::new(2),
             (
-                Comp1 { value: 30 },
-                Comp2 { value: 40 },
-                Comp3 { value: 50 },
+                entity::Entity::new(2),
+                (
+                    Comp1 { value: 30 },
+                    Comp2 { value: 40 },
+                    Comp3 { value: 50 },
+                ),
             ),
-            world.resources(),
-        );
+        ]);
 
         (world, table)
     }
