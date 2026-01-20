@@ -42,7 +42,7 @@
 use crate::{
     all_tuples,
     ecs::{
-        system::{IntoSystem, System, param::Parameter},
+        system::{CommandBuffer, IntoSystem, System, param::Parameter},
         world,
     },
 };
@@ -153,7 +153,13 @@ pub trait WithSystemParams<Params, State>: 'static {
     ///
     /// - `shard`: Mutable shard reference with validated grant
     /// - `state`: Mutable reference to parameter state
-    unsafe fn run(&mut self, shard: &mut world::Shard<'_>, state: &mut State);
+    /// - `command_buffer`: reference to the command buffer
+    unsafe fn run(
+        &mut self,
+        shard: &mut world::Shard<'_>,
+        state: &mut State,
+        command_buffer: &CommandBuffer,
+    );
 
     /// Build the state needed for parameter extraction.
     ///
@@ -197,7 +203,12 @@ where
     }
 
     /// Invokes the function without accessing the shard.
-    unsafe fn run(&mut self, _shard: &mut world::Shard<'_>, _state: &mut ()) {
+    unsafe fn run(
+        &mut self,
+        _shard: &mut world::Shard<'_>,
+        _state: &mut (),
+        _command_buffer: &CommandBuffer,
+    ) {
         self();
     }
 
@@ -276,7 +287,7 @@ macro_rules! system_param_function {
             /// Caller must ensure:
             /// - Access requests have been validated (no aliasing violations)
             /// - No other system is concurrently accessing conflicting components
-            unsafe fn run(&mut self, shard: &mut world::Shard<'_>, state:  &mut ($($param::State,)*)) {
+            unsafe fn run(&mut self, shard: &mut world::Shard<'_>, state:  &mut ($($param::State,)*), command_buffer: &CommandBuffer) {
                 // Helper function to call with extracted parameters
                 // Needed because we can't directly call self($($param),*) due to macro hygiene
                 #[allow(clippy::too_many_arguments, non_snake_case)]
@@ -295,7 +306,7 @@ macro_rules! system_param_function {
                     // 3. Scheduler ensures no concurrent conflicting access
                     // 4. Shard has grant covering all required access
                     #[allow(non_snake_case)]
-                    let $param = unsafe { $param::get(&mut *(shard as *mut world::Shard<'_>), $param) };
+                    let $param = unsafe { $param::extract(&mut *(shard as *mut world::Shard<'_>), $param, command_buffer)};
                 )*
 
                 // Call the function with all extracted parameters
@@ -345,8 +356,8 @@ where
     fn into_system(mut self, world: &mut world::World) -> System {
         let access = Func::required_access(world);
         let mut state = Func::build_state(world);
-        System::parallel(access, move |shard| unsafe {
-            self.run(shard, &mut state);
+        System::parallel(access, move |shard, command_buffer| unsafe {
+            self.run(shard, &mut state, command_buffer);
         })
     }
 }
@@ -355,7 +366,7 @@ where
 mod tests {
 
     use crate::ecs::{
-        system::{IntoSystem, param::Query},
+        system::{CommandBuffer, Commands, IntoSystem, param::Query},
         world,
     };
 
@@ -383,10 +394,11 @@ mod tests {
 
         // When
         let mut system = my_system.into_system(&mut world);
+        let command_buffer = CommandBuffer::new();
 
         // Then
         unsafe {
-            system.run(&mut world);
+            system.run(&mut world, &command_buffer);
         }
     }
 
@@ -399,9 +411,10 @@ mod tests {
 
         let mut world = world::World::new(world::Id::new(0));
         let mut system = my_system.into_system(&mut world);
+        let command_buffer = CommandBuffer::new();
 
         unsafe {
-            system.run(&mut world);
+            system.run(&mut world, &command_buffer);
         }
     }
 
@@ -414,9 +427,10 @@ mod tests {
 
         let mut world = world::World::new(world::Id::new(0));
         let mut system = my_system.into_system(&mut world);
+        let command_buffer = CommandBuffer::new();
 
         unsafe {
-            system.run(&mut world);
+            system.run(&mut world, &command_buffer);
         }
     }
 
@@ -432,9 +446,10 @@ mod tests {
         world.spawn(Comp1 { value: 42 });
 
         let mut system = my_system.into_system(&mut world);
+        let command_buffer = CommandBuffer::new();
 
         unsafe {
-            system.run(&mut world);
+            system.run(&mut world, &command_buffer);
         }
     }
 
@@ -451,9 +466,10 @@ mod tests {
         world.spawn(Comp1 { value: 10 });
 
         let mut system = increment_system.into_system(&mut world);
+        let command_buffer = CommandBuffer::new();
 
         unsafe {
-            system.run(&mut world);
+            system.run(&mut world, &command_buffer);
         }
 
         // Verify values were incremented
@@ -475,9 +491,10 @@ mod tests {
         world.spawn(Comp1 { value: 3 }); // Only Comp1, won't match
 
         let mut system = count_system.into_system(&mut world);
+        let command_buffer = CommandBuffer::new();
 
         unsafe {
-            system.run(&mut world);
+            system.run(&mut world, &command_buffer);
         }
     }
 
@@ -494,9 +511,10 @@ mod tests {
         world.spawn((Comp1 { value: 10 }, Comp2 { value: 0 }));
 
         let mut system = physics_system.into_system(&mut world);
+        let command_buffer = CommandBuffer::new();
 
         unsafe {
-            system.run(&mut world);
+            system.run(&mut world, &command_buffer);
         }
 
         // Verify Comp2 values were updated
@@ -520,9 +538,10 @@ mod tests {
         world.spawn(Comp1 { value: 3 }); // Only Comp1
 
         let mut system = two_query_system.into_system(&mut world);
+        let command_buffer = CommandBuffer::new();
 
         unsafe {
-            system.run(&mut world);
+            system.run(&mut world, &command_buffer);
         }
     }
 
@@ -570,7 +589,7 @@ mod tests {
     }
 
     #[test]
-    fn component_spec_mixed_query() {
+    fn required_access_mixed_query() {
         fn my_system(_query: Query<(&Comp1, &Comp2)>) {}
 
         let mut world = world::World::new(world::Id::new(0));
@@ -610,9 +629,10 @@ mod tests {
         world.spawn(Comp1 { value: 10 });
 
         let mut system = entity_system.into_system(&mut world);
+        let command_buffer = CommandBuffer::new();
 
         unsafe {
-            system.run(&mut world);
+            system.run(&mut world, &command_buffer);
         }
     }
 
@@ -627,9 +647,10 @@ mod tests {
         // Don't spawn any entities
 
         let mut system = empty_system.into_system(&mut world);
+        let command_buffer = CommandBuffer::new();
 
         unsafe {
-            system.run(&mut world);
+            system.run(&mut world, &command_buffer);
         }
     }
 
@@ -645,9 +666,10 @@ mod tests {
         world.spawn((Comp1 { value: 2 }, Comp2 { value: 10 }));
 
         let mut system = two_query_system.into_system(&mut world);
+        let command_buffer = CommandBuffer::new();
 
         unsafe {
-            system.run(&mut world);
+            system.run(&mut world, &command_buffer);
         }
     }
 
@@ -663,12 +685,13 @@ mod tests {
         world.spawn(Comp1 { value: 0 });
 
         let mut system = increment_system.into_system(&mut world);
+        let command_buffer = CommandBuffer::new();
 
         // Run system 3 times
         unsafe {
-            system.run(&mut world);
-            system.run(&mut world);
-            system.run(&mut world);
+            system.run(&mut world, &command_buffer);
+            system.run(&mut world, &command_buffer);
+            system.run(&mut world, &command_buffer);
         }
 
         // Verify value was incremented 3 times
@@ -690,9 +713,10 @@ mod tests {
         world.spawn((Comp1 { value: 10 }, Comp2 { value: 10 }));
 
         let mut system = multiply_system.into_system(&mut world);
+        let command_buffer = CommandBuffer::new();
 
         unsafe {
-            system.run(&mut world);
+            system.run(&mut world, &command_buffer);
         }
 
         // Verify values were multiplied
@@ -702,7 +726,7 @@ mod tests {
     }
 
     #[test]
-    fn component_spec_empty_system() {
+    fn required_access_empty_system() {
         fn my_system() {}
 
         let mut world = world::World::new(world::Id::new(0));
@@ -714,7 +738,7 @@ mod tests {
     }
 
     #[test]
-    fn component_spec_world_only_system() {
+    fn required_access_world_only_system() {
         // Given
         fn my_system(_world: &mut world::World) {}
 
@@ -727,5 +751,21 @@ mod tests {
 
         // Then
         assert!(access.world_mut());
+    }
+
+    #[test]
+    fn required_access_commmands_system() {
+        // Given
+        fn my_system(_commands: Commands) {}
+
+        let mut world = world::World::new(world::Id::new(0));
+
+        let system = my_system.into_system(&mut world);
+
+        // When
+        let access = system.required_access();
+
+        // Then
+        assert!(access.is_none());
     }
 }

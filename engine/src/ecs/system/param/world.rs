@@ -1,5 +1,5 @@
 use super::Parameter;
-use crate::ecs::world;
+use crate::ecs::{system::CommandBuffer, world};
 
 /// Implementation of [`Parameter`] for direct immutable world access.
 ///
@@ -64,9 +64,10 @@ impl Parameter for &world::World {
     /// It should only be used in systems that have been validated to require
     /// world-level access. Typically, world parameters indicate the system should
     /// be exclusive rather than parallel.
-    unsafe fn get<'w, 's>(
+    unsafe fn extract<'w, 's>(
         shard: &'w mut world::Shard<'_>,
         _state: &'s mut Self::State,
+        _command_buffer: &'w CommandBuffer,
     ) -> Self::Value<'w, 's> {
         // SAFETY: Caller ensures this system has exclusive world access rights
         unsafe { shard.world() }
@@ -76,10 +77,13 @@ impl Parameter for &world::World {
 #[cfg(test)]
 mod tests {
 
-    use crate::ecs::{system::Parameter, world};
+    use crate::ecs::{
+        system::{CommandBuffer, Parameter},
+        world,
+    };
 
     #[test]
-    fn world_param_component_spec() {
+    fn world_param_access() {
         // Given
         let world = world::World::new(world::Id::new(0));
 
@@ -98,9 +102,12 @@ mod tests {
         let mut state = <&world::World as Parameter>::build_state(&mut world);
         let access = <&world::World as Parameter>::required_access(&world);
         let mut shard = world.shard(&access).expect("Failed to create shard");
+        let command_buffer = CommandBuffer::new();
 
         // When
-        let world_ref = unsafe { <&world::World as Parameter>::get(&mut shard, &mut state) };
+        let world_ref = unsafe {
+            <&world::World as Parameter>::extract(&mut shard, &mut state, &command_buffer)
+        };
 
         // Then
         assert_eq!(world_ref.id(), world.id());

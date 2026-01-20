@@ -1,5 +1,5 @@
 use super::Parameter;
-use crate::ecs::{query, world};
+use crate::ecs::{query, system::CommandBuffer, world};
 
 /// System parameter for a world Query.
 ///
@@ -118,9 +118,10 @@ impl<D: query::Data + 'static> Parameter for Query<'_, D> {
     /// ensuring that the query only accesses data permitted by the system's access request.
     ///
     /// Safety: Caller ensures disjoint access via access requests
-    unsafe fn get<'w, 's>(
+    unsafe fn extract<'w, 's>(
         shard: &'w mut world::Shard<'_>,
         state: &'s mut Self::State,
+        _command_buffer: &'w CommandBuffer,
     ) -> Self::Value<'w, 's> {
         //Safety: Caller ensures disjoint access via access requests - The query invoke
         // method is safe, but its unclear it should be since the table access is only checked at
@@ -191,9 +192,10 @@ mod tests {
         let mut state = <Query<&Comp1>>::build_state(&mut world);
         let access = <Query<&Comp1>>::required_access(&world);
         let mut shard = world.shard(&access).expect("Failed to create shard");
+        let command_buffer = CommandBuffer::new();
 
         // When
-        let result = unsafe { <Query<&Comp1>>::get(&mut shard, &mut state) };
+        let result = unsafe { <Query<&Comp1>>::extract(&mut shard, &mut state, &command_buffer) };
 
         // Then
         assert_eq!(result.len(), 2);
@@ -213,9 +215,11 @@ mod tests {
         let mut state = <Query<&mut Comp1>>::build_state(&mut world);
         let access = <Query<&mut Comp1>>::required_access(&world);
         let mut shard = world.shard(&access).expect("Failed to create shard");
+        let command_buffer = CommandBuffer::new();
 
         // When
-        let mut result = unsafe { <Query<&mut Comp1>>::get(&mut shard, &mut state) };
+        let mut result =
+            unsafe { <Query<&mut Comp1>>::extract(&mut shard, &mut state, &command_buffer) };
 
         // Then
         assert_eq!(result.len(), 2);
@@ -234,7 +238,8 @@ mod tests {
         let mut state = <Query<&Comp1>>::build_state(&mut world);
         let access = <Query<&Comp1>>::required_access(&world);
         let mut shard = world.shard(&access).expect("Failed to create shard");
-        let result = unsafe { <Query<&Comp1>>::get(&mut shard, &mut state) };
+        let command_buffer = CommandBuffer::new();
+        let result = unsafe { <Query<&Comp1>>::extract(&mut shard, &mut state, &command_buffer) };
 
         // Then
         let values = result.map(|c| c.value).collect::<Vec<_>>();
@@ -264,9 +269,11 @@ mod tests {
         let mut state = <Query<entity::Entity>>::build_state(&mut world);
         let access = <Query<entity::Entity>>::required_access(&world);
         let mut shard = world.shard(&access).expect("Failed to create shard");
+        let command_buffer = CommandBuffer::new();
 
         // When
-        let result = unsafe { <Query<entity::Entity>>::get(&mut shard, &mut state) };
+        let result =
+            unsafe { <Query<entity::Entity>>::extract(&mut shard, &mut state, &command_buffer) };
 
         // Then
         assert_eq!(result.len(), 3);
@@ -307,10 +314,15 @@ mod tests {
             <Query<(entity::Entity, &Comp1, Option<&mut Comp2>)>>::build_state(&mut world);
         let access = <Query<(entity::Entity, &Comp1, Option<&mut Comp2>)>>::required_access(&world);
         let mut shard = world.shard(&access).expect("Failed to create shard");
+        let command_buffer = CommandBuffer::new();
 
         // When
         let results = unsafe {
-            <Query<(entity::Entity, &Comp1, Option<&mut Comp2>)>>::get(&mut shard, &mut state)
+            <Query<(entity::Entity, &Comp1, Option<&mut Comp2>)>>::extract(
+                &mut shard,
+                &mut state,
+                &command_buffer,
+            )
         };
 
         // Then

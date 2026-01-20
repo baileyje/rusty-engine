@@ -284,11 +284,15 @@ impl SystemHandle {
     /// - Exclusive access: Planner assigns each index to one unit per group
     /// - Grant coverage: Shard created from unit's `required_access()`
     #[inline]
-    unsafe fn run_parallel(&mut self, shard: &mut world::Shard) {
+    unsafe fn run_parallel(
+        &mut self,
+        shard: &mut world::Shard,
+        command_buffer: &system::CommandBuffer,
+    ) {
         // SAFETY: Caller ensures no concurrent access to the same system.
         // The system's run_parallel is unsafe because it bypasses normal
         // borrow checking, relying on the shard's grant for safety.
-        unsafe { (*self.0).run_parallel(shard) }
+        unsafe { (*self.0).run_parallel(shard, command_buffer) }
     }
 }
 
@@ -408,11 +412,14 @@ impl Phase {
     /// Runs the pre-phase (exclusive systems) then the main phase (parallel groups).
     /// See module documentation for the execution model.
     pub fn run(&mut self, world: &mut world::World, executor: &tasks::Executor) {
+        // Create a command buffer for systems in this phase
+        let command_buffer = system::CommandBuffer::new();
+
         // Pre-phase: exclusive systems with full world access
         for system in self.exclusive_systems.iter_mut() {
             // SAFETY: Exclusive phase - no other systems running, no active shards.
             // The world reference is unique here.
-            unsafe { system.run(world) };
+            unsafe { system.run(world, &command_buffer) };
         }
 
         // Main phase: parallel groups
@@ -420,7 +427,7 @@ impl Phase {
         // TODO: Consider using indices or splitting self to avoid this clone.
         let plan = self.plan.clone();
         for group in plan.iter() {
-            self.run_group(world, group, executor);
+            self.run_group(world, group, &command_buffer, executor);
         }
     }
 
@@ -436,13 +443,19 @@ impl Phase {
     /// 3. Grants returned to main thread and released
     ///
     /// This ensures grant tracking remains single-threaded while execution is parallel.
-    fn run_group(&mut self, world: &mut world::World, group: &Group, executor: &tasks::Executor) {
+    fn run_group(
+        &mut self,
+        world: &mut world::World,
+        group: &Group,
+        command_buffer: &system::CommandBuffer,
+        executor: &tasks::Executor,
+    ) {
         // Optimization: single unit runs inline without thread dispatch overhead
         if group.units().len() == 1 {
             let unit = &group.units()[0];
             match world.shard(unit.required_access()) {
                 Ok(mut shard) => {
-                    self.run_unit(&mut shard, unit);
+                    self.run_unit(&mut shard, command_buffer, unit);
                     world.release_shard(shard);
                 }
                 Err(e) => {
@@ -506,7 +519,7 @@ impl Phase {
                         // SAFETY: See SystemHandle::run_parallel documentation.
                         // Exclusive access guaranteed by planner's disjoint index assignment.
                         unsafe {
-                            handle.run_parallel(&mut shard);
+                            handle.run_parallel(&mut shard, command_buffer);
                         }
                     }
 
@@ -528,18 +541,26 @@ impl Phase {
                 Err(e) => eprintln!("Task failed to complete: {:?}", e),
             }
         }
+
+        // Step 5: Execute the commands in the buffer
+        command_buffer.flush(world);
     }
 
     /// Executes all systems in a unit sequentially using the provided shard.
     ///
     /// Used for single-unit groups where parallel dispatch overhead isn't worthwhile.
     #[inline]
-    fn run_unit(&mut self, shard: &mut world::Shard, unit: &Unit) {
+    fn run_unit(
+        &mut self,
+        shard: &mut world::Shard,
+        command_buffer: &system::CommandBuffer,
+        unit: &Unit,
+    ) {
         for &idx in unit.system_indexes() {
             if let Some(system) = self.systems.get_mut(idx) {
                 // SAFETY: Shard's grant covers this system's required access
                 // (unit's required_access is the shared access of all its systems).
-                unsafe { system.run_parallel(shard) };
+                unsafe { system.run_parallel(shard, command_buffer) };
             }
         }
     }

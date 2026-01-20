@@ -46,8 +46,10 @@
 //! Several types implement [`Parameter`]:
 //!
 //! - **Query results** (`query::Result<D>`) - Iterator over entities matching component criteria
+//! - **Commands** ([`Commands`]) - Deferred entity spawning/despawning/component changes
+//! - **Resources** (`Uniq<R>`, `UniqMut<R>`) - Access to unique (singleton) resources
 //! - **Immutable world** (`&World`) - Read-only world access
-//! - _Future: Resources, Commands, Events_
+//! - _Future: Events_
 //!
 //! Note: `&mut World` is handled specially via exclusive systems, not as a parameter.
 //!
@@ -142,9 +144,11 @@
 
 use crate::ecs::world;
 
+mod command;
 pub mod function;
 pub mod param;
 
+pub use command::CommandBuffer;
 pub use param::*;
 
 /// A system identifier. This is a non-zero unique identifier for a system type in the ECS.
@@ -165,13 +169,15 @@ impl Id {
     }
 }
 
+type BoxedSystemFn = Box<dyn FnMut(&mut world::Shard<'_>, &CommandBuffer) + Send + Sync + 'static>;
+
 /// Enumeration of system kinds based on their execution context.
 pub enum RunMode {
     /// Exclusive world access, runs on main thread only
     Exclusive(Box<dyn FnMut(&mut world::World) + 'static>),
 
     /// Can run in parallel on worker threads via Shard
-    Parallel(Box<dyn FnMut(&mut world::Shard<'_>) + Send + Sync + 'static>),
+    Parallel(BoxedSystemFn),
 }
 
 /// A system that can be executed on a world.
@@ -200,7 +206,7 @@ impl System {
     /// Create a parallel-capable system
     pub fn parallel(
         required_access: world::AccessRequest,
-        run: impl FnMut(&mut world::Shard<'_>) + Send + Sync + 'static,
+        run: impl FnMut(&mut world::Shard<'_>, &CommandBuffer) + Send + Sync + 'static,
     ) -> Self {
         Self {
             required_access,
@@ -272,7 +278,7 @@ impl System {
     ///     unsafe { system.run(&mut world); }
     /// }
     /// ```
-    pub unsafe fn run(&mut self, world: &mut world::World) {
+    pub unsafe fn run(&mut self, world: &mut world::World, command_buffer: &CommandBuffer) {
         match &mut self.run_mode {
             RunMode::Exclusive(func) => func(world),
             RunMode::Parallel(func) => {
@@ -281,7 +287,7 @@ impl System {
                     "Failed to create shard for parallel system on main thread. This indicates a bug in the scheduler or world access management.",
                 );
                 // Execute the system with the shard.
-                func(&mut shard);
+                func(&mut shard, command_buffer);
                 // Release the shard back to the world.
                 world.release_shard(shard);
             }
@@ -336,12 +342,16 @@ impl System {
     ///     send_to_main_thread(grant);
     /// });
     /// ```
-    pub unsafe fn run_parallel(&mut self, shard: &mut world::Shard<'_>) {
+    pub unsafe fn run_parallel(
+        &mut self,
+        shard: &mut world::Shard<'_>,
+        command_buffer: &CommandBuffer,
+    ) {
         match &mut self.run_mode {
             RunMode::Exclusive(_) => {
                 panic!("Cannot run exclusive system in parallel")
             }
-            RunMode::Parallel(func) => func(shard),
+            RunMode::Parallel(func) => func(shard, command_buffer),
         }
     }
 

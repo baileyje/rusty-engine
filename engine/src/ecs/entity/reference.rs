@@ -110,7 +110,7 @@ mod tests {
         let spec = <(Position, Velocity)>::into_spec(&registry);
         let mut table = Table::new(TableId::new(0), &registry.info_for_spec(&spec));
 
-        let mut allocator = entity::Allocator::new();
+        let allocator = entity::Allocator::new();
         let entity = allocator.alloc();
 
         let position = Position { x: 10.0, y: 20.0 };
@@ -135,7 +135,7 @@ mod tests {
         let spec = <Position>::into_spec(&registry);
         let mut table = Table::new(TableId::new(0), &registry.info_for_spec(&spec));
 
-        let mut allocator = entity::Allocator::new();
+        let allocator = entity::Allocator::new();
         let entity = allocator.alloc();
 
         let position = Position { x: 10.0, y: 20.0 };
@@ -158,7 +158,7 @@ mod tests {
         let spec = <Position>::into_spec(&registry);
         let mut table = Table::new(TableId::new(0), &registry.info_for_spec(&spec));
 
-        let mut allocator = entity::Allocator::new();
+        let allocator = entity::Allocator::new();
         let entity = allocator.alloc();
 
         let position = Position { x: 10.0, y: 20.0 };
@@ -180,7 +180,7 @@ mod tests {
 
         let mut table = Table::new(TableId::new(0), &registry.info_for_spec(&spec));
 
-        let mut allocator = entity::Allocator::new();
+        let allocator = entity::Allocator::new();
         let entity = allocator.alloc();
 
         let position = Position { x: 5.0, y: 15.0 };
@@ -206,7 +206,7 @@ mod tests {
         let spec = <Position>::into_spec(&registry);
         let mut table = Table::new(TableId::new(0), &registry.info_for_spec(&spec));
 
-        let mut allocator = entity::Allocator::new();
+        let allocator = entity::Allocator::new();
         let entity1 = allocator.alloc();
         let entity2 = allocator.alloc();
 
@@ -229,7 +229,7 @@ mod tests {
         let spec = <(Position, Velocity)>::into_spec(&registry);
         let mut table = Table::new(TableId::new(0), &registry.info_for_spec(&spec));
 
-        let mut allocator = entity::Allocator::new();
+        let allocator = entity::Allocator::new();
         let entity = allocator.alloc();
 
         let position = Position { x: 10.0, y: 20.0 };
@@ -254,7 +254,7 @@ mod tests {
         let spec = <Position>::into_spec(&registry);
         let mut table = Table::new(TableId::new(0), &registry.info_for_spec(&spec));
 
-        let mut allocator = entity::Allocator::new();
+        let allocator = entity::Allocator::new();
         let entity = allocator.alloc();
 
         let position = Position { x: 10.0, y: 20.0 };
@@ -276,7 +276,7 @@ mod tests {
         let spec = <(Position, Velocity)>::into_spec(&registry);
         let mut table = Table::new(TableId::new(0), &registry.info_for_spec(&spec));
 
-        let mut allocator = entity::Allocator::new();
+        let allocator = entity::Allocator::new();
         let entity = allocator.alloc();
 
         let position = Position { x: 10.0, y: 20.0 };

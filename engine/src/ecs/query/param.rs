@@ -374,7 +374,7 @@ mod tests {
     use rusty_macros::Component;
 
     use crate::ecs::{
-        component, entity,
+        entity,
         query::param::{Parameter, ParameterSpec},
         storage, world,
     };
@@ -400,52 +400,33 @@ mod tests {
         value: i32,
     }
 
-    fn test_setup() -> (world::World, storage::Table) {
+    fn test_setup() -> world::World {
         let mut world = world::World::new(world::Id::new(0));
-        let spec = component::Spec::new(vec![
-            world.register_component::<Comp1>(),
-            world.register_component::<Comp2>(),
-            world.register_component::<Comp3>(),
-        ]);
-        let mut table = storage::Table::new(
-            storage::TableId::new(0),
-            &world.resources().info_for_spec(&spec),
-        );
-
-        table.add_entities([
+        world.spawn_many([
             (
-                entity::Entity::new(0),
-                (
-                    Comp1 { value: 10 },
-                    Comp2 { value: 20 },
-                    Comp3 { value: 30 },
-                ),
+                Comp1 { value: 10 },
+                Comp2 { value: 20 },
+                Comp3 { value: 30 },
             ),
             (
-                entity::Entity::new(1),
-                (
-                    Comp1 { value: 20 },
-                    Comp2 { value: 30 },
-                    Comp3 { value: 40 },
-                ),
+                Comp1 { value: 20 },
+                Comp2 { value: 30 },
+                Comp3 { value: 40 },
             ),
             (
-                entity::Entity::new(2),
-                (
-                    Comp1 { value: 30 },
-                    Comp2 { value: 40 },
-                    Comp3 { value: 50 },
-                ),
+                Comp1 { value: 30 },
+                Comp2 { value: 40 },
+                Comp3 { value: 50 },
             ),
         ]);
 
-        (world, table)
+        world
     }
 
     #[test]
     fn spec_for_component_ref() {
         // Given
-        let (world, _table) = test_setup();
+        let world = test_setup();
 
         // When
         let spec = <&Comp1>::spec(world.resources());
@@ -460,7 +441,7 @@ mod tests {
     #[test]
     fn spec_for_component_ref_mut() {
         // Given
-        let (world, _table) = test_setup();
+        let world = test_setup();
 
         // When
         let spec = <&mut Comp1>::spec(world.resources());
@@ -475,7 +456,7 @@ mod tests {
     #[test]
     fn spec_for_optional_component_ref() {
         // Given
-        let (world, _table) = test_setup();
+        let world = test_setup();
 
         // When
         let spec = <Option<&Comp1>>::spec(world.resources());
@@ -490,7 +471,7 @@ mod tests {
     #[test]
     fn spec_for_optional_mut_component_ref() {
         // Given
-        let (world, _table) = test_setup();
+        let world = test_setup();
 
         // When
         let spec = <Option<&mut Comp1>>::spec(world.resources());
@@ -505,7 +486,7 @@ mod tests {
     #[test]
     fn spec_for_entity() {
         // Given
-        let (world, _table) = test_setup();
+        let world = test_setup();
 
         // When
         let spec = entity::Entity::spec(world.resources());
@@ -517,13 +498,14 @@ mod tests {
     #[test]
     fn fetch_for_component_ref() {
         // Given
-        let (_world, table) = test_setup();
+        let mut world = test_setup();
+        let table = world.storage_mut().get_table_mut(storage::TableId::new(0));
 
         // When
-        let value1 = unsafe { <&Comp1>::fetch(entity::Entity::new(0), &table, 0.into()) };
-        let value2 = unsafe { <&Comp2>::fetch(entity::Entity::new(1), &table, 1.into()) };
+        let value1 = unsafe { <&Comp1>::fetch(entity::Entity::new(0), table, 0.into()) };
+        let value2 = unsafe { <&Comp2>::fetch(entity::Entity::new(1), table, 1.into()) };
 
-        let value3 = unsafe { <&Comp3>::fetch(entity::Entity::new(2), &table, 2.into()) };
+        let value3 = unsafe { <&Comp3>::fetch(entity::Entity::new(2), table, 2.into()) };
 
         // Then
         assert!(value1.is_some());
@@ -542,20 +524,21 @@ mod tests {
     #[test]
     fn fetch_mut_for_component_ref() {
         // Given
-        let (_world, mut table) = test_setup();
+        let mut world = test_setup();
+        let table = world.storage_mut().get_table_mut(storage::TableId::new(0));
 
         // When
         let value1 = unsafe {
             <&Comp1>::fetch_mut(
                 entity::Entity::new(0),
-                &mut *(&mut table as *mut storage::Table),
+                &mut *(table as *mut storage::Table),
                 0.into(),
             )
         };
         let value2 = unsafe {
             <&Comp2>::fetch_mut(
                 entity::Entity::new(1),
-                &mut *(&mut table as *mut storage::Table),
+                &mut *(table as *mut storage::Table),
                 1.into(),
             )
         };
@@ -563,7 +546,7 @@ mod tests {
         let value3 = unsafe {
             <&Comp3>::fetch_mut(
                 entity::Entity::new(2),
-                &mut *(&mut table as *mut storage::Table),
+                &mut *(table as *mut storage::Table),
                 2.into(),
             )
         };
@@ -585,13 +568,14 @@ mod tests {
     #[test]
     fn fetch_for_component_ref_mut() {
         // Given
-        let (_world, table) = test_setup();
+        let mut world = test_setup();
+        let table = world.storage_mut().get_table_mut(storage::TableId::new(0));
 
         // When
         let value = unsafe {
             <&mut Comp1>::fetch(
                 entity::Entity::new(0),
-                &table, // Nasty multi-borrow workaround.
+                table, // Nasty multi-borrow workaround.
                 0.into(),
             )
         };
@@ -603,20 +587,21 @@ mod tests {
     #[test]
     fn fetch_mut_for_component_ref_mut() {
         // Given
-        let (_world, mut table) = test_setup();
+        let mut world = test_setup();
+        let table = world.storage_mut().get_table_mut(storage::TableId::new(0));
 
         // When
         let value1 = unsafe {
             <&mut Comp1>::fetch_mut(
                 entity::Entity::new(0),
-                &mut *(&mut table as *mut storage::Table), // Nasty multi-borrow workaround.
+                &mut *(table as *mut storage::Table), // Nasty multi-borrow workaround.
                 0.into(),
             )
         };
         let value2 = unsafe {
             <&mut Comp2>::fetch_mut(
                 entity::Entity::new(1),
-                &mut *(&mut table as *mut storage::Table),
+                &mut *(table as *mut storage::Table),
                 1.into(),
             )
         };
@@ -624,7 +609,7 @@ mod tests {
         let value3 = unsafe {
             <&mut Comp3>::fetch_mut(
                 entity::Entity::new(2),
-                &mut *(&mut table as *mut storage::Table),
+                &mut *(table as *mut storage::Table),
                 2.into(),
             )
         };
@@ -652,10 +637,11 @@ mod tests {
     #[test]
     fn fetch_for_optional_component_ref() {
         // Given
-        let (_world, table) = test_setup();
+        let mut world = test_setup();
+        let table = world.storage_mut().get_table_mut(storage::TableId::new(0));
 
         // When
-        let value = unsafe { <Option<&Comp1>>::fetch(entity::Entity::new(0), &table, 0.into()) };
+        let value = unsafe { <Option<&Comp1>>::fetch(entity::Entity::new(0), table, 0.into()) };
 
         // Then
         assert!(value.is_some());
@@ -668,11 +654,11 @@ mod tests {
     #[test]
     fn fetch_mut_for_optional_component_ref() {
         // Given
-        let (_world, mut table) = test_setup();
+        let mut world = test_setup();
+        let table = world.storage_mut().get_table_mut(storage::TableId::new(0));
 
         // When
-        let value =
-            unsafe { <Option<&Comp1>>::fetch_mut(entity::Entity::new(0), &mut table, 0.into()) };
+        let value = unsafe { <Option<&Comp1>>::fetch_mut(entity::Entity::new(0), table, 0.into()) };
 
         // Then
         assert!(value.is_some());
@@ -685,11 +671,11 @@ mod tests {
     #[test]
     fn fetch_for_optional_mut_component_ref() {
         // Given
-        let (_world, table) = test_setup();
+        let mut world = test_setup();
+        let table = world.storage_mut().get_table_mut(storage::TableId::new(0));
 
         // When
-        let value =
-            unsafe { <Option<&mut Comp1>>::fetch(entity::Entity::new(0), &table, 0.into()) };
+        let value = unsafe { <Option<&mut Comp1>>::fetch(entity::Entity::new(0), table, 0.into()) };
 
         // Then
         assert!(value.is_none());
@@ -698,12 +684,12 @@ mod tests {
     #[test]
     fn fetch_mut_for_optional_mut_component_ref() {
         // Given
-        let (_world, mut table) = test_setup();
+        let mut world = test_setup();
+        let table = world.storage_mut().get_table_mut(storage::TableId::new(0));
 
         // When
-        let value = unsafe {
-            <Option<&mut Comp1>>::fetch_mut(entity::Entity::new(0), &mut table, 0.into())
-        };
+        let value =
+            unsafe { <Option<&mut Comp1>>::fetch_mut(entity::Entity::new(0), table, 0.into()) };
 
         // Then
         assert!(value.is_some());
@@ -716,10 +702,11 @@ mod tests {
     #[test]
     fn fetch_for_optional_component_ref_not_in_table() {
         // Given
-        let (_world, table) = test_setup();
+        let mut world = test_setup();
+        let table = world.storage_mut().get_table_mut(storage::TableId::new(0));
 
         // When
-        let value = unsafe { <Option<&Comp4>>::fetch(entity::Entity::new(0), &table, 0.into()) };
+        let value = unsafe { <Option<&Comp4>>::fetch(entity::Entity::new(0), table, 0.into()) };
 
         // Then - Optional components return Some(None) when component is missing
         assert!(value.is_some());
@@ -729,11 +716,11 @@ mod tests {
     #[test]
     fn fetch_for_optional_mut_component_ref_not_in_table() {
         // Given
-        let (_world, table) = test_setup();
+        let mut world = test_setup();
+        let table = world.storage_mut().get_table_mut(storage::TableId::new(0));
 
         // When
-        let value =
-            unsafe { <Option<&mut Comp4>>::fetch(entity::Entity::new(0), &table, 0.into()) };
+        let value = unsafe { <Option<&mut Comp4>>::fetch(entity::Entity::new(0), table, 0.into()) };
 
         // Then
         assert!(value.is_none());
@@ -742,12 +729,13 @@ mod tests {
     #[test]
     fn fetch_for_entity() {
         // Given
-        let (_world, table) = test_setup();
+        let mut world = test_setup();
+        let table = world.storage_mut().get_table_mut(storage::TableId::new(0));
 
         let entity = entity::Entity::new(22);
 
         // When
-        let value = unsafe { <entity::Entity>::fetch(entity, &table, 0.into()) };
+        let value = unsafe { <entity::Entity>::fetch(entity, table, 0.into()) };
 
         // Then
         assert!(value.is_some());
@@ -758,12 +746,13 @@ mod tests {
     #[test]
     fn fetch_mut_for_entity() {
         // Given
-        let (_world, mut table) = test_setup();
+        let mut world = test_setup();
+        let table = world.storage_mut().get_table_mut(storage::TableId::new(0));
 
         let entity = entity::Entity::new(22);
 
         // When
-        let value = unsafe { <entity::Entity>::fetch_mut(entity, &mut table, 0.into()) };
+        let value = unsafe { <entity::Entity>::fetch_mut(entity, table, 0.into()) };
 
         // Then
         assert!(value.is_some());

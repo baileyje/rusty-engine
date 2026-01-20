@@ -35,8 +35,10 @@
 
 use std::hash::Hash;
 
+mod set;
 mod spec;
 
+pub use set::{BoxedSet, Set};
 pub use spec::{IntoSpec, Spec};
 
 use crate::ecs::world;

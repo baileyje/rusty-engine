@@ -40,7 +40,7 @@ use std::marker::PhantomData;
 
 use crate::ecs::{
     component::{self},
-    entity,
+    entity::{self, Entity},
     query::{self},
     storage::{self},
     unique,
@@ -132,23 +132,28 @@ impl World {
         &mut self.storage
     }
 
+    #[inline]
+    pub(crate) fn entity_allocator(&self) -> &entity::Allocator {
+        &self.entity_allocator
+    }
+
     /// Spawn a new entity with the given set of components in the world.
     /// This will establish the entity in the appropriate archetype and storage table.
-    pub fn spawn<V: storage::Values>(&mut self, set: V) -> entity::Entity {
+    pub fn spawn<S: component::Set>(&mut self, values: S) -> entity::Entity {
         // Allocate a new entity.
         let entity = self.entity_allocator.alloc();
 
         // Spawn the entity in storage.
-        self.storage.spawn_entity(entity, set, &self.resources);
+        self.storage.spawn_entity(entity, values, &self.resources);
 
         entity
     }
 
     /// Spawn a new entity with the given set of components in the world.
     /// This will establish the entity in the appropriate archetype and storage table.
-    pub fn spawn_many<V: storage::Values>(
+    pub fn spawn_many<S: component::Set>(
         &mut self,
-        values: impl IntoIterator<Item = V>,
+        values: impl IntoIterator<Item = S>,
     ) -> Vec<entity::Entity> {
         // Get the component sets as a vec.
         let sets = values.into_iter();
@@ -161,6 +166,13 @@ impl World {
             .spawn_entities(entities.iter().copied().zip(sets), &self.resources);
 
         entities
+    }
+
+    /// Spawn an allocated entity with the given set of dynamic components in the world.
+    /// This will establish the entity in the appropriate archetype and storage table.
+    pub(crate) fn spawn_dynamic<S: component::Set>(&mut self, entity: Entity, values: S) {
+        // Spawn the entity in storage.
+        self.storage.spawn_entity(entity, values, &self.resources);
     }
 
     /// Despawn the given entity from the world. This will remove the entity and all its components
@@ -180,10 +192,10 @@ impl World {
     /// # Returns
     /// - `true` if the component was added
     /// - `false` if the entity doesn't exist or already has this component
-    pub fn add_components<V: storage::Values>(
+    pub fn add_components<S: component::Set>(
         &mut self,
         entity: entity::Entity,
-        components: V,
+        components: S,
     ) -> bool {
         self.storage
             .add_components(entity, components, &self.resources)
@@ -200,6 +212,24 @@ impl World {
     pub fn remove_components<S: component::IntoSpec>(&mut self, entity: entity::Entity) -> bool {
         self.storage.remove_components::<S>(entity, &self.resources)
     }
+
+    /// Remove a component from an existing entity by spec.
+    ///
+    /// This migrates the entity to a new archetype that excludes the component.
+    /// If the entity doesn't have this component type, this method does nothing.
+    ///
+    /// # Returns
+    /// - `true` if the component was removed
+    /// - `false` if the entity doesn't exist or doesn't have this component
+    pub fn remove_components_dynamic(
+        &mut self,
+        entity: entity::Entity,
+        spec: &component::Spec,
+    ) -> bool {
+        self.storage
+            .remove_components_dynamic(entity, spec, &self.resources)
+    }
+
     /// Get a reference to the given entity, if it's spawned.
     ///
     /// Returns `None` if the entity is not currently spawned in the world.

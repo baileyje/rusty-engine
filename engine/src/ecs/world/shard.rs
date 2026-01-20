@@ -1,7 +1,7 @@
 use std::marker::PhantomData;
 
 use crate::ecs::{
-    query, storage, unique,
+    entity, query, storage, unique,
     world::{TypeRegistry, World, access::AccessGrant},
 };
 
@@ -62,6 +62,11 @@ impl<'w> Shard<'w> {
     pub fn resources(&self) -> &TypeRegistry {
         // SAFETY: Resource registry is read-only metadata, safe to access
         unsafe { (*self.world).resources() }
+    }
+
+    pub fn entity_allocator(&self) -> &entity::Allocator {
+        // SAFETY: Allocator is atomic, safe to access
+        unsafe { (*self.world).entity_allocator() }
     }
 
     /// Get the archetypes registry.

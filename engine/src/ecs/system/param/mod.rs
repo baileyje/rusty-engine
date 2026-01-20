@@ -3,12 +3,14 @@
 //! This module defines the [`Parameter`] trait, which enables clean system function signatures
 //! without explicit lifetime parameters.
 
+mod commands;
 mod query;
 mod unique;
 mod world;
 
-use crate::ecs::world as ecs_world;
+use crate::ecs::{system::CommandBuffer, world as ecs_world};
 
+pub use commands::Commands;
 pub use query::Query;
 pub use unique::{Uniq, UniqMut};
 
@@ -114,10 +116,13 @@ pub use unique::{Uniq, UniqMut};
 ///
 /// - `&World`: Immutable world access (exclusive system)
 ///
+/// ## Commands
+///
+/// - [`Commands`]: Deferred entity spawning, despawning, and component modifications
+///
 /// # Future Extensions
 ///
 /// Additional parameter types planned:
-/// - **Commands**: Deferred entity spawning/despawning
 /// - **Events**: Event readers/writers
 /// - **Queries with filters**: `Query<&T, With<U>>`
 ///
@@ -222,13 +227,14 @@ pub trait Parameter: Sized {
     /// let shard = world.shard(&access_request)?;
     ///
     /// // Query extraction
-    /// let query = unsafe { <query::Result<&Position> as Parameter>::get(&mut shard, &mut state) };
+    /// let query = unsafe { <query::Result<&Position> as Parameter>::get(&mut shard, &mut state, &command_buffer) };
     /// for pos in query {
     ///     println!("({}, {})", pos.x, pos.y);
     /// }
     /// ```
-    unsafe fn get<'w, 's>(
+    unsafe fn extract<'w, 's>(
         shard: &'w mut ecs_world::Shard<'_>,
         state: &'s mut Self::State,
+        command_buffer: &'w CommandBuffer,
     ) -> Self::Value<'w, 's>;
 }

@@ -85,7 +85,7 @@ use std::{
 };
 
 use super::Parameter;
-use crate::ecs::{unique, world};
+use crate::ecs::{system::CommandBuffer, unique, world};
 
 /// Immutable access to a unique in the world.
 ///
@@ -198,9 +198,10 @@ impl<U: unique::Unique> Parameter for Uniq<'_, U> {
     /// # Safety
     ///
     /// Caller must ensure the shard's grant includes access to this unique.
-    unsafe fn get<'w, 's>(
+    unsafe fn extract<'w, 's>(
         shard: &'w mut world::Shard<'_>,
         _state: &'s mut Self::State,
+        _command_buffer: &'w CommandBuffer,
     ) -> Self::Value<'w, 's> {
         shard
             .get_unique::<U>()
@@ -323,9 +324,10 @@ impl<U: unique::Unique> Parameter for UniqMut<'_, U> {
     /// # Safety
     ///
     /// Caller must ensure the shard's grant includes mutable access to this unique.
-    unsafe fn get<'w, 's>(
+    unsafe fn extract<'w, 's>(
         shard: &'w mut world::Shard<'_>,
         _state: &'s mut Self::State,
+        _command_buffer: &'w CommandBuffer,
     ) -> Self::Value<'w, 's> {
         shard
             .get_unique_mut::<U>()
@@ -382,9 +384,10 @@ impl<U: unique::Unique> Parameter for Option<Uniq<'_, U>> {
     /// Extracts the unique if it exists, returning `None` otherwise.
     ///
     /// Unlike `Uniq<U>`, this never panics on missing uniques.
-    unsafe fn get<'w, 's>(
+    unsafe fn extract<'w, 's>(
         shard: &'w mut world::Shard<'_>,
         _state: &'s mut Self::State,
+        _command_buffer: &'w CommandBuffer,
     ) -> Self::Value<'w, 's> {
         shard.get_unique::<U>().map(Uniq::new)
     }
@@ -435,9 +438,10 @@ impl<U: unique::Unique> Parameter for Option<UniqMut<'_, U>> {
     /// Extracts the unique mutably if it exists, returning `None` otherwise.
     ///
     /// Unlike `UniqMut<U>`, this never panics on missing uniques.
-    unsafe fn get<'w, 's>(
+    unsafe fn extract<'w, 's>(
         shard: &'w mut world::Shard<'_>,
         _state: &'s mut Self::State,
+        _command_buffer: &'w CommandBuffer,
     ) -> Self::Value<'w, 's> {
         shard.get_unique_mut::<U>().map(UniqMut::new)
     }
@@ -484,9 +488,11 @@ mod tests {
         let mut state: () = <Uniq<Res1> as Parameter>::build_state(&mut world);
         let access = <Uniq<Res1> as Parameter>::required_access(&world);
         let mut shard = world.shard(&access).expect("Failed to create shard");
+        let command_buffer = CommandBuffer::new();
 
         // When
-        let result = unsafe { <Uniq<Res1> as Parameter>::get(&mut shard, &mut state) };
+        let result =
+            unsafe { <Uniq<Res1> as Parameter>::extract(&mut shard, &mut state, &command_buffer) };
 
         // Then
         assert_eq!(result.num, 100);
@@ -517,9 +523,12 @@ mod tests {
         let mut state: () = <Option<Uniq<Res1>> as Parameter>::build_state(&mut world);
         let access = <Option<Uniq<Res1>> as Parameter>::required_access(&world);
         let mut shard = world.shard(&access).expect("Failed to create shard");
+        let command_buffer = CommandBuffer::new();
 
         // When
-        let result = unsafe { <Option<Uniq<Res1>> as Parameter>::get(&mut shard, &mut state) };
+        let result = unsafe {
+            <Option<Uniq<Res1>> as Parameter>::extract(&mut shard, &mut state, &command_buffer)
+        };
 
         // Then
         assert!(result.is_some());
@@ -541,9 +550,12 @@ mod tests {
         let mut state: () = <Option<Uniq<NotFound>> as Parameter>::build_state(&mut world);
         let access = <Option<Uniq<NotFound>> as Parameter>::required_access(&world);
         let mut shard = world.shard(&access).expect("Failed to create shard");
+        let command_buffer = CommandBuffer::new();
 
         // When
-        let result = unsafe { <Option<Uniq<NotFound>> as Parameter>::get(&mut shard, &mut state) };
+        let result = unsafe {
+            <Option<Uniq<NotFound>> as Parameter>::extract(&mut shard, &mut state, &command_buffer)
+        };
 
         // Then
         assert!(result.is_none());
@@ -574,9 +586,12 @@ mod tests {
         let mut state: () = <UniqMut<Res1> as Parameter>::build_state(&mut world);
         let access = <UniqMut<Res1> as Parameter>::required_access(&world);
         let mut shard = world.shard(&access).expect("Failed to create shard");
+        let command_buffer = CommandBuffer::new();
 
         // When
-        let mut result = unsafe { <UniqMut<Res1> as Parameter>::get(&mut shard, &mut state) };
+        let mut result = unsafe {
+            <UniqMut<Res1> as Parameter>::extract(&mut shard, &mut state, &command_buffer)
+        };
 
         // Then
         assert_eq!(result.num, 100);
@@ -614,9 +629,12 @@ mod tests {
         let mut state: () = <Option<UniqMut<Res1>> as Parameter>::build_state(&mut world);
         let access = <Option<UniqMut<Res1>> as Parameter>::required_access(&world);
         let mut shard = world.shard(&access).expect("Failed to create shard");
+        let command_buffer = CommandBuffer::new();
 
         // When
-        let result = unsafe { <Option<UniqMut<Res1>> as Parameter>::get(&mut shard, &mut state) };
+        let result = unsafe {
+            <Option<UniqMut<Res1>> as Parameter>::extract(&mut shard, &mut state, &command_buffer)
+        };
 
         // Then
         assert!(result.is_some());
@@ -645,10 +663,16 @@ mod tests {
         let mut state: () = <Option<UniqMut<NotFound>> as Parameter>::build_state(&mut world);
         let access = <Option<UniqMut<NotFound>> as Parameter>::required_access(&world);
         let mut shard = world.shard(&access).expect("Failed to create shard");
+        let command_buffer = CommandBuffer::new();
 
         // When
-        let result =
-            unsafe { <Option<UniqMut<NotFound>> as Parameter>::get(&mut shard, &mut state) };
+        let result = unsafe {
+            <Option<UniqMut<NotFound>> as Parameter>::extract(
+                &mut shard,
+                &mut state,
+                &command_buffer,
+            )
+        };
 
         // Then
         assert!(result.is_none());

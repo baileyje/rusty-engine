@@ -19,11 +19,7 @@ use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 use rusty_engine::core::tasks::Executor;
 use rusty_engine::define_phase;
-use rusty_engine::ecs::entity::Entity;
-use rusty_engine::ecs::schedule::Schedule;
-use rusty_engine::ecs::system::{Query, Uniq, UniqMut};
-use rusty_engine::ecs::world::World;
-use rusty_engine::ecs::{entity, world};
+use rusty_engine::ecs::{Commands, Entity, Query, Schedule, Uniq, UniqMut, World, WorldId};
 use rusty_macros::Unique;
 
 /// Configuration for the particle benchmark.
@@ -47,11 +43,6 @@ impl Default for ParticleConfig {
             executor_threads: 4,
         }
     }
-}
-
-#[derive(Unique)]
-struct ParticleState {
-    dead: Vec<entity::Entity>,
 }
 
 #[derive(Unique)]
@@ -116,46 +107,15 @@ fn system_fade(query: Query<(&Lifetime, &mut Color)>) {
 
 /// System: Collect dead particles (lifetime <= 0)
 fn system_kill_particles(
-    query: Query<(entity::Entity, &Lifetime)>,
-    mut state: UniqMut<ParticleState>,
+    commands: Commands,
+    query: Query<(Entity, &Lifetime)>,
+    mut factory: UniqMut<ParicleFactory>,
 ) {
-    // Collect dead particle entities
-    let dead: Vec<entity::Entity> = query
-        .filter(|(_, lifetime)| lifetime.remaining <= 0.0)
-        .map(|(entity, _)| entity)
-        .collect();
-    state.dead.extend(dead);
-}
-
-// Utility for spawning particles
-fn spawn_particle(world: &mut World) -> entity::Entity {
-    let particle = world
-        .get_unique_mut::<ParicleFactory>()
-        .map(|f| f.create_particle())
-        .unwrap();
-    world.spawn(particle)
-}
-
-// Exclusive access system that despawns and spawns particles.
-// This is gross......
-fn system_respawn_dead(world: &mut World) {
-    let dead: Vec<entity::Entity> = world
-        .get_unique_mut::<ParticleState>()
-        .unwrap()
-        .dead
-        .drain(..)
-        .collect();
-
-    let dead_len = dead.len();
-
-    // Despawn dead particles
-    for entity in dead {
-        world.despawn(entity);
-    }
-
-    // Respawn same number of new particles
-    for _ in 0..dead_len {
-        spawn_particle(world);
+    for (entity, life) in query {
+        if life.remaining <= 0.0 {
+            commands.despawn(entity);
+            commands.spawn(factory.create_particle());
+        }
     }
 }
 
@@ -230,7 +190,7 @@ fn system_render(query: Query<(&Position, &Color, &Size, &Lifetime)>) {
 /// Particle system benchmark scenario.
 pub struct ParticleScenario {
     config: ParticleConfig,
-    world: world::World,
+    world: World,
     schedule: Schedule,
     executor: Executor,
 }
@@ -244,7 +204,7 @@ impl ParticleScenario {
     /// Create a new particle scenario with custom config.
     pub fn with_config(config: ParticleConfig) -> Self {
         Self {
-            world: world::World::new(world::Id::new(0)),
+            world: World::new(WorldId::new(0)),
             schedule: Schedule::new(),
             executor: Executor::new(config.executor_threads),
             config,
@@ -253,7 +213,8 @@ impl ParticleScenario {
 
     /// Get current particle count.
     pub fn current_count(&mut self) -> usize {
-        self.world.storage().entities().len()
+        println!("Hmm: {:?}", self.world.storage().entities());
+        self.world.storage().entities().spwaned_len()
     }
 }
 
@@ -277,13 +238,10 @@ impl Scenario for ParticleScenario {
     }
 
     fn setup(&mut self) {
-        let mut particles = Vec::with_capacity(self.config.particle_count);
-
         let mut factory = ParicleFactory(ChaCha8Rng::seed_from_u64(self.config.seed));
 
         for _ in 0..self.config.particle_count {
-            let entity = self.world.spawn(factory.create_particle());
-            particles.push(entity);
+            self.world.spawn(factory.create_particle());
         }
 
         self.schedule
@@ -294,15 +252,12 @@ impl Scenario for ParticleScenario {
             .add_system(Update, system_lifetime_decay, &mut self.world);
         self.schedule
             .add_system(Update, system_kill_particles, &mut self.world);
-        self.schedule
-            .add_system(Update, system_respawn_dead, &mut self.world);
 
         self.schedule
             .add_system(Render, system_render, &mut self.world);
 
         self.world.add_unique(DeltaTime(self.config.delta_time));
         self.world.add_unique(factory);
-        self.world.add_unique(ParticleState { dead: Vec::new() });
     }
 
     fn update(&mut self) {

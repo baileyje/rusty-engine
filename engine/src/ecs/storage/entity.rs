@@ -140,9 +140,13 @@ impl Entities {
         }
     }
 
-    /// Get the the length of the entity list.
-    pub fn len(&self) -> usize {
-        self.entries.len()
+    #[inline]
+    pub fn spwaned_len(&self) -> usize {
+        self.entries
+            .iter()
+            .map(|e| e.state)
+            .filter(|s| matches!(s, State::Spawned(_, _)))
+            .count()
     }
 }
 
@@ -165,7 +169,7 @@ mod test {
     fn entity_spawn_check() {
         // Given
         let mut entities = Entities::default();
-        let mut allocator = entity::Allocator::default();
+        let allocator = entity::Allocator::default();
 
         // When - just allocated and not spawned
         let entity = allocator.alloc();
@@ -190,7 +194,7 @@ mod test {
     fn get_location() {
         // Given
         let mut entities = Entities::default();
-        let mut allocator = entity::Allocator::default();
+        let allocator = entity::Allocator::default();
 
         let entity = allocator.alloc();
         let location = make_location(0, 0);
@@ -206,7 +210,7 @@ mod test {
     fn get_archetype() {
         // Given
         let mut entities = Entities::default();
-        let mut allocator = entity::Allocator::default();
+        let allocator = entity::Allocator::default();
 
         let entity = allocator.alloc();
         let location = make_location(0, 0);
@@ -222,7 +226,7 @@ mod test {
     fn set_location() {
         // Given
         let mut entities = Entities::default();
-        let mut allocator = entity::Allocator::default();
+        let allocator = entity::Allocator::default();
         let entity = allocator.alloc();
         let location1 = make_location(0, 1);
         let location2 = make_location(1, 2);
@@ -242,7 +246,7 @@ mod test {
     fn set_archetype_panics_with_unspawned() {
         // Given
         let mut entities = Entities::default();
-        let mut allocator = entity::Allocator::default();
+        let allocator = entity::Allocator::default();
         let entity = allocator.alloc();
 
         // When
@@ -256,7 +260,7 @@ mod test {
     fn set_archetype_panics_with_despawned() {
         // Given
         let mut entities = Entities::default();
-        let mut allocator = entity::Allocator::default();
+        let allocator = entity::Allocator::default();
         let entity = allocator.alloc();
         let location = make_location(0, 1);
 
@@ -271,7 +275,7 @@ mod test {
     fn storage_handles_sparse_entity_ids() {
         // Given
         let mut entities = Entities::default();
-        let mut allocator = entity::Allocator::default();
+        let allocator = entity::Allocator::default();
 
         // When - Create entities with gaps (allocate but don't spawn all)
         let e0 = allocator.alloc(); // Id 0
@@ -306,7 +310,7 @@ mod test {
     fn despawn_returns_false_for_already_despawned() {
         // Given
         let mut entities = Entities::default();
-        let mut allocator = entity::Allocator::default();
+        let allocator = entity::Allocator::default();
         let entity = allocator.alloc();
         entities.spawn_at(entity, make_location(1, 0));
 
@@ -327,7 +331,7 @@ mod test {
     fn despawn_returns_false_for_never_spawned() {
         // Given
         let mut entities = Entities::default();
-        let mut allocator = entity::Allocator::default();
+        let allocator = entity::Allocator::default();
         let entity = allocator.alloc();
 
         // When - Try to despawn without spawning
@@ -341,7 +345,7 @@ mod test {
     fn archetype_of_returns_none_for_wrong_generation() {
         // Given
         let mut entities = Entities::default();
-        let mut allocator = entity::Allocator::default();
+        let allocator = entity::Allocator::default();
         let location = make_location(1, 0);
         let entity = allocator.alloc();
         entities.spawn_at(entity, location);
@@ -367,7 +371,7 @@ mod test {
     fn storage_multiple_archetypes() {
         // Given
         let mut entities = Entities::default();
-        let mut allocator = entity::Allocator::default();
+        let allocator = entity::Allocator::default();
         let archetype1 = archetype::Id::new(1);
         let archetype2 = archetype::Id::new(2);
         let archetype3 = archetype::Id::new(3);
@@ -391,7 +395,7 @@ mod test {
     fn storage_respawn_after_despawn() {
         // Given
         let mut entities = Entities::default();
-        let mut allocator = entity::Allocator::default();
+        let allocator = entity::Allocator::default();
         let archetype2 = archetype::Id::new(2);
         let entity = allocator.alloc();
 

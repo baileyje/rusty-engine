@@ -43,6 +43,12 @@
 
 mod reference;
 
+use std::sync::{
+    RwLock,
+    atomic::{AtomicU32, Ordering},
+};
+
+use crossbeam::queue::SegQueue;
 /// Export the reference module for entity references.
 pub use reference::{Ref, RefMut};
 
@@ -143,6 +149,59 @@ impl Ord for Entity {
     }
 }
 
+/// Growable array of atomic generations.
+/// Maps from an entity id to its current generation
+#[derive(Default, Debug)]
+struct Generations {
+    chunks: RwLock<Vec<Box<[AtomicU32; CHUNK_SIZE]>>>,
+}
+
+const CHUNK_SIZE: usize = 4096;
+
+impl Generations {
+    const fn new() -> Self {
+        Self {
+            chunks: RwLock::new(Vec::new()),
+        }
+    }
+
+    fn get(&self, id: Id) -> Generation {
+        let id = id.0;
+        let chunk_idx = id as usize / CHUNK_SIZE;
+        let slot_idx = id as usize % CHUNK_SIZE;
+
+        let chunks = self.chunks.read().unwrap();
+        Generation(if chunk_idx < chunks.len() {
+            chunks[chunk_idx][slot_idx].load(Ordering::Acquire)
+        } else {
+            0 // Fresh ID, generation 0
+        })
+    }
+
+    fn increment(&self, id: Id) {
+        self.ensure_capacity(id);
+        let id = id.0;
+        let chunk_idx = id as usize / CHUNK_SIZE;
+        let slot_idx = id as usize % CHUNK_SIZE;
+
+        let chunks = self.chunks.read().unwrap();
+        chunks[chunk_idx][slot_idx].fetch_add(1, Ordering::Release);
+    }
+
+    fn ensure_capacity(&self, id: Id) {
+        let id = id.0;
+        let chunk_idx = id as usize / CHUNK_SIZE;
+        let chunks_len = self.chunks.read().unwrap().len();
+
+        if chunk_idx >= chunks_len {
+            let mut chunks = self.chunks.write().unwrap();
+            while chunks.len() <= chunk_idx {
+                chunks.push(Box::new(std::array::from_fn(|_| AtomicU32::new(0))));
+            }
+        }
+    }
+}
+
 /// An allocator for entities in the ECS.
 ///
 /// Allocates unique entity IDs and recycles freed entities to avoid ID exhaustion.
@@ -158,10 +217,15 @@ impl Ord for Entity {
 /// rather than making allocation atomic.
 #[derive(Default, Debug)]
 pub struct Allocator {
-    /// The pool of freed entities available for reuse.
-    dead_pool: Vec<Entity>,
-    /// The next unique ID to allocate.
-    next_id: u32,
+    /// Generation counter for each ID slot.
+    /// Indexed by entity ID, stores current generation.
+    generations: Generations,
+
+    /// Pool of IDs available for reuse (just the ID, not full Entity).
+    dead_pool: SegQueue<Id>,
+
+    /// Next fresh ID to allocate.
+    next_id: AtomicU32,
 }
 
 impl Allocator {
@@ -169,58 +233,66 @@ impl Allocator {
     #[inline]
     pub const fn new() -> Self {
         Self {
-            dead_pool: Vec::new(),
-            next_id: 0,
+            generations: Generations::new(),
+            dead_pool: SegQueue::new(),
+            next_id: AtomicU32::new(0),
         }
     }
 
     /// Allocate many new entities at once.
     ///
     /// Reuses entities from the dead pool first, then allocates new IDs as needed.
-    /// More efficient than calling `alloc()` in a loop.
-    pub fn alloc_many(&mut self, count: usize) -> Vec<Entity> {
-        let mut entities = Vec::with_capacity(count);
-
-        // Drain from dead pool first (from the end for efficiency)
-        let from_pool = count.min(self.dead_pool.len());
-        entities.extend(self.dead_pool.drain(self.dead_pool.len() - from_pool..));
-
-        // Allocate remaining as new sequential IDs
-        let remaining = count - entities.len();
-        if remaining > 0 {
-            let start_id = self.next_id;
-            self.next_id += remaining as u32;
-
-            entities.extend((start_id..self.next_id).map(|id| {
-                Entity::new_with_generation(Id(id), Generation::FIRST)
-            }));
+    pub fn alloc_many(&self, count: usize) -> Vec<Entity> {
+        let mut alloced = Vec::new();
+        // Allocate as many as we can from teh deap pool.
+        while alloced.len() < count
+            && let Some(id) = self.dead_pool.pop()
+        {
+            alloced.push(Entity::new_with_generation(id, self.generations.get(id)));
         }
 
-        entities
+        // Allocate remaining as new sequential IDs
+        let remaining = (count - alloced.len()) as u32;
+        if remaining > 0 {
+            let start_id = self.next_id.fetch_add(remaining, Ordering::Relaxed);
+            let last_id = start_id + remaining;
+            self.generations.ensure_capacity(Id(last_id - 1));
+
+            alloced.extend((start_id..last_id).map(|id| Entity::new(Id(id))));
+        }
+
+        alloced
     }
 
     /// Allocate a new entity, either by reusing a freed entity from the dead pool
     /// or by allocating a new unique ID.
-    pub fn alloc(&mut self) -> Entity {
-        self.dead_pool.pop().unwrap_or_else(|| {
-            let id = Id(self.next_id);
-            self.next_id += 1;
-            Entity::new_with_generation(id, Generation::FIRST)
-        })
+    pub fn alloc(&self) -> Entity {
+        // Try to reuse from dead pool first
+        if let Some(id) = self.dead_pool.pop() {
+            println!("Got from dead...");
+            return Entity::new_with_generation(id, self.generations.get(id));
+        }
+
+        // Allocate fresh ID
+        let id = Id(self.next_id.fetch_add(1, Ordering::Relaxed));
+        self.generations.ensure_capacity(id);
+        Entity::new(id)
     }
 
-    /// Free an entity, making it available for reuse.
-    ///
-    /// The generation is incremented to invalidate any existing references to this entity.
-    pub fn free(&mut self, entity: Entity) {
-        self.dead_pool.push(entity.genned());
+    /// Free an entity for reuse (lock-free).
+    pub fn free(&self, entity: Entity) {
+        let id = entity.id();
+        // Bump generation atomically
+        self.generations.increment(id);
+        // Return ID to pool
+        self.dead_pool.push(id);
     }
 }
 
 #[test]
 fn allocator_uniqueness() {
     // Given
-    let mut allocator = Allocator::default();
+    let allocator = Allocator::default();
 
     // When
     let mut entities = Vec::new();
@@ -238,7 +310,7 @@ fn allocator_uniqueness() {
 #[test]
 fn allocator_reuse() {
     // Given
-    let mut allocator = Allocator::default();
+    let allocator = Allocator::default();
 
     // When
     let mut entities = Vec::new();
@@ -266,7 +338,7 @@ fn allocator_reuse() {
 #[test]
 fn allocator_free_and_reuse_cycle() {
     // Given
-    let mut allocator = Allocator::default();
+    let allocator = Allocator::default();
 
     // When - Allocate 5 entities
     let mut entities = Vec::new();
@@ -303,7 +375,7 @@ fn allocator_free_and_reuse_cycle() {
 #[test]
 fn allocator_empty_pool_allocates_new() {
     // Given
-    let mut allocator = Allocator::default();
+    let allocator = Allocator::default();
 
     // When - Allocate without any freed entities
     let e1 = allocator.alloc();
@@ -320,7 +392,7 @@ fn allocator_empty_pool_allocates_new() {
 
     // Then - Dead pool should have one entity with incremented generation
     assert_eq!(allocator.dead_pool.len(), 1);
-    assert_eq!(allocator.dead_pool[0].generation.0, 1);
+    assert_eq!(allocator.generations.get(Id(0)), Generation(1));
 
     // When - Allocate again (should reuse from pool)
     let e1_reused = allocator.alloc();
@@ -341,7 +413,7 @@ fn allocator_empty_pool_allocates_new() {
 #[test]
 fn allocator_large_scale_reuse() {
     // Given
-    let mut allocator = Allocator::default();
+    let allocator = Allocator::default();
 
     // When - Allocate 1000 entities
     let mut entities = Vec::new();
@@ -380,7 +452,7 @@ fn allocator_large_scale_reuse() {
 #[test]
 fn allocator_multiple_generations() {
     // Given
-    let mut allocator = Allocator::default();
+    let allocator = Allocator::default();
     let entity = allocator.alloc();
     let original_id = entity.id;
 
@@ -408,7 +480,7 @@ fn allocator_multiple_generations() {
 #[test]
 fn allocator_alloc_many_from_empty() {
     // Given
-    let mut allocator = Allocator::default();
+    let allocator = Allocator::default();
 
     // When - Allocate many from empty allocator
     let entities = allocator.alloc_many(5);
@@ -419,13 +491,13 @@ fn allocator_alloc_many_from_empty() {
         assert_eq!(e.id.0, i as u32);
         assert_eq!(e.generation.0, 0);
     }
-    assert_eq!(allocator.next_id, 5);
+    assert_eq!(allocator.next_id.load(Ordering::Relaxed), 5);
 }
 
 #[test]
 fn allocator_alloc_many_from_pool() {
     // Given
-    let mut allocator = Allocator::default();
+    let allocator = Allocator::default();
     // Create and free 5 entities to populate the pool
     for e in allocator.alloc_many(5) {
         allocator.free(e);
@@ -446,13 +518,13 @@ fn allocator_alloc_many_from_pool() {
 #[test]
 fn allocator_alloc_many_mixed() {
     // Given
-    let mut allocator = Allocator::default();
+    let allocator = Allocator::default();
     // Create and free 3 entities to populate the pool
     for e in allocator.alloc_many(3) {
         allocator.free(e);
     }
     assert_eq!(allocator.dead_pool.len(), 3);
-    assert_eq!(allocator.next_id, 3);
+    assert_eq!(allocator.next_id.load(Ordering::Relaxed), 3);
 
     // When - Allocate 5 (more than pool size)
     let entities = allocator.alloc_many(5);
@@ -470,7 +542,7 @@ fn allocator_alloc_many_mixed() {
     assert_eq!(new_ids, vec![3, 4]);
 
     assert_eq!(allocator.dead_pool.len(), 0);
-    assert_eq!(allocator.next_id, 5);
+    assert_eq!(allocator.next_id.load(Ordering::Relaxed), 5);
 }
 
 #[test]

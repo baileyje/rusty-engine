@@ -1,3 +1,4 @@
+use core::panic;
 use std::any::TypeId;
 
 use crate::ecs::{
@@ -6,7 +7,7 @@ use crate::ecs::{
     storage::{
         column::Column,
         row::Row,
-        value::Values,
+        value::{ColumnWrite, Extract, ExtractedValue},
         view::{self, View},
     },
     world,
@@ -126,9 +127,9 @@ impl Table {
     ///     (entity, (Position { x: 2.0, y: 2.0 }, Velocity { dx: 0.8, dy: 1.3 })),
     /// ]);d
     /// ```
-    pub fn add_entities<V: Values>(
+    pub fn add_entities<S: component::Set>(
         &mut self,
-        entities: impl IntoIterator<Item = (entity::Entity, V)>,
+        entities: impl Iterator<Item = (entity::Entity, S)>,
     ) -> Vec<(Row, entity::Entity)> {
         let data_iter = entities.into_iter();
 
@@ -183,74 +184,11 @@ impl Table {
     ///     entity, (Position { x: 1.0, y: 2.0 }, Velocity { dx: 0.5, dy: 0.3 }),
     /// );
     /// ```
-    pub fn add_entity<V: Values>(&mut self, entity: entity::Entity, values: V) -> Row {
-        self.add_entities([(entity, values)]).first().unwrap().0
-    }
-
-    /// Add an entity using a type-erased component data from an extraction and possible additional
-    /// data.
-    ///
-    /// This is used by the storage migration system where component types
-    /// are not known at compile time.
-    ///
-    /// # Arguments
-    /// * `entity` - The entity to add
-    /// * `extract` - A vector of (TypeId, bytes) tuples representing the extracted components to add
-    /// * `additions` - A set of additional components to add
-    ///
-    /// # Safety Contract
-    /// The caller must ensure that `extract` + `additions` together cover ALL columns in this table.
-    /// This is verified at the Storage layer via spec validation in `execute_migration`.
-    ///
-    /// # Returns
-    /// The row where the entity was placed.
-    pub(crate) fn add_entity_from_extract<V: Values>(
-        &mut self,
-        entity: entity::Entity,
-        extract: Vec<(world::TypeId, Vec<u8>)>,
-        additions: V,
-    ) -> Row {
-        // Capture the entity row
-        let row = Row::new(self.entities.len());
-
-        // Reserve space in each column
-        for column in self.columns.iter_mut() {
-            column.reserve(1);
-        }
-
-        // Push extracted component bytes to target columns
-        for (id, bytes) in extract {
-            if let Some(column) = self.get_column_by_id_mut(id) {
-                unsafe {
-                    column.write_bytes(row, &bytes);
-                }
-            } else {
-                // Extract contains a component ID not in this table - this is a bug
-                debug_assert!(
-                    false,
-                    "extract contains component ID {:?} not present in table",
-                    id
-                );
-            }
-        }
-
-        // Apply additions (new components) if any
-        // Note: additions.apply() will panic if a component doesn't exist in the table
-        additions.apply(self, row);
-
-        // Add the entity once the components are all added
-        self.entities.push(entity);
-
-        // Update the length after new row.
-        for column in self.columns.iter_mut() {
-            // Safety - The row was reserved above.
-            unsafe { column.set_len(self.entities.len()) };
-        }
-        // Verify we have kept the entity/column lengths consistent
-        #[cfg(debug_assertions)]
-        self.verify_invariants();
-
-        row
+    pub fn add_entity<S: component::Set>(&mut self, entity: entity::Entity, values: S) -> Row {
+        self.add_entities([(entity, values)].into_iter())
+            .first()
+            .unwrap()
+            .0
     }
 
     /// Get the number of entities (rows) in the table.
@@ -413,7 +351,7 @@ impl Table {
         Some(moved_entity)
     }
 
-    /// Extract raw component data for the specified row and extraction spec. The retunred data
+    /// Extract raw component data for the specified row and extraction spec. The returned data
     /// will be a type erased Vec of (TypeId, bytes) tuples for each extracted component. This will
     /// remove the entity from the table using swap-remove. Any components not part of the
     /// extraction will be dropped. If an entity was moved as part of this operation, it is
@@ -425,7 +363,7 @@ impl Table {
         &mut self,
         row: Row,
         to_extract: &component::Spec,
-    ) -> (Vec<(world::TypeId, Vec<u8>)>, Option<entity::Entity>) {
+    ) -> (Extract, Option<entity::Entity>) {
         debug_assert!(row.index() < self.entities.len(), "row index out of bounds");
 
         // Capture the last index for fixing moved entity later
@@ -443,20 +381,27 @@ impl Table {
                 .collect::<Vec<_>>(),
         );
 
-        let mut shared_data: Vec<(world::TypeId, Vec<u8>)> = Vec::with_capacity(to_extract.len());
+        let mut shared_data: Vec<ExtractedValue> = Vec::with_capacity(to_extract.len());
         // Iterate through all fields in the spec to extract the value and remove it from the column without drop.
         for &id in to_extract.ids() {
             if let Some(column) = self.get_column_by_id_mut(id) {
                 // SAFETY: row < entities.len() == columns.len() (by invariant)
                 let bytes = unsafe { column.read_bytes(row) };
-                shared_data.push((id, bytes.to_vec()));
+                shared_data.push(ExtractedValue {
+                    world_id: id,
+                    type_id: column.info().type_id(),
+                    bytes: bytes.to_vec(),
+                });
                 // Shared component - don't drop (data was copied)
                 unsafe {
                     column.swap_remove_no_drop(row);
                 }
+            } else {
+                panic!(
+                    "Invalid row extraction. Column not found for typeId {:?}",
+                    id,
+                )
             }
-            // TODO: Should we panic if no colmn is found? Unlikely as the components come from the
-            // the storage module migration logic.
         }
 
         // Determine any columns that are not part of the extract and remove with drop.
@@ -712,22 +657,25 @@ impl Table {
 
     /// Apply a component value to the appropriate column in the table.
     ///
+    /// This is the unified write path for both typed and extracted component values.
+    /// It uses the `ColumnWrite` trait to handle both cases through a single method.
+    ///
     /// # Panics
-    /// - If the component ID is not valid for this table.
-    /// - If the type `C` doesn't match the component ID's registered type.
+    /// - If no column exists for the component's type ID.
     /// - In debug builds, panics if the row is out of bounds.
     ///
-    /// # Safety
-    /// The caller must ensure that:
-    /// - There is a valid column for the given component ID.
-    /// - The type `C` matches the column's component type (validated at runtime).
-    /// - Row is valid for this table.
-    pub fn apply_value<C: component::Component>(&mut self, row: Row, value: C) {
-        let column = self.get_column_mut::<C>().expect("component not in table");
-        // SAFETY: Write provides validation of type and row bounds in debugg. Caller must ensure
-        // all safety conditions are met for this method.
+    /// # Type Parameters
+    /// - `W`: Any type implementing `ColumnWrite` (typed components or `ExtractedValue`)
+    pub fn apply_column_write<W: ColumnWrite>(&mut self, row: Row, writer: W) {
+        let type_id = writer.type_id();
+        let column = self
+            .columns
+            .iter_mut()
+            .find(|col| col.info().type_id() == type_id)
+            .expect("component not in table");
+        // SAFETY: Caller must ensure row is valid and writer's data matches column type.
         unsafe {
-            column.write(row, value);
+            writer.write_to_column(column, row);
         }
     }
 }
@@ -795,15 +743,18 @@ mod tests {
 
         let mut table = Table::new(Id::new(0), &[registry.get_info_of::<Health>().unwrap()]);
 
-        let mut allocator = entity::Allocator::new();
+        let allocator = entity::Allocator::new();
         let entity1 = allocator.alloc();
         let entity2 = allocator.alloc();
 
         // When
-        table.add_entities([
-            (entity1, Health { value: 100 }),
-            (entity2, Health { value: 75 }),
-        ]);
+        table.add_entities(
+            [
+                (entity1, Health { value: 100 }),
+                (entity2, Health { value: 75 }),
+            ]
+            .into_iter(),
+        );
 
         // Then
         assert_eq!(table.len(), 2);
@@ -838,31 +789,34 @@ mod tests {
             ],
         );
 
-        let mut allocator = entity::Allocator::new();
+        let allocator = entity::Allocator::new();
         let entity1 = allocator.alloc();
         let entity2 = allocator.alloc();
 
         // When
 
         // Add first entity with all components atomically
-        table.add_entities([
-            (
-                entity1,
+        table.add_entities(
+            [
                 (
-                    Position { x: 1.0, y: 2.0 },
-                    Velocity { dx: 0.5, dy: 0.3 },
-                    Health { value: 100 },
+                    entity1,
+                    (
+                        Position { x: 1.0, y: 2.0 },
+                        Velocity { dx: 0.5, dy: 0.3 },
+                        Health { value: 100 },
+                    ),
                 ),
-            ),
-            (
-                entity2,
                 (
-                    Position { x: 3.0, y: 4.0 },
-                    Velocity { dx: -0.2, dy: 0.8 },
-                    Health { value: 75 },
+                    entity2,
+                    (
+                        Position { x: 3.0, y: 4.0 },
+                        Velocity { dx: -0.2, dy: 0.8 },
+                        Health { value: 75 },
+                    ),
                 ),
-            ),
-        ]);
+            ]
+            .into_iter(),
+        );
 
         // Then
 
@@ -903,11 +857,11 @@ mod tests {
 
         let mut table = Table::new(Id::new(0), &[registry.get_info_of::<Score>().unwrap()]);
 
-        let mut allocator = entity::Allocator::new();
+        let allocator = entity::Allocator::new();
 
         // Add multiple entities with the builder
         for i in 0..5 {
-            table.add_entities([(allocator.alloc(), Score { points: i * 10 })]);
+            table.add_entities([(allocator.alloc(), Score { points: i * 10 })].into_iter());
         }
 
         // When / Then
@@ -942,16 +896,19 @@ mod tests {
         registry.register_component::<Health>();
         let mut table = Table::new(Id::new(0), &[registry.get_info_of::<Health>().unwrap()]);
 
-        let mut allocator = entity::Allocator::new();
+        let allocator = entity::Allocator::new();
         let entity1 = allocator.alloc();
         let entity2 = allocator.alloc();
         let entity3 = allocator.alloc();
 
-        table.add_entities([
-            (entity1, Health { value: 100 }),
-            (entity2, Health { value: 200 }),
-            (entity3, Health { value: 300 }),
-        ]);
+        table.add_entities(
+            [
+                (entity1, Health { value: 100 }),
+                (entity2, Health { value: 200 }),
+                (entity3, Health { value: 300 }),
+            ]
+            .into_iter(),
+        );
 
         assert_eq!(table.len(), 3);
 
@@ -1002,8 +959,8 @@ mod tests {
         assert_eq!(result, None);
 
         // When - add entity and try to remove out of bounds
-        let mut allocator = entity::Allocator::new();
-        table.add_entities([(allocator.alloc(), Position { x: 0.0, y: 0.0 })]);
+        let allocator = entity::Allocator::new();
+        table.add_entities([(allocator.alloc(), Position { x: 0.0, y: 0.0 })].into_iter());
 
         table.swap_remove_row(Row::new(10));
     }
@@ -1023,20 +980,23 @@ mod tests {
             ],
         );
 
-        let mut allocator = entity::Allocator::new();
+        let allocator = entity::Allocator::new();
         let entity1 = allocator.alloc();
         let entity2 = allocator.alloc();
         let rows = table
-            .add_entities([
-                (
-                    entity1,
-                    (Position { x: 1.0, y: 2.0 }, Velocity { dx: 0.5, dy: 0.3 }),
-                ),
-                (
-                    entity2,
-                    (Position { x: 3.0, y: 4.0 }, Velocity { dx: -0.2, dy: 0.8 }),
-                ),
-            ])
+            .add_entities(
+                [
+                    (
+                        entity1,
+                        (Position { x: 1.0, y: 2.0 }, Velocity { dx: 0.5, dy: 0.3 }),
+                    ),
+                    (
+                        entity2,
+                        (Position { x: 3.0, y: 4.0 }, Velocity { dx: -0.2, dy: 0.8 }),
+                    ),
+                ]
+                .into_iter(),
+            )
             .into_iter()
             .map(|(row, _)| row)
             .collect::<Vec<_>>();
@@ -1074,14 +1034,10 @@ mod tests {
 
         let mut table = Table::new(Id::new(0), &[registry.get_info_of::<Health>().unwrap()]);
 
-        let mut allocator = entity::Allocator::new();
+        let allocator = entity::Allocator::new();
         let entity = allocator.alloc();
 
-        let row = table
-            .add_entities([(entity, Health { value: 100 })])
-            .first()
-            .unwrap()
-            .0;
+        let row = table.add_entity(entity, Health { value: 100 });
 
         // When - mutate the health
         unsafe {
@@ -1121,14 +1077,17 @@ mod tests {
 
         let counter = Arc::new(AtomicUsize::new(0));
 
-        let mut allocator = entity::Allocator::new();
+        let allocator = entity::Allocator::new();
 
         // Add 3 entities
-        table.add_entities([
-            (allocator.alloc(), DropTracker(counter.clone())),
-            (allocator.alloc(), DropTracker(counter.clone())),
-            (allocator.alloc(), DropTracker(counter.clone())),
-        ]);
+        table.add_entities(
+            [
+                (allocator.alloc(), DropTracker(counter.clone())),
+                (allocator.alloc(), DropTracker(counter.clone())),
+                (allocator.alloc(), DropTracker(counter.clone())),
+            ]
+            .into_iter(),
+        );
 
         assert_eq!(counter.load(Ordering::SeqCst), 0);
 
@@ -1193,10 +1152,10 @@ mod tests {
 
         let mut table = Table::new(Id::new(0), &[registry.get_info_of::<Health>().unwrap()]);
 
-        let mut allocator = entity::Allocator::new();
+        let allocator = entity::Allocator::new();
         let entity = allocator.alloc();
 
-        table.add_entities([(entity, Health { value: 100 })]);
+        table.add_entity(entity, Health { value: 100 });
 
         // When/Then - entity not in table returns None
         unsafe {
@@ -1212,7 +1171,7 @@ mod tests {
 
         let mut table = Table::new(Id::new(0), &[registry.get_info_of::<Position>().unwrap()]);
 
-        let mut allocator = entity::Allocator::new();
+        let allocator = entity::Allocator::new();
         let entity = allocator.alloc();
 
         let row = table.add_entity(entity, Position { x: 1.0, y: 2.0 });
@@ -1235,7 +1194,7 @@ mod tests {
 
         let mut table = Table::new(Id::new(0), &[registry.get_info_of::<Health>().unwrap()]);
 
-        let mut allocator = entity::Allocator::new();
+        let allocator = entity::Allocator::new();
         let entity = allocator.alloc();
 
         let row = table.add_entity(entity, Health { value: 100 });
@@ -1268,7 +1227,7 @@ mod tests {
             ],
         );
 
-        let mut allocator = entity::Allocator::new();
+        let allocator = entity::Allocator::new();
         let entity = allocator.alloc();
 
         let row = table.add_entity(
@@ -1303,7 +1262,7 @@ mod tests {
             ],
         );
 
-        let mut allocator = entity::Allocator::new();
+        let allocator = entity::Allocator::new();
         let entity = allocator.alloc();
 
         let row = table.add_entity(
@@ -1352,7 +1311,7 @@ mod tests {
 
         let mut table = Table::new(Id::new(0), &[registry.get_info_of::<Health>().unwrap()]);
 
-        let mut allocator = entity::Allocator::new();
+        let allocator = entity::Allocator::new();
 
         // Add entities
         for i in 0..5 {
@@ -1383,7 +1342,7 @@ mod tests {
 
         let mut table = Table::new(Id::new(0), &[registry.get_info_of::<Counter>().unwrap()]);
 
-        let mut allocator = entity::Allocator::new();
+        let allocator = entity::Allocator::new();
 
         for i in 0..3 {
             table.add_entity(allocator.alloc(), Counter { value: i });
@@ -1419,7 +1378,7 @@ mod tests {
             ],
         );
 
-        let mut allocator = entity::Allocator::new();
+        let allocator = entity::Allocator::new();
 
         for i in 0..3 {
             table.add_entity(
@@ -1471,7 +1430,7 @@ mod tests {
 
         let mut table = Table::new(Id::new(0), &[registry.get_info_of::<Health>().unwrap()]);
 
-        let mut allocator = entity::Allocator::new();
+        let allocator = entity::Allocator::new();
         for i in 0..10 {
             table.add_entity(allocator.alloc(), Health { value: i });
         }
@@ -1498,6 +1457,6 @@ mod tests {
 
         // When/Then - should panic when applying wrong type to component ID
         // We're using TypeA's ID but passing a TypeB value
-        table.apply_value(0.into(), Health { value: 99 });
+        table.apply_column_write(0.into(), Health { value: 99 });
     }
 }

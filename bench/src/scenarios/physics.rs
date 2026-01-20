@@ -16,9 +16,7 @@ use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 use rusty_engine::core::tasks::Executor;
 use rusty_engine::define_phase;
-use rusty_engine::ecs::schedule::Schedule;
-use rusty_engine::ecs::system::{Query, Uniq};
-use rusty_engine::ecs::{entity, world};
+use rusty_engine::ecs::{Entity, Query, Schedule, Uniq, World, WorldId};
 
 /// Configuration for the physics benchmark.
 pub struct PhysicsConfig {
@@ -46,9 +44,9 @@ impl Default for PhysicsConfig {
 /// Physics simulation benchmark scenario.
 pub struct PhysicsScenario {
     config: PhysicsConfig,
-    world: world::World,
+    world: World,
     rng: ChaCha8Rng,
-    bodies: Vec<entity::Entity>,
+    bodies: Vec<Entity>,
     schedule: Schedule,
     executor: Executor,
 }
@@ -129,7 +127,7 @@ impl PhysicsScenario {
     pub fn with_config(config: PhysicsConfig) -> Self {
         Self {
             rng: ChaCha8Rng::seed_from_u64(config.seed),
-            world: world::World::new(world::Id::new(0)),
+            world: World::new(WorldId::new(0)),
             bodies: Vec::new(),
             schedule: Schedule::new(),
             executor: Executor::new(config.executor_threads),
@@ -137,7 +135,7 @@ impl PhysicsScenario {
         }
     }
 
-    fn spawn_body(&mut self) -> entity::Entity {
+    fn spawn_body(&mut self) -> Entity {
         let pos = Position {
             x: self.rng.gen_range(-1000.0..1000.0),
             y: self.rng.gen_range(-1000.0..1000.0),

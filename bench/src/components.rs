@@ -94,6 +94,18 @@ pub struct Team {
 #[derive(Component, Clone)]
 pub struct Projectile;
 
+/// A player marker
+#[derive(Component, Clone)]
+pub struct Player;
+
+/// A NPC marker
+#[derive(Component, Clone)]
+pub struct Npc;
+
+/// A static marker
+#[derive(Component, Clone)]
+pub struct Static;
+
 // =============================================================================
 // Particle System Components
 // =============================================================================

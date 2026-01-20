@@ -1,180 +1,89 @@
-use crate::{
-    all_tuples,
-    ecs::{
-        component::{self, Component},
-        storage::{Row, Table},
-    },
+use std::any::TypeId;
+
+use crate::ecs::{
+    component::{self, Component},
+    storage::{column::Column, Row, Table},
+    world,
 };
 
-/// A trait describing component values to be applied to an entity (table).
-/// The goal of this trait is to allow multiple ways to apply component values.
+/// Trait for values that can be written to a table column.
 ///
-/// Examples of value include: a single component type, a tuple of component types, or something
-/// hand created.
-pub trait Values: component::IntoSpec + 'static {
-    /// Apply the component values in this set to the given target. This takes ownership of self.
-    fn apply(self, target: &mut Table, row: Row);
+/// This unifies typed component writes and byte-based writes under a single interface,
+/// allowing both paths to use the same `Table::apply_column_write` method.
+///
+/// # Implementations
+///
+/// - `C: Component` - Zero-cost typed writes using compile-time type info
+/// - `ExtractedValue` - Byte-based writes for migrated component data
+pub trait ColumnWrite {
+    /// The `std::any::TypeId` for column lookup.
+    fn type_id(&self) -> TypeId;
+
+    /// Write self to the column at the given row.
+    ///
+    /// # Safety
+    /// Caller must ensure:
+    /// - Row is within column's reserved capacity
+    /// - The data matches the column's component type
+    unsafe fn write_to_column(self, column: &mut Column, row: Row);
 }
 
-/// Implement Set for single component types.
-impl<C: Component> Values for C {
+/// Typed components use zero-cost writes with compile-time type information.
+impl<C: Component> ColumnWrite for C {
+    #[inline]
+    fn type_id(&self) -> TypeId {
+        TypeId::of::<C>()
+    }
+
+    #[inline]
+    unsafe fn write_to_column(self, column: &mut Column, row: Row) {
+        // SAFETY: Caller guarantees row is valid and type matches
+        unsafe { column.write(row, self) }
+    }
+}
+
+/// A value extracted from a column during entity migration.
+///
+/// Contains both ID types to support different use cases:
+/// - `world_id`: For `Spec` creation and archetype matching
+/// - `type_id`: For column lookup during writes
+pub struct ExtractedValue {
+    /// ECS type ID (for Spec creation, archetype matching)
+    pub world_id: world::TypeId,
+    /// Rust type ID (for column lookup)
+    pub type_id: TypeId,
+    /// Raw component bytes
+    pub bytes: Vec<u8>,
+}
+
+impl ColumnWrite for ExtractedValue {
+    #[inline]
+    fn type_id(&self) -> TypeId {
+        self.type_id
+    }
+
+    #[inline]
+    unsafe fn write_to_column(self, column: &mut Column, row: Row) {
+        // SAFETY: Caller guarantees row is valid and bytes match column layout
+        unsafe { column.write_bytes(row, &self.bytes) }
+    }
+}
+
+/// Collection of extracted component values from a table row.
+///
+/// Used during entity migration to transfer component data between tables
+/// without dropping and recreating the values.
+pub type Extract = Vec<ExtractedValue>;
+
+impl component::Set for Extract {
+    fn as_spec(&self, _registry: &world::TypeRegistry) -> component::Spec {
+        // Use world_id for spec creation (archetype matching)
+        component::Spec::new(self.iter().map(|v| v.world_id).collect::<Vec<_>>())
+    }
+
     fn apply(self, target: &mut Table, row: Row) {
-        target.apply_value::<C>(row, self);
-    }
-}
-
-impl Values for () {
-    fn apply(self, _target: &mut Table, _row: Row) {
-        // No components to apply.
-    }
-}
-
-/// Implement Set for tuples of component types.
-macro_rules! tuple_set {
-    ($($name: ident),*) => {
-        impl<$($name: Values),*> Values for ($($name,)*) {
-
-            /// Apply each component in the tuple to the target.
-            fn apply(self,  target: &mut Table, row: Row) {
-                 #[allow(non_snake_case)]
-                let ( $($name,)* ) = self;
-                 #[allow(non_snake_case)]
-                $(<$name as Values>::apply($name, target, row);)*
-            }
+        for value in self {
+            target.apply_column_write(row, value);
         }
-    }
-}
-
-// Implement the tuple Set for all tuples up to 26 elements.
-all_tuples!(tuple_set);
-
-#[cfg(test)]
-mod tests {
-
-    #[cfg(test)]
-    use crate::ecs::{storage::table, world};
-    use rusty_macros::Component;
-
-    use super::*;
-
-    #[derive(Component, Debug, PartialEq)]
-    struct Component1 {
-        value: u32,
-    }
-
-    #[derive(Component, Debug, PartialEq)]
-    struct Component2 {
-        value: u32,
-    }
-
-    #[derive(Component, Debug, PartialEq)]
-    struct Component3 {
-        value: u32,
-    }
-
-    #[test]
-    fn test_single_component_set() {
-        // Given
-        let registry = world::TypeRegistry::new();
-        registry.register_component::<Component1>();
-
-        // When
-        let mut table = Table::new(
-            table::Id::new(0),
-            &[registry.get_info_of::<Component1>().unwrap()],
-        );
-
-        let comp = Component1 { value: 42 };
-        table.get_column_mut::<Component1>().unwrap().reserve(1);
-
-        // When
-        comp.apply(&mut table, 0.into());
-        unsafe { table.get_column_mut::<Component1>().unwrap().set_len(1) };
-
-        // Then
-        let value = unsafe { table.get::<Component1>(0.into()) };
-        assert_eq!(value, Some(&Component1 { value: 42 }));
-    }
-
-    #[test]
-    fn test_tuple_component_set() {
-        // Given
-        let registry = world::TypeRegistry::new();
-        registry.register_component::<Component1>();
-        registry.register_component::<Component2>();
-        registry.register_component::<Component3>();
-
-        // When
-        let mut table = Table::new(
-            table::Id::new(0),
-            &[
-                registry.get_info_of::<Component1>().unwrap(),
-                registry.get_info_of::<Component2>().unwrap(),
-                registry.get_info_of::<Component3>().unwrap(),
-            ],
-        );
-
-        let comp1 = Component1 { value: 42 };
-        let comp2 = Component2 { value: 67 };
-        let comp3 = Component3 { value: 99 };
-
-        table.get_column_mut::<Component1>().unwrap().reserve(1);
-        table.get_column_mut::<Component2>().unwrap().reserve(1);
-        table.get_column_mut::<Component3>().unwrap().reserve(1);
-
-        // When
-        (comp1, comp2, comp3).apply(&mut table, 0.into());
-        unsafe { table.get_column_mut::<Component1>().unwrap().set_len(1) };
-        unsafe { table.get_column_mut::<Component2>().unwrap().set_len(1) };
-        unsafe { table.get_column_mut::<Component3>().unwrap().set_len(1) };
-
-        // Then
-        let value = unsafe { table.get::<Component1>(0.into()) };
-        assert_eq!(value, Some(&Component1 { value: 42 }));
-        let value = unsafe { table.get::<Component2>(0.into()) };
-        assert_eq!(value, Some(&Component2 { value: 67 }));
-        let value = unsafe { table.get::<Component3>(0.into()) };
-        assert_eq!(value, Some(&Component3 { value: 99 }));
-    }
-
-    #[test]
-    fn test_nested_tuple_component_set() {
-        // Given
-        let registry = world::TypeRegistry::new();
-        registry.register_component::<Component1>();
-        registry.register_component::<Component2>();
-        registry.register_component::<Component3>();
-
-        // When
-        let mut table = Table::new(
-            table::Id::new(0),
-            &[
-                registry.get_info_of::<Component1>().unwrap(),
-                registry.get_info_of::<Component2>().unwrap(),
-                registry.get_info_of::<Component3>().unwrap(),
-            ],
-        );
-
-        let comp1 = Component1 { value: 42 };
-        let comp2 = Component2 { value: 67 };
-        let comp3 = Component3 { value: 99 };
-
-        table.get_column_mut::<Component1>().unwrap().reserve(1);
-        table.get_column_mut::<Component2>().unwrap().reserve(1);
-        table.get_column_mut::<Component3>().unwrap().reserve(1);
-
-        // When
-        (comp1, (comp2, comp3)).apply(&mut table, 0.into());
-        unsafe { table.get_column_mut::<Component1>().unwrap().set_len(1) };
-        unsafe { table.get_column_mut::<Component2>().unwrap().set_len(1) };
-        unsafe { table.get_column_mut::<Component3>().unwrap().set_len(1) };
-
-        // Then
-        let value = unsafe { table.get::<Component1>(0.into()) };
-        assert_eq!(value, Some(&Component1 { value: 42 }));
-        let value = unsafe { table.get::<Component2>(0.into()) };
-        assert_eq!(value, Some(&Component2 { value: 67 }));
-        let value = unsafe { table.get::<Component3>(0.into()) };
-        assert_eq!(value, Some(&Component3 { value: 99 }));
     }
 }

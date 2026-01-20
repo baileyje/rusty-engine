@@ -594,7 +594,7 @@ mod tests {
     #[test]
     fn view_single_component_immutable() {
         // Given
-        let (mut table, mut allocator) = setup_table();
+        let (mut table, allocator) = setup_table();
         let entity = allocator.alloc();
 
         let row = table.add_entity(
@@ -619,7 +619,7 @@ mod tests {
     #[test]
     fn view_single_component_mutable() {
         // Given
-        let (mut table, mut allocator) = setup_table();
+        let (mut table, allocator) = setup_table();
         let entity = allocator.alloc();
 
         let row = table.add_entity(
@@ -650,7 +650,7 @@ mod tests {
     #[test]
     fn view_tuple_two_components() {
         // Given
-        let (mut table, mut allocator) = setup_table();
+        let (mut table, allocator) = setup_table();
         let entity = allocator.alloc();
 
         let row = table.add_entity(
@@ -678,7 +678,7 @@ mod tests {
     #[test]
     fn view_tuple_three_components() {
         // Given
-        let (mut table, mut allocator) = setup_table();
+        let (mut table, allocator) = setup_table();
         let entity = allocator.alloc();
 
         let row = table.add_entity(
@@ -705,7 +705,7 @@ mod tests {
     #[test]
     fn view_tuple_mixed_mutability() {
         // Given
-        let (mut table, mut allocator) = setup_table();
+        let (mut table, allocator) = setup_table();
         let entity = allocator.alloc();
 
         let row = table.add_entity(
@@ -755,7 +755,7 @@ mod tests {
     #[test]
     fn view_returns_none_for_unregistered_component() {
         // Given
-        let (mut table, mut allocator) = setup_table();
+        let (mut table, allocator) = setup_table();
 
         #[derive(Component)]
         struct UnregisteredComponent;
@@ -793,7 +793,7 @@ mod tests {
     #[test]
     fn view_mutable_from_immutable_table_returns_none() {
         // Given
-        let (mut table, mut allocator) = setup_table();
+        let (mut table, allocator) = setup_table();
         let entity = allocator.alloc();
 
         let row = table.add_entity(
@@ -815,39 +815,42 @@ mod tests {
     #[test]
     fn view_multiple_entities() {
         // Given
-        let (mut table, mut allocator) = setup_table();
+        let (mut table, allocator) = setup_table();
 
         let entity1 = allocator.alloc();
         let entity2 = allocator.alloc();
         let entity3 = allocator.alloc();
 
         let rows = table
-            .add_entities([
-                (
-                    entity1,
+            .add_entities(
+                [
                     (
-                        Position { x: 1.0, y: 2.0 },
-                        Velocity { dx: 0.5, dy: 0.3 },
-                        Health { value: 100 },
+                        entity1,
+                        (
+                            Position { x: 1.0, y: 2.0 },
+                            Velocity { dx: 0.5, dy: 0.3 },
+                            Health { value: 100 },
+                        ),
                     ),
-                ),
-                (
-                    entity2,
                     (
-                        Position { x: 3.0, y: 4.0 },
-                        Velocity { dx: -0.5, dy: 0.8 },
-                        Health { value: 75 },
+                        entity2,
+                        (
+                            Position { x: 3.0, y: 4.0 },
+                            Velocity { dx: -0.5, dy: 0.8 },
+                            Health { value: 75 },
+                        ),
                     ),
-                ),
-                (
-                    entity3,
                     (
-                        Position { x: 5.0, y: 6.0 },
-                        Velocity { dx: 0.0, dy: -0.2 },
-                        Health { value: 50 },
+                        entity3,
+                        (
+                            Position { x: 5.0, y: 6.0 },
+                            Velocity { dx: 0.0, dy: -0.2 },
+                            Health { value: 50 },
+                        ),
                     ),
-                ),
-            ])
+                ]
+                .into_iter(),
+            )
             .into_iter()
             .map(|(r, _)| r)
             .collect::<Vec<_>>();
@@ -903,7 +906,7 @@ mod tests {
             ],
         );
 
-        let mut allocator = entity::Allocator::new();
+        let allocator = entity::Allocator::new();
         let entity = allocator.alloc();
 
         let row = table.add_entity(entity, (Comp1(1), Comp2(2), Comp3(3), Comp4(4)));
@@ -950,7 +953,7 @@ mod tests {
             ],
         );
 
-        let mut allocator = entity::Allocator::new();
+        let allocator = entity::Allocator::new();
         let entity = allocator.alloc();
 
         let row = table.add_entity(entity, (Comp1(1), Comp2(2), Comp3(3), Comp4(4)));
@@ -972,7 +975,7 @@ mod tests {
     #[test]
     fn view_iter_single_component() {
         // Given
-        let (mut table, mut allocator) = setup_table();
+        let (mut table, allocator) = setup_table();
 
         // Add multiple entities
         for i in 0..5 {
@@ -1005,7 +1008,7 @@ mod tests {
     #[test]
     fn view_iter_multiple_components() {
         // Given
-        let (mut table, mut allocator) = setup_table();
+        let (mut table, allocator) = setup_table();
 
         // Add multiple entities
         for i in 0..3 {
@@ -1043,7 +1046,7 @@ mod tests {
     #[test]
     fn view_iter_mut_single_component() {
         // Given
-        let (mut table, mut allocator) = setup_table();
+        let (mut table, allocator) = setup_table();
 
         for i in 0..3 {
             let entity = allocator.alloc();
@@ -1072,7 +1075,7 @@ mod tests {
     #[test]
     fn view_iter_mut_mixed_mutability() {
         // Given
-        let (mut table, mut allocator) = setup_table();
+        let (mut table, allocator) = setup_table();
 
         for i in 0..3 {
             let entity = allocator.alloc();
@@ -1121,7 +1124,7 @@ mod tests {
     #[test]
     fn view_iter_size_hint() {
         // Given
-        let (mut table, mut allocator) = setup_table();
+        let (mut table, allocator) = setup_table();
 
         for _ in 0..10 {
             let entity = allocator.alloc();
@@ -1146,7 +1149,7 @@ mod tests {
     #[test]
     fn view_iter_exact_size() {
         // Given
-        let (mut table, mut allocator) = setup_table();
+        let (mut table, allocator) = setup_table();
 
         for _ in 0..5 {
             let entity = allocator.alloc();
@@ -1174,7 +1177,7 @@ mod tests {
     #[test]
     fn view_iter_mut_exact_size() {
         // Given
-        let (mut table, mut allocator) = setup_table();
+        let (mut table, allocator) = setup_table();
 
         for _ in 0..5 {
             let entity = allocator.alloc();
@@ -1202,7 +1205,7 @@ mod tests {
     #[test]
     fn view_iter_physics_pattern() {
         // Given - simulate a physics update pattern
-        let (mut table, mut allocator) = setup_table();
+        let (mut table, allocator) = setup_table();
 
         for i in 0..3 {
             let entity = allocator.alloc();
@@ -1240,7 +1243,7 @@ mod tests {
         // This test verifies that creating an iterator with duplicate mutable
         // components is now caught and panics at runtime.
 
-        let (mut table, mut allocator) = setup_table();
+        let (mut table, allocator) = setup_table();
         let entity = allocator.alloc();
 
         table.add_entity(
@@ -1265,7 +1268,7 @@ mod tests {
         // This test verifies that having the same component both immutable
         // and mutable is NOT allowed (also creates aliasing).
 
-        let (mut table, mut allocator) = setup_table();
+        let (mut table, allocator) = setup_table();
         let entity = allocator.alloc();
 
         table.add_entity(
@@ -1288,7 +1291,7 @@ mod tests {
     fn view_multiple_different_mutable_components_ok() {
         // This test verifies that having multiple DIFFERENT mutable components is fine
 
-        let (mut table, mut allocator) = setup_table();
+        let (mut table, allocator) = setup_table();
         let entity = allocator.alloc();
 
         table.add_entity(

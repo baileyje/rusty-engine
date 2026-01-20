@@ -155,7 +155,7 @@
 //! // Setup
 //! let mut storage = Storage::new();
 //! let registry = world::TypeRegistry::new();
-//! let mut allocator = entity::Allocator::new();
+//! let allocator = entity::Allocator::new();
 //!
 //! // Spawn an entity with components
 //! let entity = allocator.alloc();
@@ -298,11 +298,10 @@ pub use location::Location;
 pub use row::Row;
 pub use table::Id as TableId;
 pub use table::Table;
-pub use value::Values;
 
 use crate::ecs::entity::Entity;
 use crate::ecs::{
-    component::{self},
+    component::{self, Set},
     storage::unique::Uniques,
     world,
 };
@@ -340,7 +339,7 @@ pub mod view;
 /// ```rust,ignore
 /// let mut storage = Storage::new();
 /// let registry = world::TypeRegistry::new();
-/// let mut allocator = entity::Allocator::new();
+/// let allocator = entity::Allocator::new();
 ///
 /// // Spawn entity
 /// let entity = allocator.alloc();
@@ -436,24 +435,26 @@ impl Storage {
         &mut self.uniques
     }
 
-    /// Initial non-optimized version of spawning multiple entities at once.
-    ///
-    /// Eventually this will optimize to adding multiple entities in a batch to the table.
-    pub fn spawn_entities<V: Values>(
+    /// Spawn multiple entities sharing the same component types in a batch.
+    pub fn spawn_entities<S: component::Set>(
         &mut self,
-        entities: impl IntoIterator<Item = (Entity, V)>,
+        entities: impl Iterator<Item = (Entity, S)>,
         types: &world::TypeRegistry,
     ) {
-        // Construct the component specification for this set of components.
-        // This will register any components not yet registered.
-        let spec = <V>::into_spec(types);
-
+        // If there is nothing to add, return early.
+        if entities.size_hint().0 == 0 {
+            return;
+        }
+        // Convert to peekable Iterator to grab spec from first item.
+        let mut peekable = entities.peekable();
+        // Get the spec for the values.
+        let spec = peekable.peek().map(|(_, v)| v.as_spec(types)).unwrap();
         // Get the archetype and table for this component spec, creating them if they don't exist.
         let (archetype_id, table_id) = self.get_storage_target(&spec, types);
         let table = self.get_table_mut(table_id);
         // Add rows to the table and collect their locations for entity registration.
         table
-            .add_entities(entities)
+            .add_entities(peekable)
             .into_iter()
             .for_each(|(row, entity)| {
                 // Mark the entity as spawned in the world.
@@ -463,13 +464,22 @@ impl Storage {
     }
 
     /// Spawn a new entity with the given set of components.
-    pub fn spawn_entity<V: Values>(
+    pub fn spawn_entity<S: component::Set>(
         &mut self,
         entity: Entity,
-        values: V,
+        values: S,
         types: &world::TypeRegistry,
     ) {
-        self.spawn_entities([(entity, values)], types);
+        // Get the spec for this values.
+        let spec = values.as_spec(types);
+        // Get the archetype and table for this component spec, creating them if they don't exist.
+        let (archetype_id, table_id) = self.get_storage_target(&spec, types);
+        let table = self.get_table_mut(table_id);
+        // Add rows to the table and collect their locations for entity registration.
+        let row = table.add_entity(entity, values);
+        // Mark the entity as spawned in the world.
+        self.entities
+            .spawn_at(entity, Location::new(archetype_id, table_id, row));
     }
 
     pub fn despawn_entity(&mut self, entity: Entity) {
@@ -508,10 +518,10 @@ impl Storage {
     /// // Add multiple components at once
     /// storage.add_components(entity, (Velocity { dx: 1.0, dy: 0.0 }, Health { hp: 100 }), &registry);
     /// ```
-    pub fn add_components<V: Values>(
+    pub fn add_components<S: component::Set>(
         &mut self,
         entity: Entity,
-        components: V,
+        components: S,
         types: &world::TypeRegistry,
     ) -> bool {
         // Check if entity is spawned
@@ -521,7 +531,7 @@ impl Storage {
         };
 
         // Get the specification for columns to add
-        let add_spec = V::into_spec(types);
+        let add_spec = components.as_spec(types);
 
         // No reason to process an empty add
         if add_spec.is_empty() {
@@ -613,6 +623,66 @@ impl Storage {
         true
     }
 
+    /// Remove one or more components from an existing entity by spec
+    ///
+    /// This migrates the entity to a new archetype that excludes the specified components.
+    /// Accepts either a single component type or a tuple of component types.
+    ///
+    /// # Returns
+    /// - `true` if the components were removed
+    /// - `false` if:
+    ///   - The entity doesn't exist
+    ///   - The entity doesn't have ALL of the specified components
+    ///   - The component set is empty
+    ///
+    /// # Examples
+    /// ```rust,ignore
+    /// // Remove single component
+    /// storage.remove_components::<Velocity>(entity, &registry);
+    ///
+    /// // Remove multiple components at once
+    /// storage.remove_components::<(Velocity, Health)>(entity, &registry);
+    /// ```
+    pub fn remove_components_dynamic(
+        &mut self,
+        entity: Entity,
+        spec: &component::Spec,
+        types: &world::TypeRegistry,
+    ) -> bool {
+        // Check if entity is spawned
+        let source = match self.entities.location(entity) {
+            Some(loc) => loc,
+            None => return false,
+        };
+
+        // No reason to process an empty remove
+        if spec.is_empty() {
+            return false;
+        }
+
+        // Get the current archetype's spec
+        let source_archetype = self
+            .archetypes()
+            .get(source.archetype_id())
+            .expect("entity location references valid archetype");
+
+        // Check if entity has this component
+        if !source_archetype.components().contains_all(spec) {
+            return false;
+        }
+
+        // Execute the row migration between the two tables.
+        self.execute_migration(
+            entity,
+            source,
+            source_archetype.components().difference(spec),
+            (),
+            types,
+        );
+
+        true
+    }
+
     /// Execute a migration - move an entity from one archetype/table to another.
     ///
     /// This is the core operation for `add_components` and `remove_components`. It safely
@@ -632,19 +702,19 @@ impl Storage {
     /// - Removed components (in source but not target) are properly dropped
     /// - Swap-remove in source table may move another entity; its location is updated
     /// - The migrated entity's location is updated to point to target table
-    fn execute_migration<V: Values>(
+    fn execute_migration<S: component::Set>(
         &mut self,
         entity: Entity,
         source: Location,
         target: component::Spec,
-        additions: V,
+        additions: S,
         types: &world::TypeRegistry,
     ) {
         // Debug: Verify that shared components + additions = target spec
         // This ensures add_entity_from_extract will write to all columns
         #[cfg(debug_assertions)]
         {
-            let additions_spec = V::into_spec(types);
+            let additions_spec = additions.as_spec(types);
             let source_spec = self
                 .archetypes
                 .get(source.archetype_id())
@@ -686,7 +756,7 @@ impl Storage {
         // Step 2: Add to target table
         let new_row = self
             .get_table_mut(target_table_id)
-            .add_entity_from_extract(entity, extract, additions);
+            .add_entity(entity, extract.with(additions));
 
         // Update the migrated entity's location
         self.entities.set_location(
@@ -865,7 +935,7 @@ mod tests {
         // Given
         let mut storage = Storage::new();
         let registry = world::TypeRegistry::new();
-        let mut allocator = crate::ecs::entity::Allocator::new();
+        let allocator = crate::ecs::entity::Allocator::new();
         let entity = allocator.alloc();
 
         // When
@@ -888,7 +958,7 @@ mod tests {
         // Given
         let mut storage = Storage::new();
         let registry = world::TypeRegistry::new();
-        let mut allocator = crate::ecs::entity::Allocator::new();
+        let allocator = crate::ecs::entity::Allocator::new();
 
         // When
         let e1 = allocator.alloc();
@@ -913,7 +983,7 @@ mod tests {
         // Given
         let mut storage = Storage::new();
         let registry = world::TypeRegistry::new();
-        let mut allocator = crate::ecs::entity::Allocator::new();
+        let allocator = crate::ecs::entity::Allocator::new();
 
         // When
         let e1 = allocator.alloc();
@@ -924,7 +994,8 @@ mod tests {
                 (e1, Position { x: 1.0, y: 1.0 }),
                 (e2, Position { x: 2.0, y: 2.0 }),
                 (e3, Position { x: 3.0, y: 3.0 }),
-            ],
+            ]
+            .into_iter(),
             &registry,
         );
 
@@ -943,7 +1014,7 @@ mod tests {
         // Given
         let mut storage = Storage::new();
         let registry = world::TypeRegistry::new();
-        let mut allocator = crate::ecs::entity::Allocator::new();
+        let allocator = crate::ecs::entity::Allocator::new();
         let entity = allocator.alloc();
         storage.spawn_entity(entity, Position { x: 1.0, y: 2.0 }, &registry);
 
@@ -960,7 +1031,7 @@ mod tests {
         // Given
         let mut storage = Storage::new();
         let registry = world::TypeRegistry::new();
-        let mut allocator = crate::ecs::entity::Allocator::new();
+        let allocator = crate::ecs::entity::Allocator::new();
 
         let e1 = allocator.alloc();
         let e2 = allocator.alloc();
@@ -986,7 +1057,7 @@ mod tests {
     fn despawn_nonexistent_entity_is_noop() {
         // Given
         let mut storage = Storage::new();
-        let mut allocator = crate::ecs::entity::Allocator::new();
+        let allocator = crate::ecs::entity::Allocator::new();
         let entity = allocator.alloc();
 
         // When - despawn entity that was never spawned
@@ -1003,7 +1074,7 @@ mod tests {
         // Given
         let mut storage = Storage::new();
         let registry = world::TypeRegistry::new();
-        let mut allocator = crate::ecs::entity::Allocator::new();
+        let allocator = crate::ecs::entity::Allocator::new();
         let entity = allocator.alloc();
         storage.spawn_entity(entity, Position { x: 1.0, y: 2.0 }, &registry);
 
@@ -1032,7 +1103,7 @@ mod tests {
         // Given
         let mut storage = Storage::new();
         let registry = world::TypeRegistry::new();
-        let mut allocator = crate::ecs::entity::Allocator::new();
+        let allocator = crate::ecs::entity::Allocator::new();
         let entity = allocator.alloc();
         storage.spawn_entity(entity, Position { x: 1.0, y: 2.0 }, &registry);
 
@@ -1055,7 +1126,7 @@ mod tests {
         // Given
         let mut storage = Storage::new();
         let registry = world::TypeRegistry::new();
-        let mut allocator = crate::ecs::entity::Allocator::new();
+        let allocator = crate::ecs::entity::Allocator::new();
         let entity = allocator.alloc();
 
         // When
@@ -1070,7 +1141,7 @@ mod tests {
         // Given
         let mut storage = Storage::new();
         let registry = world::TypeRegistry::new();
-        let mut allocator = crate::ecs::entity::Allocator::new();
+        let allocator = crate::ecs::entity::Allocator::new();
         let entity = allocator.alloc();
         storage.spawn_entity(
             entity,
@@ -1101,7 +1172,7 @@ mod tests {
         // Given
         let mut storage = Storage::new();
         let registry = world::TypeRegistry::new();
-        let mut allocator = crate::ecs::entity::Allocator::new();
+        let allocator = crate::ecs::entity::Allocator::new();
         let entity = allocator.alloc();
         storage.spawn_entity(entity, Position { x: 1.0, y: 2.0 }, &registry);
 
@@ -1117,7 +1188,7 @@ mod tests {
         // Given
         let mut storage = Storage::new();
         let registry = world::TypeRegistry::new();
-        let mut allocator = crate::ecs::entity::Allocator::new();
+        let allocator = crate::ecs::entity::Allocator::new();
 
         // Spawn two entities with same archetype
         let e1 = allocator.alloc();
@@ -1149,7 +1220,7 @@ mod tests {
         // Given - only one entity in source table
         let mut storage = Storage::new();
         let registry = world::TypeRegistry::new();
-        let mut allocator = crate::ecs::entity::Allocator::new();
+        let allocator = crate::ecs::entity::Allocator::new();
         let entity = allocator.alloc();
         storage.spawn_entity(entity, Position { x: 1.0, y: 2.0 }, &registry);
 
@@ -1170,7 +1241,7 @@ mod tests {
         // Given
         let mut storage = Storage::new();
         let registry = world::TypeRegistry::new();
-        let mut allocator = crate::ecs::entity::Allocator::new();
+        let allocator = crate::ecs::entity::Allocator::new();
         let entity = allocator.alloc();
         storage.spawn_entity(entity, Position { x: 1.0, y: 2.0 }, &registry);
 
@@ -1206,7 +1277,7 @@ mod tests {
         // Given
         let mut storage = Storage::new();
         let registry = world::TypeRegistry::new();
-        let mut allocator = crate::ecs::entity::Allocator::new();
+        let allocator = crate::ecs::entity::Allocator::new();
         let entity = allocator.alloc();
         let counter = Arc::new(AtomicUsize::new(0));
 
@@ -1243,7 +1314,7 @@ mod tests {
         // Given
         let mut storage = Storage::new();
         let registry = world::TypeRegistry::new();
-        let mut allocator = crate::ecs::entity::Allocator::new();
+        let allocator = crate::ecs::entity::Allocator::new();
         let entity = allocator.alloc();
         let counter = Arc::new(AtomicUsize::new(0));
 
@@ -1273,7 +1344,7 @@ mod tests {
         // Given
         let mut storage = Storage::new();
         let registry = world::TypeRegistry::new();
-        let mut allocator = crate::ecs::entity::Allocator::new();
+        let allocator = crate::ecs::entity::Allocator::new();
         let entity = allocator.alloc();
         storage.spawn_entity(entity, Position { x: 1.0, y: 2.0 }, &registry);
 
@@ -1308,7 +1379,7 @@ mod tests {
         // Given
         let mut storage = Storage::new();
         let registry = world::TypeRegistry::new();
-        let mut allocator = crate::ecs::entity::Allocator::new();
+        let allocator = crate::ecs::entity::Allocator::new();
         let entity = allocator.alloc();
         // Entity already has Velocity
         storage.spawn_entity(
@@ -1342,7 +1413,7 @@ mod tests {
         // Given
         let mut storage = Storage::new();
         let registry = world::TypeRegistry::new();
-        let mut allocator = crate::ecs::entity::Allocator::new();
+        let allocator = crate::ecs::entity::Allocator::new();
         let entity = allocator.alloc();
         storage.spawn_entity(entity, Position { x: 1.0, y: 2.0 }, &registry);
 
@@ -1361,7 +1432,7 @@ mod tests {
 
         let mut storage = Storage::new();
         let registry = world::TypeRegistry::new();
-        let mut allocator = crate::ecs::entity::Allocator::new();
+        let allocator = crate::ecs::entity::Allocator::new();
         let entity = allocator.alloc();
         storage.spawn_entity(entity, Position { x: 1.0, y: 2.0 }, &registry);
 
@@ -1392,7 +1463,7 @@ mod tests {
         // Given
         let mut storage = Storage::new();
         let registry = world::TypeRegistry::new();
-        let mut allocator = crate::ecs::entity::Allocator::new();
+        let allocator = crate::ecs::entity::Allocator::new();
         let entity = allocator.alloc();
         storage.spawn_entity(
             entity,
@@ -1426,7 +1497,7 @@ mod tests {
         // Given
         let mut storage = Storage::new();
         let registry = world::TypeRegistry::new();
-        let mut allocator = crate::ecs::entity::Allocator::new();
+        let allocator = crate::ecs::entity::Allocator::new();
         let entity = allocator.alloc();
         // Entity has Position and Velocity, but NOT Health
         storage.spawn_entity(
@@ -1454,7 +1525,7 @@ mod tests {
         // Given
         let mut storage = Storage::new();
         let registry = world::TypeRegistry::new();
-        let mut allocator = crate::ecs::entity::Allocator::new();
+        let allocator = crate::ecs::entity::Allocator::new();
         let entity = allocator.alloc();
         storage.spawn_entity(entity, Position { x: 1.0, y: 2.0 }, &registry);
 
@@ -1473,7 +1544,7 @@ mod tests {
 
         let mut storage = Storage::new();
         let registry = world::TypeRegistry::new();
-        let mut allocator = crate::ecs::entity::Allocator::new();
+        let allocator = crate::ecs::entity::Allocator::new();
         let entity = allocator.alloc();
         storage.spawn_entity(
             entity,
@@ -1507,7 +1578,7 @@ mod tests {
         // Given
         let mut storage = Storage::new();
         let registry = world::TypeRegistry::new();
-        let mut allocator = crate::ecs::entity::Allocator::new();
+        let allocator = crate::ecs::entity::Allocator::new();
         let entity = allocator.alloc();
         storage.spawn_entity(entity, Position { x: 1.0, y: 2.0 }, &registry);
 
@@ -1553,7 +1624,7 @@ mod tests {
         // Given
         let mut storage = Storage::new();
         let registry = world::TypeRegistry::new();
-        let mut allocator = crate::ecs::entity::Allocator::new();
+        let allocator = crate::ecs::entity::Allocator::new();
         let entity = allocator.alloc();
         let counter1 = Arc::new(AtomicUsize::new(0));
         let counter2 = Arc::new(AtomicUsize::new(0));
@@ -1597,7 +1668,7 @@ mod tests {
         // Given
         let mut storage = Storage::new();
         let registry = world::TypeRegistry::new();
-        let mut allocator = crate::ecs::entity::Allocator::new();
+        let allocator = crate::ecs::entity::Allocator::new();
         let entity = allocator.alloc();
         let counter = Arc::new(AtomicUsize::new(0));
 
@@ -1629,7 +1700,7 @@ mod tests {
         // Given
         let mut storage = Storage::new();
         let registry = world::TypeRegistry::new();
-        let mut allocator = crate::ecs::entity::Allocator::new();
+        let allocator = crate::ecs::entity::Allocator::new();
 
         // Spawn two entities with same archetype
         let e1 = allocator.alloc();
