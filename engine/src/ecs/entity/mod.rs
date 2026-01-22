@@ -269,7 +269,6 @@ impl Allocator {
     pub fn alloc(&self) -> Entity {
         // Try to reuse from dead pool first
         if let Some(id) = self.dead_pool.pop() {
-            println!("Got from dead...");
             return Entity::new_with_generation(id, self.generations.get(id));
         }
 

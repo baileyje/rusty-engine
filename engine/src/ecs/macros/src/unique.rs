@@ -13,7 +13,7 @@ pub fn derive_unique(input: TokenStream) -> TokenStream {
     // Inside the crate, this works because of `extern crate self as rusty_engine;` in lib.rs
     // Outside the crate, this naturally resolves to the rusty_engine dependency.
     TokenStream::from(quote! {
-        impl ::rusty_engine::ecs::unique::Unique for #struct_name {
+        impl ::rusty_engine::ecs::Unique for #struct_name {
         }
     })
 }

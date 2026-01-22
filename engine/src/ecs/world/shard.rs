@@ -1,7 +1,7 @@
 use std::marker::PhantomData;
 
 use crate::ecs::{
-    entity, query, storage, unique,
+    entity, event, query, storage, unique,
     world::{TypeRegistry, World, access::AccessGrant},
 };
 
@@ -184,6 +184,14 @@ impl<'w> Shard<'w> {
     #[inline]
     pub fn get_unique_mut<U: unique::Unique>(&mut self) -> Option<&mut U> {
         self.storage_mut().uniques_mut().get_mut::<U>()
+    }
+
+    pub fn events(&self) -> &event::Broker {
+        unsafe { (*self.world).events() }
+    }
+
+    pub fn events_mut(&mut self) -> &mut event::Broker {
+        unsafe { (*self.world).events_mut() }
     }
 }
 

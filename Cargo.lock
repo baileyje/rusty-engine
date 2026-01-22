@@ -815,6 +815,7 @@ name = "rusty_engine"
 version = "0.0.1"
 dependencies = [
  "crossbeam",
+ "crossterm 0.29.0",
  "dashmap",
  "fixedbitset",
  "log",

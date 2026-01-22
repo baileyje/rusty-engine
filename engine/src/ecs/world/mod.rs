@@ -41,6 +41,7 @@ use std::marker::PhantomData;
 use crate::ecs::{
     component::{self},
     entity::{self, Entity},
+    event,
     query::{self},
     storage::{self},
     unique,
@@ -91,6 +92,9 @@ pub struct World {
     /// The current access grants for the world.
     active_grants: RefCell<GrantTracker>,
 
+    /// The event broker for the world.
+    events: event::Broker,
+
     /// Marker to make World !Send. World must stay on the main thread.
     _not_send: PhantomData<*mut ()>,
 }
@@ -103,6 +107,7 @@ impl World {
             resources: TypeRegistry::default(),
             storage: storage::Storage::default(),
             active_grants: RefCell::new(GrantTracker::default()),
+            events: event::Broker::new(),
             _not_send: PhantomData,
         }
     }
@@ -130,6 +135,16 @@ impl World {
     #[inline]
     pub fn storage_mut(&mut self) -> &mut storage::Storage {
         &mut self.storage
+    }
+
+    #[inline]
+    pub fn events(&self) -> &event::Broker {
+        &self.events
+    }
+
+    #[inline]
+    pub fn events_mut(&mut self) -> &mut event::Broker {
+        &mut self.events
     }
 
     #[inline]
@@ -182,6 +197,8 @@ impl World {
     pub fn despawn(&mut self, entity: entity::Entity) {
         // Delegate to storage to despawn the entity.
         self.storage.despawn_entity(entity);
+        // Free the entity ID for reuse.
+        self.entity_allocator.free(entity);
     }
 
     /// Add a component to an existing entity.
@@ -312,6 +329,23 @@ impl World {
         self.storage.uniques_mut().remove::<U>()
     }
 
+    /// Register a new event type with default capacity (1024).
+    pub fn register_event<E: event::Event>(&mut self) {
+        self.events.register::<E>();
+        self.resources.register_event::<E>();
+    }
+
+    /// Register a new event type with specified capacity.
+    pub fn register_event_with_capacity<E: event::Event>(&mut self, capacity: usize) {
+        self.events.register_with_capacity::<E>(capacity);
+        self.resources.register_event::<E>();
+    }
+
+    /// Swap all event buffers. Call once per frame.
+    pub fn swap_event_buffers(&mut self) {
+        self.events.swap_all();
+    }
+
     /// Create a shard with the requested access.
     ///
     /// Takes `&self` to allow multiple shards to coexist.
@@ -341,12 +375,11 @@ impl World {
     }
 }
 
-// World is intentionally !Send and !Sync:
-// - !Send: World must stay on the main thread where it was created
-// - !Sync: RefCell<GrantTracker> is !Sync, and we don't want &World shared across threads
-//
-// The _not_send marker ensures !Send (RefCell is Send, so we need the marker).
-// RefCell naturally provides !Sync.
+impl Default for World {
+    fn default() -> Self {
+        Self::new(Id(0))
+    }
+}
 
 #[cfg(test)]
 mod test {

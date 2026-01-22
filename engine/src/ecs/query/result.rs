@@ -121,15 +121,21 @@ impl<'w, D: Data> Result<'w, D> {
     pub fn new(source: &'w mut dyn DataSource, table_ids: Vec<storage::TableId>) -> Self {
         // Pre-calculate the total length for ExactSizeIterator support.
         let mut len = 0;
+        let mut valid_table_ids: Vec<_> = Vec::with_capacity(table_ids.len());
         for table_id in table_ids.iter() {
             // Safety: We know this is a valid table as we got this ID from the registry
             // before creating this result.
-            len += source.table(*table_id).entities().len();
+            let table_len = source.table(*table_id).len();
+            if table_len == 0 {
+                continue;
+            }
+            valid_table_ids.push(*table_id);
+            len += table_len;
         }
 
         Self {
             source,
-            table_ids,
+            table_ids: valid_table_ids,
             table_index: 0,
             row_index: 0,
             len,
@@ -177,6 +183,7 @@ impl<'w, D: Data> Iterator for Result<'w, D> {
     fn next(&mut self) -> Option<Self::Item> {
         if self.index < self.len {
             let table = self.source.table(self.table_ids[self.table_index]);
+
             let row = storage::Row::new(self.row_index);
             let entity = table.entity(row)?;
 

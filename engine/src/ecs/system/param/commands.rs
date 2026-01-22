@@ -241,4 +241,6 @@ mod tests {
         // When
         unsafe { <Commands>::extract(&mut shard, &mut state, &command_buffer) };
     }
+
+    // NOTE: Full testing of commands system parameters is done in the function system tests.
 }

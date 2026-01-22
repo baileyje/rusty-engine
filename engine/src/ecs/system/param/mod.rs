@@ -4,6 +4,7 @@
 //! without explicit lifetime parameters.
 
 mod commands;
+mod event;
 mod query;
 mod unique;
 mod world;
@@ -11,6 +12,7 @@ mod world;
 use crate::ecs::{system::CommandBuffer, world as ecs_world};
 
 pub use commands::Commands;
+pub use event::{Consumer, Producer};
 pub use query::Query;
 pub use unique::{Uniq, UniqMut};
 
@@ -111,6 +113,11 @@ pub use unique::{Uniq, UniqMut};
 /// - [`UniqMut<U>`]: Mutable access to a global resource
 /// - `Option<Uniq<U>>`: Optional immutable resource (doesn't panic if missing)
 /// - `Option<UniqMut<U>>`: Optional mutable resource (doesn't panic if missing)
+///
+/// ## Events
+///
+/// - [`Producer<E>`]: An event producer for sending events of type `E`
+/// - [`Consumer<E>`]: An event consumer for receiving events of type `E`
 ///
 /// ## World Access
 ///

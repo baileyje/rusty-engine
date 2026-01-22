@@ -11,3 +11,7 @@ crossbeam = "0.8.4"
 rusty_macros = { path = "src/ecs/macros" }
 dashmap = "6.1.0"
 fixedbitset = "0.5"
+
+
+[dev-dependencies]
+crossterm = "0.29.0"

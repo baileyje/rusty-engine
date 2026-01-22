@@ -34,6 +34,7 @@ use std::{
     alloc::Layout,
     any::TypeId as StdTypeId,
     fmt,
+    marker::PhantomData,
     ptr::NonNull,
     sync::{
         RwLock,
@@ -43,7 +44,7 @@ use std::{
 
 use dashmap::DashMap;
 
-use crate::ecs::{component, unique};
+use crate::ecs::{component, event, unique};
 
 /// The kind of type registration.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -52,6 +53,10 @@ pub enum TypeKind {
     Component,
     /// A unique type (singleton, one instance per world).
     Unique,
+    /// A world event producer type. Unique to an event type.
+    EventProducer,
+    /// A world event consumer type. Unique to an event type.
+    EventConsumer,
 }
 
 impl fmt::Display for TypeKind {
@@ -59,9 +64,17 @@ impl fmt::Display for TypeKind {
         match self {
             TypeKind::Component => write!(f, "component"),
             TypeKind::Unique => write!(f, "unique"),
+            TypeKind::EventProducer => write!(f, "event producer"),
+            TypeKind::EventConsumer => write!(f, "event consumer"),
         }
     }
 }
+
+/// A marker type used to identify a resource access to a stable buffer for a specific event type.
+struct EventConsumerMarker<E: event::Event>(PhantomData<E>);
+
+/// A marker type used to identify a resource access to an active buffer for a specific event type.
+struct EventProducerMarker<E: event::Event>(PhantomData<E>);
 
 /// A unique identifier for a registered type.
 ///
@@ -186,13 +199,13 @@ impl TypeInfo {
 
 /// A thread-safe registry for all typed world data.
 ///
-/// The registry manages type IDs for both components and uniques, ensuring each type
+/// The registry manages type IDs for  components, uniques, and events, ensuring each type
 /// gets a single unique ID. This enables efficient access control using a single
-/// bitset pair rather than separate sets for components and uniques.
+/// bitset pair rather than separate sets for each.
 ///
 /// # Dual-Use Prevention
 ///
-/// A type cannot be registered as both a component and a unique. Attempting to do so
+/// A type cannot be registered as multiple resource types. Attempting to do so
 /// returns a [`DualUseError`]. This constraint enables the simplified access control
 /// model.
 pub struct TypeRegistry {
@@ -225,24 +238,41 @@ impl TypeRegistry {
 
     /// Register a type as a component.
     ///
-    /// Returns the type's ID, or an error if the type is already registered as a unique.
+    /// Returns the type's ID, or an error if the type is already registered as a unique or event.
     ///
     /// If the type is already registered as a component, returns the existing ID.
     ///
-    /// Panics if the type is already registered as a unique.
+    /// Panics if the type is already registered as a unique or event.
     pub fn register_component<C: component::Component>(&self) -> TypeId {
         self.register::<C>(TypeKind::Component)
     }
 
     /// Register a type as a unique.
     ///
-    /// Returns the type's ID, or an error if the type is already registered as a component.
+    /// Returns the type's ID, or an error if the type is already registered as a component or
+    /// event.
     ///
     /// If the type is already registered as a unique, returns the existing ID.
     ///
-    /// Panics if the type is already registered as a component.
+    /// Panics if the type is already registered as a component or event.
     pub fn register_unique<U: unique::Unique>(&self) -> TypeId {
         self.register::<U>(TypeKind::Unique)
+    }
+
+    /// Register a type as an event. This actually registers two types to respect the
+    /// consumer/producer resources for this event.
+    ///
+    /// Returns the type IDs, or an error if the type is already registered as a component or
+    /// unique.
+    ///
+    /// If either type is already registered for events, returns the existing IDs.
+    ///
+    /// Panics if the type is already registered as a component or unique.
+    pub fn register_event<E: event::Event>(&self) -> (TypeId, TypeId) {
+        (
+            self.register::<EventProducerMarker<E>>(TypeKind::EventProducer),
+            self.register::<EventConsumerMarker<E>>(TypeKind::EventConsumer),
+        )
     }
 
     /// Internal registration logic.
@@ -322,7 +352,7 @@ impl TypeRegistry {
 
     /// Get the ID for a type if registered as a component.
     ///
-    /// Returns `None` if not registered or registered as a unique.
+    /// Returns `None` if not registered or registered as another kind.
     #[inline]
     pub fn get_component<C: component::Component>(&self) -> Option<TypeId> {
         self.get_if_kind::<C>(TypeKind::Component)
@@ -330,10 +360,20 @@ impl TypeRegistry {
 
     /// Get the ID for a type if registered as a unique.
     ///
-    /// Returns `None` if not registered or registered as a component.
+    /// Returns `None` if not registered or registered as another kind.
     #[inline]
     pub fn get_unique<U: unique::Unique>(&self) -> Option<TypeId> {
         self.get_if_kind::<U>(TypeKind::Unique)
+    }
+
+    /// Get the producer and consumer IDs for an event type if registered as an  event.
+    ///
+    /// Returns `None` if not registered or registered as another kind.
+    #[inline]
+    pub fn get_event<E: event::Event>(&self) -> Option<(TypeId, TypeId)> {
+        let producer = self.get_if_kind::<EventProducerMarker<E>>(TypeKind::EventProducer)?;
+        let consumer = self.get_if_kind::<EventConsumerMarker<E>>(TypeKind::EventConsumer)?;
+        Some((producer, consumer))
     }
 
     /// Get the ID for a type if it matches the specified kind.
@@ -391,7 +431,7 @@ impl TypeRegistry {
 
 #[cfg(test)]
 mod tests {
-    use rusty_macros::{Component, Unique};
+    use rusty_macros::{Component, Event, Unique};
 
     use super::*;
     use std::sync::Arc;
@@ -418,6 +458,9 @@ mod tests {
         #[allow(dead_code)]
         elapsed: f32,
     }
+
+    #[derive(Event, Debug, Clone)]
+    struct GameOver;
 
     // ==================== Basic Registration ====================
 
@@ -448,6 +491,18 @@ mod tests {
     }
 
     #[test]
+    fn register_event() {
+        // Given
+        let registry = TypeRegistry::new();
+
+        // When
+        let (pid, cid) = registry.register_event::<GameOver>();
+
+        // Then
+        assert_eq!(registry.get_event::<GameOver>(), Some((pid, cid)));
+    }
+
+    #[test]
     fn register_same_component_twice_returns_same_id() {
         // Given
         let registry = TypeRegistry::new();
@@ -466,6 +521,19 @@ mod tests {
         // When
         let id1 = registry.register_unique::<GameTime>();
         let id2 = registry.register_unique::<GameTime>();
+
+        // Then
+        assert_eq!(id1, id2);
+    }
+
+    #[test]
+    fn register_same_event_twice_returns_same_id() {
+        // Given
+        let registry = TypeRegistry::new();
+
+        // When
+        let id1 = registry.register_event::<GameOver>();
+        let id2 = registry.register_event::<GameOver>();
 
         // Then
         assert_eq!(id1, id2);

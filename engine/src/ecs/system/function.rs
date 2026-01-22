@@ -367,11 +367,11 @@ mod tests {
 
     use crate::ecs::{
         entity,
-        system::{CommandBuffer, Commands, IntoSystem, param::Query},
+        system::{CommandBuffer, Commands, Consumer, IntoSystem, Producer, param::Query},
         world,
     };
 
-    use rusty_macros::Component;
+    use rusty_macros::{Component, Event};
 
     #[derive(Component)]
     struct Comp1 {
@@ -775,4 +775,67 @@ mod tests {
         let comps: Vec<&Comp1> = world.query::<&Comp1>().collect();
         assert_eq!(comps.len(), 2);
     }
+
+    #[derive(Event, Debug, Clone)]
+    struct TestEvent;
+
+    #[test]
+    fn required_access_event_consumer_system() {
+        // Given
+        fn my_system(_events: Consumer<TestEvent>) {}
+
+        let mut world = world::World::new(world::Id::new(0));
+
+        let system = my_system.into_system(&mut world);
+
+        // When
+        let access = system.required_access();
+
+        // Then
+        assert_eq!(
+            *access,
+            world::AccessRequest::to_resources(
+                &[world.resources().get_event::<TestEvent>().unwrap().1],
+                &[]
+            )
+        );
+    }
+
+    #[test]
+    fn required_access_event_producer_system() {
+        // Given
+        fn my_system(_events: Producer<TestEvent>) {}
+
+        let mut world = world::World::new(world::Id::new(0));
+
+        let system = my_system.into_system(&mut world);
+
+        // When
+        let access = system.required_access();
+
+        // Then
+        assert_eq!(
+            *access,
+            world::AccessRequest::to_resources(
+                &[],
+                &[world.resources().get_event::<TestEvent>().unwrap().0],
+            )
+        );
+    }
+    //
+    // #[test]
+    // fn event_producer_consumer_system() {
+    //     // Given
+    //     fn producer_system(_events: Producer<TestEvent>) {}
+    //     fn consumer_system(_events: Consumer<TestEvent>) {}
+    //
+    //     let mut world = world::World::new(world::Id::new(0));
+    //     world.register_event::<TestEvent>();
+    //
+    //     let producer_system = producer_system.into_system(&mut world);
+    //     let consumer_system = consumer_system.into_system(&mut world);
+    //
+    //     // When
+    //     run_parallel();
+    // }
 }
