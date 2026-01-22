@@ -366,6 +366,7 @@ where
 mod tests {
 
     use crate::ecs::{
+        entity,
         system::{CommandBuffer, Commands, IntoSystem, param::Query},
         world,
     };
@@ -381,61 +382,66 @@ mod tests {
     struct Comp2 {
         value: i32,
     }
+    fn run_exclusive<M>(system: impl IntoSystem<M>, world: &mut world::World) {
+        let mut system = system.into_system(world);
+        unsafe {
+            system.run_exclusive(world);
+        }
+    }
+
+    fn run_parallel<M>(system: impl IntoSystem<M>, world: &mut world::World) {
+        let mut system = system.into_system(world);
+        let command_buffer = CommandBuffer::new();
+        {
+            let mut shard = world.shard(system.required_access()).unwrap();
+            unsafe {
+                system.run_parallel(&mut shard, &command_buffer);
+            }
+        }
+        command_buffer.flush(world);
+    }
 
     #[test]
     fn no_param_function_system() {
         // Given
-
         fn my_system() {
             // No-op
         }
-
         let mut world = world::World::new(world::Id::new(0));
 
-        // When
-        let mut system = my_system.into_system(&mut world);
-        let command_buffer = CommandBuffer::new();
-
-        // Then
-        unsafe {
-            system.run(&mut world, &command_buffer);
-        }
+        // Then - Should not panic
+        run_parallel(my_system, &mut world);
     }
 
     #[test]
     fn world_mut_param_function_system() {
+        // Given
         fn my_system(world: &mut world::World) {
             // Verify we can access the world
             assert_eq!(world.id(), world::Id::new(0));
         }
-
         let mut world = world::World::new(world::Id::new(0));
-        let mut system = my_system.into_system(&mut world);
-        let command_buffer = CommandBuffer::new();
 
-        unsafe {
-            system.run(&mut world, &command_buffer);
-        }
+        // Then - Should not panic
+        run_exclusive(my_system, &mut world);
     }
 
     #[test]
     fn world_param_function_system() {
+        // Given
         fn my_system(world: &world::World) {
             // Verify we can access the world
             assert_eq!(world.id(), world::Id::new(0));
         }
-
         let mut world = world::World::new(world::Id::new(0));
-        let mut system = my_system.into_system(&mut world);
-        let command_buffer = CommandBuffer::new();
 
-        unsafe {
-            system.run(&mut world, &command_buffer);
-        }
+        // Then - Should not panic
+        run_parallel(my_system, &mut world);
     }
 
     #[test]
     fn single_query_handle_function_system() {
+        // Given
         fn my_system(query: Query<&Comp1>) {
             for comp in query {
                 assert_eq!(comp.value, 42);
@@ -445,16 +451,13 @@ mod tests {
         let mut world = world::World::new(world::Id::new(0));
         world.spawn(Comp1 { value: 42 });
 
-        let mut system = my_system.into_system(&mut world);
-        let command_buffer = CommandBuffer::new();
-
-        unsafe {
-            system.run(&mut world, &command_buffer);
-        }
+        // Then - Should not panic
+        run_parallel(my_system, &mut world);
     }
 
     #[test]
     fn mutable_query_system() {
+        // Given
         fn increment_system(query: Query<&mut Comp1>) {
             for comp in query {
                 comp.value += 1;
@@ -465,14 +468,10 @@ mod tests {
         world.spawn(Comp1 { value: 5 });
         world.spawn(Comp1 { value: 10 });
 
-        let mut system = increment_system.into_system(&mut world);
-        let command_buffer = CommandBuffer::new();
+        // When
+        run_parallel(increment_system, &mut world);
 
-        unsafe {
-            system.run(&mut world, &command_buffer);
-        }
-
-        // Verify values were incremented
+        // Then
         let mut values: Vec<i32> = world.query::<&Comp1>().map(|c| c.value).collect();
         values.sort();
         assert_eq!(values, vec![6, 11]);
@@ -480,6 +479,7 @@ mod tests {
 
     #[test]
     fn multiple_entities_query_system() {
+        // Given
         fn count_system(query: Query<(&Comp1, &Comp2)>) {
             let count = query.count();
             assert_eq!(count, 2);
@@ -490,16 +490,13 @@ mod tests {
         world.spawn((Comp1 { value: 2 }, Comp2 { value: 20 }));
         world.spawn(Comp1 { value: 3 }); // Only Comp1, won't match
 
-        let mut system = count_system.into_system(&mut world);
-        let command_buffer = CommandBuffer::new();
-
-        unsafe {
-            system.run(&mut world, &command_buffer);
-        }
+        // Then - Should not panic
+        run_parallel(count_system, &mut world);
     }
 
     #[test]
     fn mixed_mutability_query_system() {
+        // Given
         fn physics_system(query: Query<(&Comp1, &mut Comp2)>) {
             for (c1, c2) in query {
                 c2.value = c1.value * 2;
@@ -510,14 +507,10 @@ mod tests {
         world.spawn((Comp1 { value: 5 }, Comp2 { value: 0 }));
         world.spawn((Comp1 { value: 10 }, Comp2 { value: 0 }));
 
-        let mut system = physics_system.into_system(&mut world);
-        let command_buffer = CommandBuffer::new();
+        // When
+        run_parallel(physics_system, &mut world);
 
-        unsafe {
-            system.run(&mut world, &command_buffer);
-        }
-
-        // Verify Comp2 values were updated
+        // Then
         let mut values: Vec<i32> = world.query::<&Comp2>().map(|c| c.value).collect();
         values.sort();
         assert_eq!(values, vec![10, 20]);
@@ -525,6 +518,7 @@ mod tests {
 
     #[test]
     fn multiple_query_parameters_system() {
+        // Given
         fn two_query_system(query1: Query<&Comp1>, query2: Query<&Comp2>) {
             let count1 = query1.count();
             let count2 = query2.count();
@@ -537,18 +531,9 @@ mod tests {
         world.spawn((Comp1 { value: 2 }, Comp2 { value: 20 }));
         world.spawn(Comp1 { value: 3 }); // Only Comp1
 
-        let mut system = two_query_system.into_system(&mut world);
-        let command_buffer = CommandBuffer::new();
-
-        unsafe {
-            system.run(&mut world, &command_buffer);
-        }
+        // THen - Should not panic
+        run_parallel(two_query_system, &mut world);
     }
-
-    // NOTE: Tests for systems with both queries and &mut World have been removed.
-    // Such systems are no longer supported - use WorldSystem for exclusive world access,
-    // or Wrapper for query-based systems. This separation ensures that systems with
-    // exclusive world access cannot accidentally run in parallel.
 
     #[test]
     fn access_single_query() {
@@ -568,6 +553,7 @@ mod tests {
 
     #[test]
     fn access_multiple_queries() {
+        // Given
         fn my_system(_query1: Query<&Comp1>, _query2: Query<&Comp2>) {}
 
         let mut world = world::World::new(world::Id::new(0));
@@ -590,6 +576,7 @@ mod tests {
 
     #[test]
     fn required_access_mixed_query() {
+        // Given
         fn my_system(_query: Query<(&Comp1, &Comp2)>) {}
 
         let mut world = world::World::new(world::Id::new(0));
@@ -612,8 +599,7 @@ mod tests {
 
     #[test]
     fn entity_id_query_system() {
-        use crate::ecs::entity;
-
+        // Given
         fn entity_system(query: Query<(entity::Entity, &Comp1)>) {
             let mut count = 0;
             for (_entity, comp) in query {
@@ -628,16 +614,13 @@ mod tests {
         world.spawn(Comp1 { value: 5 });
         world.spawn(Comp1 { value: 10 });
 
-        let mut system = entity_system.into_system(&mut world);
-        let command_buffer = CommandBuffer::new();
-
-        unsafe {
-            system.run(&mut world, &command_buffer);
-        }
+        // Then - Should not panic
+        run_parallel(entity_system, &mut world);
     }
 
     #[test]
     fn empty_query_system() {
+        // Given
         fn empty_system(query: Query<&Comp1>) {
             let count = query.count();
             assert_eq!(count, 0);
@@ -646,16 +629,13 @@ mod tests {
         let mut world = world::World::new(world::Id::new(0));
         // Don't spawn any entities
 
-        let mut system = empty_system.into_system(&mut world);
-        let command_buffer = CommandBuffer::new();
-
-        unsafe {
-            system.run(&mut world, &command_buffer);
-        }
+        // Then - Should not panic
+        run_parallel(empty_system, &mut world);
     }
 
     #[test]
     fn two_query_parameter_system() {
+        // Given
         fn two_query_system(query1: Query<&Comp1>, query2: Query<&Comp2>) {
             assert_eq!(query1.count(), 2);
             assert_eq!(query2.count(), 1);
@@ -665,16 +645,13 @@ mod tests {
         world.spawn(Comp1 { value: 1 });
         world.spawn((Comp1 { value: 2 }, Comp2 { value: 10 }));
 
-        let mut system = two_query_system.into_system(&mut world);
-        let command_buffer = CommandBuffer::new();
-
-        unsafe {
-            system.run(&mut world, &command_buffer);
-        }
+        // Then - Should not panic
+        run_parallel(two_query_system, &mut world);
     }
 
     #[test]
     fn system_can_be_run_multiple_times() {
+        // Given
         fn increment_system(query: Query<&mut Comp1>) {
             for comp in query {
                 comp.value += 1;
@@ -684,23 +661,19 @@ mod tests {
         let mut world = world::World::new(world::Id::new(0));
         world.spawn(Comp1 { value: 0 });
 
-        let mut system = increment_system.into_system(&mut world);
-        let command_buffer = CommandBuffer::new();
+        // When
+        run_parallel(increment_system, &mut world);
+        run_parallel(increment_system, &mut world);
+        run_parallel(increment_system, &mut world);
 
-        // Run system 3 times
-        unsafe {
-            system.run(&mut world, &command_buffer);
-            system.run(&mut world, &command_buffer);
-            system.run(&mut world, &command_buffer);
-        }
-
-        // Verify value was incremented 3 times
+        // Then
         let value = world.query::<&Comp1>().next().unwrap().value;
         assert_eq!(value, 3);
     }
 
     #[test]
     fn mutable_query_with_multiple_entities() {
+        // Given
         fn multiply_system(query: Query<(&Comp1, &mut Comp2)>) {
             for (c1, c2) in query {
                 c2.value *= c1.value;
@@ -712,14 +685,10 @@ mod tests {
         world.spawn((Comp1 { value: 4 }, Comp2 { value: 5 }));
         world.spawn((Comp1 { value: 10 }, Comp2 { value: 10 }));
 
-        let mut system = multiply_system.into_system(&mut world);
-        let command_buffer = CommandBuffer::new();
+        // When
+        run_parallel(multiply_system, &mut world);
 
-        unsafe {
-            system.run(&mut world, &command_buffer);
-        }
-
-        // Verify values were multiplied
+        // Then
         let mut values: Vec<i32> = world.query::<&Comp2>().map(|c| c.value).collect();
         values.sort();
         assert_eq!(values, vec![6, 20, 100]);
@@ -727,6 +696,7 @@ mod tests {
 
     #[test]
     fn required_access_empty_system() {
+        // Given
         fn my_system() {}
 
         let mut world = world::World::new(world::Id::new(0));
@@ -767,5 +737,42 @@ mod tests {
 
         // Then
         assert!(access.is_none());
+    }
+
+    #[test]
+    fn parallel_system_run_as_exclusive() {
+        // Given
+        fn my_system(query: Query<&Comp1>) {
+            for comp in query {
+                assert_eq!(comp.value, 42);
+            }
+        }
+
+        let mut world = world::World::new(world::Id::new(0));
+        world.spawn(Comp1 { value: 42 });
+
+        // Then - Should not panic
+        run_exclusive(my_system, &mut world);
+    }
+
+    #[test]
+    fn parallel_system_run_as_exclusive_with_commands() {
+        // Given
+        fn my_system(query: Query<&Comp1>, commands: Commands) {
+            for comp in query {
+                assert_eq!(comp.value, 42);
+            }
+            commands.spawn(Comp1 { value: 100 });
+        }
+
+        let mut world = world::World::new(world::Id::new(0));
+        world.spawn(Comp1 { value: 42 });
+
+        // When
+        run_exclusive(my_system, &mut world);
+
+        // Then
+        let comps: Vec<&Comp1> = world.query::<&Comp1>().collect();
+        assert_eq!(comps.len(), 2);
     }
 }

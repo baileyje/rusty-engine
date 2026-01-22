@@ -412,156 +412,144 @@ impl Phase {
     /// Runs the pre-phase (exclusive systems) then the main phase (parallel groups).
     /// See module documentation for the execution model.
     pub fn run(&mut self, world: &mut world::World, executor: &tasks::Executor) {
-        // Create a command buffer for systems in this phase
-        let command_buffer = system::CommandBuffer::new();
-
         // Pre-phase: exclusive systems with full world access
         for system in self.exclusive_systems.iter_mut() {
             // SAFETY: Exclusive phase - no other systems running, no active shards.
             // The world reference is unique here.
-            unsafe { system.run(world, &command_buffer) };
+            unsafe { system.run_exclusive(world) };
         }
 
         // Main phase: parallel groups
-        // Clone plan to avoid borrowing self during group execution.
-        // TODO: Consider using indices or splitting self to avoid this clone.
-        let plan = self.plan.clone();
-        for group in plan.iter() {
-            self.run_group(world, group, &command_buffer, executor);
-        }
-    }
 
-    /// Executes a group of units, parallelizing when beneficial.
-    ///
-    /// Single-unit groups run inline to avoid parallelization overhead.
-    /// Multi-unit groups dispatch to the executor's thread pool.
-    ///
-    /// # Grant Lifecycle
-    ///
-    /// 1. Shards created on main thread (validates grants via `GrantTracker`)
-    /// 2. Shards moved to workers, converted to grants via `into_grant()`
-    /// 3. Grants returned to main thread and released
-    ///
-    /// This ensures grant tracking remains single-threaded while execution is parallel.
-    fn run_group(
-        &mut self,
-        world: &mut world::World,
-        group: &Group,
-        command_buffer: &system::CommandBuffer,
-        executor: &tasks::Executor,
-    ) {
-        // Optimization: single unit runs inline without thread dispatch overhead
-        if group.units().len() == 1 {
-            let unit = &group.units()[0];
-            match world.shard(unit.required_access()) {
-                Ok(mut shard) => {
-                    self.run_unit(&mut shard, command_buffer, unit);
-                    world.release_shard(shard);
-                }
-                Err(e) => {
-                    eprintln!("Failed to create shard for unit: {:?}", e);
-                }
-            }
-            return;
+        // Create a command buffer for systems in this phase
+        let command_buffer = system::CommandBuffer::new();
+
+        // Execute each group sequentially
+        for group in self.plan.iter() {
+            run_group(&mut self.systems, world, group, &command_buffer, executor);
         }
 
-        // === Multi-unit parallel execution ===
-
-        // Step 1: Acquire all shards on main thread
-        // This validates grants and ensures no conflicts between units in this group.
-        // If any shard fails, we must release all previously acquired shards.
-        let mut shards: Vec<(world::Shard, &Unit)> = Vec::new();
-        for unit in group.units() {
-            match world.shard(unit.required_access()) {
-                Ok(shard) => shards.push((shard, unit)),
-                Err(e) => {
-                    eprintln!("Failed to create shard for unit: {:?}", e);
-                    for (shard, _) in shards {
-                        world.release_shard(shard);
-                    }
-                    return;
-                }
-            }
-        }
-
-        // Step 2: Create system handles for parallel dispatch
-        // SAFETY: See SystemHandle documentation for the full safety contract.
-        // Key invariants maintained here:
-        // - Indices come from planner, which ensures validity and uniqueness per group
-        // - Systems vec is not modified during the executor scope below
-        // - Each handle is used by exactly one worker thread
-        let system_handles: Vec<Vec<SystemHandle>> = group
-            .units()
-            .iter()
-            .map(|unit| {
-                unit.system_indexes()
-                    .iter()
-                    .map(|&idx| {
-                        // SAFETY: idx < self.systems.len() guaranteed by planner construction
-                        SystemHandle(unsafe { self.systems.as_mut_ptr().add(idx) })
-                    })
-                    .collect()
-            })
-            .collect();
-
-        // Step 3: Dispatch to thread pool
-        // The scoped executor ensures all workers complete before this block exits,
-        // which is critical for pointer validity (systems vec must outlive handles).
-        let grant_futures = executor.scope(|scope| {
-            let mut futures = Vec::new();
-
-            for ((mut shard, _unit), mut handles) in
-                shards.into_iter().zip(system_handles.into_iter())
-            {
-                let future = scope.spawn_with_result(move || {
-                    // Sequential execution within unit (cache-friendly, shared shard)
-                    for handle in handles.iter_mut() {
-                        // SAFETY: See SystemHandle::run_parallel documentation.
-                        // Exclusive access guaranteed by planner's disjoint index assignment.
-                        unsafe {
-                            handle.run_parallel(&mut shard, command_buffer);
-                        }
-                    }
-
-                    // Convert shard to grant for main-thread release
-                    shard.into_grant()
-                });
-
-                futures.push(future);
-            }
-
-            futures
-        });
-
-        // Step 4: Collect results and release grants
-        // This must happen on the main thread (GrantTracker is not thread-safe).
-        for future in grant_futures {
-            match future.wait() {
-                Ok(grant) => world.release_grant(&grant),
-                Err(e) => eprintln!("Task failed to complete: {:?}", e),
-            }
-        }
-
-        // Step 5: Execute the commands in the buffer
+        // Execute the commands in the buffer
         command_buffer.flush(world);
     }
+}
 
-    /// Executes all systems in a unit sequentially using the provided shard.
-    ///
-    /// Used for single-unit groups where parallel dispatch overhead isn't worthwhile.
-    #[inline]
-    fn run_unit(
-        &mut self,
-        shard: &mut world::Shard,
-        command_buffer: &system::CommandBuffer,
-        unit: &Unit,
-    ) {
-        for &idx in unit.system_indexes() {
-            if let Some(system) = self.systems.get_mut(idx) {
-                // SAFETY: Shard's grant covers this system's required access
-                // (unit's required_access is the shared access of all its systems).
-                unsafe { system.run_parallel(shard, command_buffer) };
+/// Executes a group of units, parallelizing when beneficial.
+///
+/// Single-unit groups run inline to avoid parallelization overhead.
+/// Multi-unit groups dispatch to the executor's thread pool.
+///
+/// Note: This is a detached function from the phase to avoid borrowing Phase multiple times in
+/// iterating the plan.
+///
+/// # Grant Lifecycle
+///
+/// 1. Shards created on main thread (validates grants via `GrantTracker`)
+/// 2. Shards moved to workers, converted to grants via `into_grant()`
+/// 3. Grants returned to main thread and released
+///
+/// This ensures grant tracking remains single-threaded while execution is parallel.
+fn run_group(
+    systems: &mut [system::System],
+    world: &mut world::World,
+    group: &Group,
+    command_buffer: &system::CommandBuffer,
+    executor: &tasks::Executor,
+) {
+    // Optimization: single unit runs inline without thread dispatch overhead
+    if group.units().len() == 1 {
+        let unit = &group.units()[0];
+        match world.shard(unit.required_access()) {
+            Ok(mut shard) => {
+                for &idx in unit.system_indexes() {
+                    if let Some(system) = systems.get_mut(idx) {
+                        // SAFETY: Shard's grant covers this system's required access
+                        // (unit's required_access is the shared access of all its systems).
+                        unsafe { system.run_parallel(&mut shard, command_buffer) };
+                    }
+                }
+                world.release_shard(shard);
             }
+            Err(e) => {
+                eprintln!("Failed to create shard for unit: {:?}", e);
+            }
+        }
+        return;
+    }
+
+    // === Multi-unit parallel execution ===
+
+    // Step 1: Acquire all shards on main thread
+    // This validates grants and ensures no conflicts between units in this group.
+    // If any shard fails, we must release all previously acquired shards.
+    let mut shards: Vec<(world::Shard, &Unit)> = Vec::new();
+    for unit in group.units() {
+        match world.shard(unit.required_access()) {
+            Ok(shard) => shards.push((shard, unit)),
+            Err(e) => {
+                eprintln!("Failed to create shard for unit: {:?}", e);
+                for (shard, _) in shards {
+                    world.release_shard(shard);
+                }
+                return;
+            }
+        }
+    }
+
+    // Step 2: Create system handles for parallel dispatch
+    // SAFETY: See SystemHandle documentation for the full safety contract.
+    // Key invariants maintained here:
+    // - Indices come from planner, which ensures validity and uniqueness per group
+    // - Systems vec is not modified during the executor scope below
+    // - Each handle is used by exactly one worker thread
+    let system_handles: Vec<Vec<SystemHandle>> = group
+        .units()
+        .iter()
+        .map(|unit| {
+            unit.system_indexes()
+                .iter()
+                .map(|&idx| {
+                    // SAFETY: idx < self.systems.len() guaranteed by planner construction
+                    SystemHandle(unsafe { systems.as_mut_ptr().add(idx) })
+                })
+                .collect()
+        })
+        .collect();
+
+    // Step 3: Dispatch to thread pool
+    // The scoped executor ensures all workers complete before this block exits,
+    // which is critical for pointer validity (systems vec must outlive handles).
+    let grant_futures = executor.scope(|scope| {
+        let mut futures = Vec::new();
+
+        for ((mut shard, _unit), mut handles) in shards.into_iter().zip(system_handles.into_iter())
+        {
+            let future = scope.spawn_with_result(move || {
+                // Sequential execution within unit (cache-friendly, shared shard)
+                for handle in handles.iter_mut() {
+                    // SAFETY: See SystemHandle::run_parallel documentation.
+                    // Exclusive access guaranteed by planner's disjoint index assignment.
+                    unsafe {
+                        handle.run_parallel(&mut shard, command_buffer);
+                    }
+                }
+
+                // Convert shard to grant for main-thread release
+                shard.into_grant()
+            });
+
+            futures.push(future);
+        }
+
+        futures
+    });
+
+    // Step 4: Collect results and release grants
+    // This must happen on the main thread (GrantTracker is not thread-safe).
+    for future in grant_futures {
+        match future.wait() {
+            Ok(grant) => world.release_grant(&grant),
+            Err(e) => eprintln!("Task failed to complete: {:?}", e),
         }
     }
 }

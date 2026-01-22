@@ -237,7 +237,9 @@ impl System {
     /// This method executes the system, providing it with access to world data according
     /// to its access requirements. For exclusive systems, this provides direct `&mut World`
     /// access. For parallel systems, this creates a [`world::Shard`] with the appropriate
-    /// access grant and executes the system through it.
+    /// access grant and executes the system through it. Invoking a parallel system as an exclusive
+    /// system also creates a command buffer for deferred commands which is flushed after
+    /// execution. Generally, parallel systems should be run on worker threads via a schedule.
     ///
     /// # Safety
     ///
@@ -278,7 +280,7 @@ impl System {
     ///     unsafe { system.run(&mut world); }
     /// }
     /// ```
-    pub unsafe fn run(&mut self, world: &mut world::World, command_buffer: &CommandBuffer) {
+    pub unsafe fn run_exclusive(&mut self, world: &mut world::World) {
         match &mut self.run_mode {
             RunMode::Exclusive(func) => func(world),
             RunMode::Parallel(func) => {
@@ -286,10 +288,15 @@ impl System {
                 let mut shard = world.shard(&self.required_access).expect(
                     "Failed to create shard for parallel system on main thread. This indicates a bug in the scheduler or world access management.",
                 );
+                // Create a command buffer for deferred commands since the system assumes its
+                // parallel.
+                let command_buffer = CommandBuffer::new();
                 // Execute the system with the shard.
-                func(&mut shard, command_buffer);
+                func(&mut shard, &command_buffer);
                 // Release the shard back to the world.
                 world.release_shard(shard);
+                // Flush any commands issued during execution.
+                command_buffer.flush(world);
             }
         }
     }
